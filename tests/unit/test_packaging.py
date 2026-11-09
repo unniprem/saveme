@@ -1,6 +1,14 @@
-"""Static checks on the Docker packaging files (the image itself is checked by scripts/docker-smoke.sh)."""
+"""Checks on the Docker packaging files and on how scripts/docker-smoke.sh fails.
+
+The image itself is checked by running scripts/docker-smoke.sh against a real Docker daemon.
+"""
 import dataclasses
+import os
 import re
+import subprocess
+import sys
+import textwrap
+import time
 from pathlib import Path
 
 from app.config import Settings, load_settings
@@ -50,3 +58,57 @@ def test_compose_binds_loopback_only():
 
 def test_no_curl_cffi_in_lock():
     assert "curl" not in _read("requirements.txt").lower()
+
+
+def test_deno_stage_pinned_by_index_digest():
+    text = _read("Dockerfile")
+    assert re.search(r"^ARG DENO_VERSION=2\.\d+\.\d+$", text, re.M)
+    assert re.search(r"^ARG DENO_DIGEST=sha256:[0-9a-f]{64}$", text, re.M)
+    froms = re.findall(r"^FROM (\S+) AS deno$", text, re.M)
+    assert froms == ["denoland/deno:bin-${DENO_VERSION}@${DENO_DIGEST}"]
+    # The digest wins over the tag, so the build checks the binary is the version named.
+    assert re.search(r'^RUN deno --version \| grep -q "\^deno \$\{DENO_VERSION\} "$', text, re.M)
+
+
+# A fake `docker` for running the smoke script without a daemon. `docker inspect -f TEMPLATE`
+# renders {{.Field.Path}} from STATE ({{if ...}}/{{end}} markers are dropped).
+_FAKE_DOCKER = textwrap.dedent("""\
+    #!{python}
+    import os, re, sys
+    STATE = {{"State.Status": "exited", "State.Running": "false", "State.ExitCode": "1",
+             "State.Health.Status": "starting", "RestartCount": "0"}}
+    args = sys.argv[1:]
+    if args[:2] == ["compose", "ps"]:
+        rc = int(os.environ.get("FAKE_PS_RC", "0"))
+        if not rc:
+            print("c0ffee")
+        sys.exit(rc)
+    if args[:1] == ["inspect"]:
+        template = re.sub(r"{{{{(if [^}}]*|end)}}}}", "", args[args.index("-f") + 1])
+        print(re.sub(r"{{{{\\s*\\.([\\w.]+)\\s*}}}}", lambda m: STATE.get(m[1], "<no value>"), template))
+    sys.exit(0)
+""")
+
+
+def _run_smoke(tmp_path, **env_extra):
+    fake = tmp_path / "docker"
+    fake.write_text(_FAKE_DOCKER.format(python=sys.executable))
+    fake.chmod(0o755)
+    env = {"PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}", **env_extra}
+    started = time.monotonic()
+    proc = subprocess.run([str(ROOT / "scripts" / "docker-smoke.sh")], env=env,
+                          capture_output=True, text=True, timeout=30)
+    return proc, time.monotonic() - started
+
+
+def test_smoke_reports_compose_ps_failure(tmp_path):
+    proc, _ = _run_smoke(tmp_path, FAKE_PS_RC="3")
+    assert proc.returncode == 1
+    assert "SMOKE FAIL" in proc.stderr
+
+
+def test_smoke_fails_fast_when_container_exits(tmp_path):
+    proc, elapsed = _run_smoke(tmp_path)
+    assert proc.returncode == 1
+    assert "SMOKE FAIL" in proc.stderr and "exited" in proc.stderr
+    assert elapsed < 10

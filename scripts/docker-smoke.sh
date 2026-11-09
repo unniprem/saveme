@@ -39,17 +39,25 @@ inspect() {
 echo "==> docker compose up -d --build"
 docker compose up -d --build
 
-cid="$(docker compose ps -q "$SERVICE")"
+cid="$(docker compose ps -q "$SERVICE")" || fail "docker compose ps failed"
 [ -n "$cid" ] || fail "no running container for service $SERVICE"
 
 echo "==> waiting up to 90 s for the container to be healthy"
 deadline=$((SECONDS + 90))
-status=""
+first_restarts=""
 while :; do
-  status="$(docker inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null || true)"
-  [ "$status" = healthy ] && break
-  [ "$status" = unhealthy ] && fail "container reported unhealthy"
-  [ "$SECONDS" -lt "$deadline" ] || fail "not healthy after 90 s (status: ${status:-unknown})"
+  # A crash shows as status exited/restarting, or as a higher restart count once
+  # `restart: unless-stopped` has brought it back up; either way, stop waiting.
+  state="$(docker inspect -f '{{.State.Status}} {{.RestartCount}} {{.State.ExitCode}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid")" \
+    || fail "docker inspect $cid failed"
+  read -r run_status restarts exit_code health <<<"$state"
+  [ -n "$first_restarts" ] || first_restarts="$restarts"
+  if [ "$run_status" != running ] || [ "$restarts" != "$first_restarts" ]; then
+    fail "container stopped or restarted (status: $run_status, exit code: $exit_code, restarts: $restarts)"
+  fi
+  [ "$health" = healthy ] && break
+  [ "$health" = unhealthy ] && fail "container reported unhealthy"
+  [ "$SECONDS" -lt "$deadline" ] || fail "not healthy after 90 s (status: ${health:-unknown})"
   sleep 2
 done
 echo "    healthy"

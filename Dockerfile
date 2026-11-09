@@ -1,7 +1,10 @@
 # syntax=docker/dockerfile:1
 
 # Deno runs yt-dlp's YouTube JS challenges (via the pinned yt-dlp-ejs package).
+# Pinned by the multi-arch index digest, which is what gets pulled; change both lines together.
+# New digest: docker buildx imagetools inspect denoland/deno:bin-<version>  (top "Digest:")
 ARG DENO_VERSION=2.9.8
+ARG DENO_DIGEST=sha256:b507583d3c68ba69f3ed2ce5969ae5b8b70f43421c781279c7aea06435263543
 
 # --- css: compile static/dist/styles.css with the pinned, checksum-verified Tailwind CLI.
 # build-css.sh picks the CLI from `uname -m`, so this follows TARGETARCH.
@@ -15,7 +18,7 @@ COPY static/ static/
 RUN scripts/build-css.sh /out/styles.css
 
 # --- deno: the official single-binary image, multi-arch (amd64, arm64).
-FROM denoland/deno:bin-${DENO_VERSION} AS deno
+FROM denoland/deno:bin-${DENO_VERSION}@${DENO_DIGEST} AS deno
 
 # --- runtime
 FROM python:3.12-slim-trixie
@@ -23,6 +26,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=deno /deno /usr/local/bin/deno
+# The digest overrides the tag: fail the build if the binary isn't DENO_VERSION.
+ARG DENO_VERSION
+RUN deno --version | grep -q "^deno ${DENO_VERSION} "
 
 WORKDIR /app
 COPY requirements.txt ./
@@ -41,9 +47,9 @@ RUN useradd --uid 10001 --create-home app \
     && chown app /tmp/media-jobs
 
 USER app
-# PYTHONPATH: workers run `python -m app.worker` with their job directory as cwd.
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app
+# No PYTHONPATH needed: `python -m app` runs from WORKDIR /app, and the runner sets
+# PYTHONPATH for the workers it starts (`python -P -m app.worker`).
+ENV PYTHONUNBUFFERED=1
 EXPOSE 8000
 # The default ALLOWED_HOSTS accepts Host 127.0.0.1; the empty ProxyHandler ignores *_proxy vars.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --start-interval=2s --retries=3 \
