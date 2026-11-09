@@ -181,7 +181,11 @@ class _Guard:
 
     def _refusal(self, scope: Scope) -> Response | None:
         headers = Headers(scope=scope)
-        if _host_of(headers.get("host", "")) not in self.allowed:
+        # GET /health skips the host check: the container healthcheck sends Host
+        # 127.0.0.1:8000 whatever ALLOWED_HOSTS says, and it reveals only the status
+        # or the configuration message.
+        is_health_check = scope["method"] == "GET" and scope["path"] == "/health"
+        if not is_health_check and _host_of(headers.get("host", "")) not in self.allowed:
             return _error_response(400, "invalid_request", "Invalid host header.")
         origin = headers.get("origin")
         if (scope["method"] == "POST" and origin is not None

@@ -479,17 +479,41 @@ def test_aborted_download_keeps_file(settings, temp_dir):
                                   "127.0.0.1.evil.example", "localhost.evil:8000",
                                   "evil.example@127.0.0.1", "[::1]:8000", "127.0.0.1:x", ""])
 async def test_bad_host_header_400(client, stub, host):
-    for method, path in (("GET", "/health"), ("GET", "/"), ("POST", "/api/inspect")):
+    for method, path in (("GET", "/"), ("GET", "/static/app.js"), ("POST", "/api/inspect"),
+                         ("GET", "/api/jobs/AAAAAAAAAAAAAAAAAAAAAA"),
+                         # Only exactly GET /health skips the host check.
+                         ("POST", "/health"), ("HEAD", "/health"), ("GET", "/health/"),
+                         ("GET", "/healthz")):
         r = await client.request(method, path, headers={"Host": host}, json={"url": URL})
-        assert r.status_code == 400, (host, path)
-        assert r.json() == error_body("invalid_request", "Invalid host header.")
+        assert r.status_code == 400, (host, method, path)
+        if method != "HEAD":
+            assert r.json() == error_body("invalid_request", "Invalid host header.")
         assert r.headers["content-security-policy"] == CSP
     assert stub.calls == []
 
 
+@pytest.mark.parametrize("host", ["evil.example", "127.0.0.1:x", ""])
+async def test_health_skips_host_check(client, host):
+    # The container healthcheck sends Host 127.0.0.1:8000 whatever ALLOWED_HOSTS says.
+    r = await client.get("/health", headers={"Host": host})
+    assert r.status_code == 200
+    assert r.content == b'{"status":"ok"}'
+    assert r.headers["content-security-policy"] == CSP
+    assert r.headers["x-content-type-options"] == "nosniff"
+
+
+async def test_custom_allowed_hosts_keep_container_healthy(temp_dir, stub):
+    settings = load_settings({"TEMP_DIR": str(temp_dir), "ALLOWED_HOSTS": "saveme.lan"})
+    async with running(make_app(settings, run_worker=stub)) as client:
+        r = await client.get("/health", headers={"Host": "127.0.0.1:8000"})
+        assert r.status_code == 200 and r.json() == {"status": "ok"}
+        assert (await client.get("/", headers={"Host": "127.0.0.1:8000"})).status_code == 400
+        assert (await client.get("/", headers={"Host": "saveme.lan:8000"})).status_code == 200
+
+
 @pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.1:8000", "localhost:8000", "LocalHost"])
 async def test_allowed_host_header_ignores_port_and_case(client, host):
-    r = await client.get("/health", headers={"Host": host})
+    r = await client.get("/", headers={"Host": host})
     assert r.status_code == 200
 
 
@@ -498,8 +522,8 @@ async def test_allowed_host_header_ignores_port_and_case(client, host):
 async def test_ipv6_allowed_host(temp_dir, stub, allowed, host):
     settings = load_settings({"TEMP_DIR": str(temp_dir), "ALLOWED_HOSTS": f"localhost,{allowed}"})
     async with running(make_app(settings, run_worker=stub)) as client:
-        assert (await client.get("/health", headers={"Host": host})).status_code == 200
-        r = await client.get("/health", headers={"Host": "127.0.0.1"})
+        assert (await client.get("/", headers={"Host": host})).status_code == 200
+        r = await client.get("/", headers={"Host": "127.0.0.1"})
         assert r.status_code == 400
 
 
@@ -551,9 +575,11 @@ async def test_degraded_mode(caplog):
             r = await client.get("/")
             assert r.status_code == 200 and FOOTER in r.text
             assert (await client.get("/static/app.js")).status_code == 200
-            # The host check still applies.
-            r = await client.get("/health", headers={"Host": "evil.example"})
+            # The host check still applies, except to GET /health.
+            r = await client.get("/", headers={"Host": "evil.example"})
             assert r.status_code == 400
+            r = await client.get("/health", headers={"Host": "evil.example"})
+            assert r.status_code == 503 and r.json() == body
     errors = [rec for rec in caplog.records
               if rec.name == "app.main" and rec.levelno >= logging.ERROR]
     assert len(errors) == 1 and "MAX_ACTIVE_JOBS" in errors[0].getMessage()
