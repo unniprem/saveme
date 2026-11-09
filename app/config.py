@@ -80,8 +80,8 @@ def load_settings(env: Mapping[str, str]) -> Settings:
     if log_level not in _LOG_LEVELS:
         raise ConfigError("LOG_LEVEL", f"must be one of {sorted(_LOG_LEVELS)}")
 
-    raw_hosts = env.get("ALLOWED_HOSTS")
-    if raw_hosts is None or raw_hosts == "":
+    raw_hosts = _get(env, "ALLOWED_HOSTS")
+    if raw_hosts is None:
         hosts = ("localhost", "127.0.0.1")
     else:
         hosts = tuple(h.strip() for h in raw_hosts.split(",") if h.strip())

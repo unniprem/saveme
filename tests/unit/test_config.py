@@ -17,6 +17,10 @@ def test_env_overrides_and_blank_means_default():
     assert s.max_active_jobs == 3 and s.temp_dir == Path("/data/jobs") and s.max_queued_jobs == 4
     assert s.allowed_hosts == ("localhost", "saveme.lan")
 
+@pytest.mark.parametrize("value", ["", "  ", "\t \n"])
+def test_blank_allowed_hosts_means_default(value):
+    assert load_settings({"ALLOWED_HOSTS": value}).allowed_hosts == ("localhost", "127.0.0.1")
+
 @pytest.mark.parametrize("var,value", [
     ("MAX_ACTIVE_JOBS", "0"), ("MAX_ACTIVE_JOBS", "abc"), ("MAX_FILE_SIZE_MB", "-1"),
     ("INSPECT_TIMEOUT_SECONDS", "1"), ("TEMP_DIR", "relative/path"), ("TEMP_DIR", "/"),
