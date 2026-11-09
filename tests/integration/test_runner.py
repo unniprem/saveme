@@ -180,3 +180,29 @@ def test_dir_size(tmp_path):
     (tmp_path / "d").mkdir()
     (tmp_path / "d" / "b").write_bytes(b"123")
     assert dir_size(tmp_path) == 8
+
+
+async def test_nonexistent_cmd_is_internal():
+    with pytest.raises(AppError) as ei:
+        await run_worker({}, cmd=["/nonexistent/worker"], timeout=5)
+    assert ei.value.code == "internal"
+    assert "/nonexistent" not in ei.value.message
+
+
+async def test_nonexistent_workdir_is_internal(tmp_path):
+    missing = tmp_path / "nope"
+    with pytest.raises(AppError) as ei:
+        await run_worker({}, cmd=fake("pass"), timeout=5, workdir=missing)
+    assert ei.value.code == "internal"
+    assert str(tmp_path) not in ei.value.message
+
+
+async def test_error_event_with_unhashable_code_is_internal():
+    script = (
+        "import sys, json\n"
+        "print(json.dumps({'event':'error','code':[1,2],'message':['x']}))\n"
+        "sys.exit(1)\n"
+    )
+    with pytest.raises(AppError) as ei:
+        await run_worker({}, cmd=fake(script), timeout=10)
+    assert ei.value.code == "internal"

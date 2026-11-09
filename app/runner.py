@@ -66,16 +66,20 @@ async def run_worker(
     max_workdir_bytes: int | None = None,
     poll_interval: float = 1.0,
 ) -> dict:
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        start_new_session=True,
-        env=_clean_env(),
-        cwd=str(workdir) if workdir else tempfile.gettempdir(),
-        limit=_LINE_LIMIT + 1,
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+            env=_clean_env(),
+            cwd=str(workdir) if workdir else tempfile.gettempdir(),
+            limit=_LINE_LIMIT + 1,
     )
+    except OSError:
+        logger.exception("failed to spawn worker")
+        raise AppError("internal") from None
     stderr_tail = bytearray()
     kill_reason: list[AppError] = []
 
@@ -142,7 +146,7 @@ async def run_worker(
         await proc.wait()
         if error is not None:
             code = error.get("code")
-            if code not in CATALOG:
+            if not (isinstance(code, str) and code in CATALOG):
                 code = "internal"
             message = error.get("message")
             raise AppError(code, message if isinstance(message, str) and code != "internal" else None)
@@ -157,7 +161,13 @@ async def run_worker(
         await asyncio.wait({main_task, watch_task}, return_when=asyncio.FIRST_COMPLETED)
         if kill_reason:
             raise kill_reason[0]
-        return main_task.result()
+        try:
+            return main_task.result()
+        except (AppError, asyncio.CancelledError):
+            raise
+        except Exception:
+            logger.exception("unexpected runner failure")
+            raise AppError("internal") from None
     except AppError as exc:
         if exc.code == "internal":
             tail = bytes(stderr_tail).decode(errors="replace")
