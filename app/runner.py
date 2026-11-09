@@ -19,7 +19,8 @@ DEFAULT_WORKER_CMD: tuple[str, ...] = (sys.executable, "-P", "-m", "app.worker")
 RunWorker = Callable[..., Awaitable[dict]]
 
 _LINE_LIMIT = 1024 * 1024
-_STDERR_KEEP = 64 * 1024
+_STDERR_KEEP = 4 * 1024  # bytes of worker stderr kept for the failure log
+_STDERR_DRAIN = 1.0  # seconds to wait for the rest of stderr once the group is dead
 _TERM_GRACE = 5.0
 
 
@@ -164,6 +165,7 @@ async def run_worker(
     stderr_task = asyncio.create_task(drain_stderr())
     watch_task = asyncio.create_task(watchdog())
     main_task = asyncio.create_task(converse())
+    failure: AppError | None = None
     try:
         await asyncio.wait({main_task, watch_task}, return_when=asyncio.FIRST_COMPLETED)
         if kill_reason:
@@ -176,13 +178,17 @@ async def run_worker(
             logger.exception("unexpected runner failure")
             raise AppError("internal") from None
     except AppError as exc:
-        if exc.code == "internal":
-            tail = bytes(stderr_tail).decode(errors="replace")
-            logger.warning("worker failed (rc=%s); stderr tail: %s", proc.returncode, tail)
+        failure = exc
         raise
     finally:
         watch_task.cancel()
         main_task.cancel()
         await _kill_group(proc)
+        if failure is not None:
+            # Logged only: worker stderr never reaches a client-facing message.
+            await asyncio.wait({stderr_task}, timeout=_STDERR_DRAIN)
+            tail = bytes(stderr_tail).decode(errors="replace")
+            logger.warning("worker failed: %s (rc=%s); stderr tail: %s",
+                           failure.code, proc.returncode, tail)
         stderr_task.cancel()
         await asyncio.gather(watch_task, main_task, stderr_task, return_exceptions=True)

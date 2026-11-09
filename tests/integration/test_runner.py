@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import subprocess
 import sys
@@ -133,6 +134,73 @@ async def test_abnormal_exit_is_internal_and_hides_stderr(caplog):
     assert ei.value.code == "internal"
     assert "SECRET-TRACE" not in ei.value.message
     assert "SECRET-TRACE" in caplog.text
+
+
+def warnings_with(caplog, marker: str) -> list[str]:
+    return [r.getMessage() for r in caplog.records
+            if r.name == "app.runner" and r.levelno == logging.WARNING
+            and marker in r.getMessage()]
+
+
+async def test_error_event_logs_code_and_stderr_tail(caplog):
+    script = (
+        "import sys, json\n"
+        "sys.stderr.write('MARKER-UNSUPPORTED-DIAG\\n'); sys.stderr.flush()\n"
+        "print(json.dumps({'event':'error','code':'unsupported','message':'nope'}))\n"
+        "sys.exit(1)\n"
+    )
+    with pytest.raises(AppError) as ei:
+        await run_worker({}, cmd=fake(script), timeout=10)
+    assert ei.value.code == "unsupported"
+    assert "MARKER" not in ei.value.message
+    logged = warnings_with(caplog, "MARKER-UNSUPPORTED-DIAG")
+    assert logged and "unsupported" in logged[0]
+
+
+async def test_timeout_logs_code_and_stderr_tail(caplog):
+    script = (
+        "import sys, time\n"
+        "sys.stderr.write('MARKER-TIMEOUT-DIAG\\n'); sys.stderr.flush()\n"
+        "time.sleep(60)\n"
+    )
+    with pytest.raises(AppError) as ei:
+        await run_worker({}, cmd=fake(script), timeout=1, poll_interval=0.2)
+    assert ei.value.code == "timeout"
+    assert "MARKER" not in ei.value.message
+    logged = warnings_with(caplog, "MARKER-TIMEOUT-DIAG")
+    assert logged and "timeout" in logged[0]
+
+
+async def test_too_large_logs_code_and_stderr_tail(caplog, tmp_path):
+    script = (
+        "import sys, time\n"
+        "sys.stderr.write('MARKER-TOO-LARGE-DIAG\\n'); sys.stderr.flush()\n"
+        "open('big.bin','wb').write(b'0'*(2*1024*1024))\n"
+        "time.sleep(60)\n"
+    )
+    with pytest.raises(AppError) as ei:
+        await run_worker({}, cmd=fake(script), timeout=30, workdir=tmp_path,
+                         max_workdir_bytes=1024 * 1024, poll_interval=0.1)
+    assert ei.value.code == "too_large"
+    assert "MARKER" not in ei.value.message
+    logged = warnings_with(caplog, "MARKER-TOO-LARGE-DIAG")
+    assert logged and "too_large" in logged[0]
+
+
+async def test_logged_stderr_tail_is_bounded(caplog):
+    script = (
+        "import sys, json\n"
+        "sys.stderr.write('MARKER-HEAD' + 'x' * 20000 + 'MARKER-END\\n')\n"
+        "sys.stderr.flush()\n"
+        "print(json.dumps({'event':'error','code':'unsupported','message':'nope'}))\n"
+        "sys.exit(1)\n"
+    )
+    with pytest.raises(AppError):
+        await run_worker({}, cmd=fake(script), timeout=10)
+    logged = warnings_with(caplog, "MARKER-END")
+    assert logged
+    assert "MARKER-HEAD" not in logged[0]
+    assert len(logged[0]) < 5 * 1024
 
 
 async def test_overlong_line_is_internal():
