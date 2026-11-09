@@ -138,3 +138,28 @@ def test_downgrade_notice():
     assert downgrade_notice([{"width": 1280, "height": 720, "vcodec": "avc1"}], "1080") == "1080p wasn't available; downloaded 720p."
     assert downgrade_notice([{"width": 1920, "height": 1080, "vcodec": "avc1"}], "1080") is None
     assert downgrade_notice([{"width": 640, "height": 360, "vcodec": "avc1"}], "best") is None
+
+
+def _raw(url, **kw):
+    return {"format_id": "r", "url": url, **kw}
+
+
+def test_single_format_protocol_inferred():
+    for url in ["rtmp://h/x", "https://h/a.f4m", "ftp://h/a.mp4"]:
+        with pytest.raises(AppError) as e:
+            keep_safe_formats({"id": "x", "url": url})
+        assert e.value.code == "unsupported"
+    assert keep_safe_formats({"id": "x", "url": "https://h/a.m3u8"})["url"] == "https://h/a.m3u8"
+    assert keep_safe_formats({"id": "x", "url": "https://h/a.mp4"})["url"] == "https://h/a.mp4"
+
+
+def test_multi_format_protocol_inferred():
+    fmts = [_raw("https://h/a.mp4"), _raw("https://h/a.m3u8"), _raw("https://h/a.f4m"), _raw("rtmp://h/x")]
+    out = keep_safe_formats({"id": "x", "formats": fmts})
+    assert [x["url"] for x in out["formats"]] == ["https://h/a.mp4", "https://h/a.m3u8"]
+
+
+def test_mixed_drm_keeps_clean_only():
+    out = keep_safe_formats(info([{**f("d", 640, 360, "avc1", "mp4a", "mp4"), "has_drm": True},
+                                  f("c", 640, 360, "avc1", "mp4a", "mp4")]))
+    assert [x["format_id"] for x in out["formats"]] == ["c"]

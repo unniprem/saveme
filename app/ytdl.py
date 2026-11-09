@@ -2,6 +2,8 @@
 from pathlib import Path
 from urllib.parse import urlparse
 
+from yt_dlp.utils import determine_protocol
+
 from app.errors import AppError
 from app.schemas import Quality
 
@@ -71,18 +73,25 @@ def unwrap_first_entry(info: dict) -> tuple[dict, str | None]:
     return entries[0], notice
 
 
+def _is_native(fmt: dict) -> bool:
+    """Native-protocol check; infers the protocol (as yt-dlp will) when the raw format omits it."""
+    if not fmt.get("url") and not fmt.get("protocol"):
+        return False
+    return determine_protocol(fmt) in NATIVE_PROTOCOLS
+
+
 def keep_safe_formats(info: dict) -> dict:
     if info.get("is_live") or info.get("live_status") in ("is_live", "is_upcoming"):
         raise AppError("live_unsupported")
     out = dict(info)
     formats = info.get("formats")
     if formats is None:
-        if info.get("protocol", "https") not in NATIVE_PROTOCOLS:
+        if not _is_native(info):
             raise AppError("unsupported")
         return out
     if formats and all(x.get("has_drm") is True for x in formats):
         raise AppError("drm")
-    safe = [x for x in formats if x.get("has_drm") is not True and x.get("protocol") in NATIVE_PROTOCOLS]
+    safe = [x for x in formats if x.get("has_drm") is not True and _is_native(x)]
     if not safe:
         raise AppError("unsupported")
     out["formats"] = safe
