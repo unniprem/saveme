@@ -1,4 +1,5 @@
 """Error catalogue and yt-dlp error classification."""
+import re
 
 BLOCKED_MARKER = "[saveme-blocked]"
 
@@ -44,7 +45,6 @@ class AppError(Exception):
 
 
 _RULES: list[tuple[str, tuple[str, ...]]] = [
-    ("blocked_address", (BLOCKED_MARKER.lower(),)),
     ("drm", ("drm",)),
     ("live_unsupported", ("live event", "is live", "live stream")),
     ("login_required", ("sign in", "login", "log in", "private", "cookies",
@@ -58,8 +58,16 @@ _RULES: list[tuple[str, tuple[str, ...]]] = [
 ]
 
 
+# Text that names the request rather than describing the failure: URLs, and
+# yt-dlp's "[extractor] <id>:" prefix (not "[generic] Unable ..." or "[Errno 8] ...").
+_URL_TEXT = re.compile(r"[a-z][a-z0-9+.-]*://\S+", re.IGNORECASE)
+_ID_PREFIX = re.compile(r"\[[^\]]+\]\s*[^\s:]+:")
+
+
 def classify_ytdlp_error(text: str) -> AppError:
-    low = text.lower()
+    if BLOCKED_MARKER in text.lower():
+        return AppError("blocked_address")
+    low = _ID_PREFIX.sub(" ", _URL_TEXT.sub(" ", text)).lower()
     for code, keys in _RULES:
         if any(k in low for k in keys):
             return AppError(code)

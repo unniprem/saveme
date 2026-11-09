@@ -19,6 +19,19 @@ from app.errors import AppError, classify_ytdlp_error, too_large_message, BLOCKE
 def test_classify(text, code):
     assert classify_ytdlp_error(text).code == code
 
+# URLs and "[extractor] <id>:" prefixes are not evidence: keywords inside them
+# (a port containing 429, a "cookies" path, an id containing "geo404") must not
+# decide the code.
+@pytest.mark.parametrize("text,code", [
+    ("ERROR: Unsupported URL: http://127.0.0.1:54290/plain", "unsupported"),
+    ("ERROR: Unsupported URL: https://example.com/recipes/cookies", "unsupported"),
+    ("ERROR: [youtube] geo404abcde: Video unavailable", "unavailable"),
+    (f"ERROR: [generic] x: Unable to download webpage: {BLOCKED_MARKER} ::1 is not a public address",
+     "blocked_address"),
+])
+def test_classify_ignores_urls_and_ids(text, code):
+    assert classify_ytdlp_error(text).code == code
+
 def test_catalogue_defaults_and_shape():
     e = AppError("busy")
     assert e.status == 429 and e.message and e.to_dict() == {"code": "busy", "message": e.message}

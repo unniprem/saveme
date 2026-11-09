@@ -204,6 +204,11 @@ def test_unsupported_and_missing(media_server):
     assert error_code_of(*inspect(media_server.url("/missing"))) == "unavailable"
 
 
+def test_url_text_does_not_drive_classification(media_server):
+    # yt-dlp echoes the URL in "Unsupported URL: ..."; its "429" is not a rate limit.
+    assert error_code_of(*inspect(media_server.url("/plain?x=429"))) == "unsupported"
+
+
 def test_private_thumbnail_dropped(media_server):
     url = media_server.url("/page?title=T&video=/media/sample.mp4&thumb=http://10.0.0.1/x.jpg")
     data = result_of(*inspect(url))
