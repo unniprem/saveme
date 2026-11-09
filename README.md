@@ -32,13 +32,13 @@ Video qualities are Best, 1080, 720 and 480. The default is the highest H.264 ti
 - A page with no media (example.com) returns "unsupported".
 - A private address (192.168.1.1) is refused with "blocked_address".
 
-**Tried and failed:** Reddit. The test post was refused with "requires a login" (Reddit blocks non-browser clients). Treat Reddit as not verified.
+**Tried and failed:** Reddit. The test post was refused with "requires a login": Reddit answered 403 and yt-dlp reported that account authentication is required. Treat Reddit as not verified.
 
 **Not verified:** Facebook, Instagram, Twitter/X and every site not listed above.
 
 **Best effort:** Facebook, Instagram and Twitter/X. yt-dlp has extractors for them, but they were not tested here and often need a login.
 
-**Reddit** may fail. Reddit blocks clients that don't look like a browser, and getting past that needs request impersonation through `curl_cffi`. That package is deliberately not shipped (see Safety notes).
+**Reddit** may fail. The likely cause is that Reddit refuses clients that don't look like a browser: yt-dlp asks for browser impersonation when it sets up a Reddit session, and impersonation needs `curl_cffi`. That package is deliberately not shipped (see Safety notes).
 
 **Not supported:**
 - File-hosting sites that hide the file behind JavaScript, such as Streamtape and LuluVid. yt-dlp has no extractor for them, so they are not supported in Build 1; a headless-browser fallback is planned for Build 2. From the test host these sites were unreachable, so the exact error you see is not verified (likely "unsupported" or "unreachable").
@@ -93,7 +93,7 @@ docker compose build --no-cache --build-arg YTDLP_VERSION=<new> && docker compos
   - The API checks each URL first (scheme, no embedded credentials, length) and resolves its host; every address must be public.
   - Each download or inspection runs in its own worker subprocess. That worker checks every socket connection against the same public-IP policy, so redirects, DNS rebinding and sub-requests are covered.
   - ffmpeg and ffprobe are wrapped so they run with `-protocol_whitelist file,pipe` and can only read local files.
-  - Proxies are disabled, and `curl_cffi` is not installed, because it does its networking in C and would bypass the guard. This is why some Reddit links fail.
+  - Proxies are disabled, and `curl_cffi` is not installed, because it does its networking in C and would bypass the guard. This appears to be why some Reddit links fail.
 - Deno (needed by yt-dlp for YouTube) runs without network permission.
 
 ## Running the tests

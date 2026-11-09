@@ -112,3 +112,16 @@ def test_smoke_fails_fast_when_container_exits(tmp_path):
     assert proc.returncode == 1
     assert "SMOKE FAIL" in proc.stderr and "exited" in proc.stderr
     assert elapsed < 10
+
+
+def test_readme_hedges_the_reddit_cause():
+    # Observed: Reddit answered 403 and yt-dlp reported login_required. That the cause is the
+    # missing curl_cffi impersonation is inferred, so the README must not state it as fact.
+    text = _read("README.md")
+    causal = [line for line in text.splitlines()
+              if "Reddit" in line and ("curl_cffi" in line or "browser" in line)]
+    assert causal
+    for line in causal:
+        assert re.search(r"\b(likely|appears?)\b", line), line
+    assert "Reddit blocks" not in text
+    assert "This is why some Reddit links fail" not in text
