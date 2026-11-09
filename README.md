@@ -26,9 +26,11 @@ Video qualities are Best, 1080, 720 and 480. The default is the highest H.264 ti
 
 **Verified** (checked with `pytest -m network` against the running container):
 
-- YouTube (full link and `youtu.be` short link): inspect, 480p MP4 (H.264) and MP3 download.
-- Direct public MP4 links: inspect and download.
-- Unsupported pages return "unsupported", and private or internal addresses are refused with "blocked_address".
+- YouTube: inspect, 480p MP4 (H.264) and MP3 download.
+- YouTube `youtu.be` short link: inspect only.
+- A direct public MP4 link: inspect and download.
+- A page with no media (example.com) returns "unsupported".
+- A private address (192.168.1.1) is refused with "blocked_address".
 
 **Tried and failed:** Reddit. The test post was refused with "requires a login" (Reddit blocks non-browser clients). Treat Reddit as not verified.
 
@@ -39,7 +41,7 @@ Video qualities are Best, 1080, 720 and 480. The default is the highest H.264 ti
 **Reddit** may fail. Reddit blocks clients that don't look like a browser, and getting past that needs request impersonation through `curl_cffi`. That package is deliberately not shipped (see Safety notes).
 
 **Not supported:**
-- File-hosting sites that hide the file behind JavaScript, such as Streamtape and LuluVid. These return "unsupported". Support is planned for a later build.
+- File-hosting sites that hide the file behind JavaScript, such as Streamtape and LuluVid. yt-dlp has no extractor for them, so they are not supported in Build 1; a headless-browser fallback is planned for Build 2. From the test host these sites were unreachable, so the exact error you see is not verified (likely "unsupported" or "unreachable").
 - DRM-protected video.
 - Anything that needs a login.
 - Playlists (one video at a time).
