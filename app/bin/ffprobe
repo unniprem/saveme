@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+from pathlib import Path
+
+import _ffwrap
+
+_ffwrap.main("ffprobe", Path(__file__).resolve().parent)
