@@ -34,3 +34,14 @@ def test_all_non_ascii_falls_back():
     assert 'filename="download.mp4"' in content_disposition("日本語.mp4")
 
 def test_media_types(): assert media_type_for("mp3") == "audio/mpeg" and media_type_for("mkv") == "video/x-matroska"
+
+
+@pytest.mark.parametrize("title, expected", [
+    ("a\ud800b", "a b.mp4"), ("\udfff", "download.mp4"), ("x\udc80\ud83d", "x.mp4"),
+], ids=["lone_high", "lone_low_only", "trailing_surrogates"])
+def test_lone_surrogates_replaced(title, expected):
+    name = sanitize_filename(title, "mp4")
+    assert name == expected
+    name.encode("utf-8")
+    header = content_disposition(name)
+    header.encode("latin-1")  # a header value must be encodable

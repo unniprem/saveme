@@ -9,7 +9,8 @@ _MEDIA_TYPES = {
     "mkv": "video/x-matroska",
     "webm": "video/webm",
 }
-_BAD_CHARS = re.compile(r'[\x00-\x1f\x7f-\x9f/\\:*?"<>|]')
+# Control characters, characters Windows forbids in names, and lone surrogates (not UTF-8).
+_BAD_CHARS = re.compile(r'[\x00-\x1f\x7f-\x9f\ud800-\udfff/\\:*?"<>|]')
 _WS = re.compile(r"\s+")
 _RESERVED = re.compile(r"(?i)^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$")
 _MAX_STEM_BYTES = 150
