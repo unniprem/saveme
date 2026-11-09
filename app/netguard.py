@@ -1,5 +1,7 @@
-"""SSRF defence, layer 1: IP policy and URL pre-validation."""
+"""SSRF defence: the IP policy, URL pre-validation (layer 1) and the
+connect-time socket guard (layer 2, installed only in worker processes)."""
 import asyncio
+import functools
 import ipaddress
 import re
 import socket
@@ -7,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from ipaddress import IPv4Address, IPv6Address
 from urllib.parse import urlsplit
 
-from app.errors import AppError
+from app.errors import BLOCKED_MARKER, AppError
 
 IPAddress = IPv4Address | IPv6Address
 IpPolicy = Callable[[IPAddress], bool]
@@ -123,3 +125,119 @@ async def validate_source_url(raw: str, *, policy: IpPolicy = is_public_ip,
     if not all(policy(ip) for ip in ips):
         raise AppError("blocked_address")
     return url
+
+
+# --- Layer 2: connect-time guard ------------------------------------------
+
+_INET = (socket.AF_INET, socket.AF_INET6)
+_installed = False
+
+
+class BlockedAddressError(ConnectionError):
+    """A connection the IP policy refuses. str() starts with BLOCKED_MARKER."""
+
+
+def _blocked(what: object) -> BlockedAddressError:
+    return BlockedAddressError(f"{BLOCKED_MARKER} {what} is not a public address")
+
+
+def _parse_ip(host: object) -> IPAddress | None:
+    """The IP a host string stands for literally (zone id ignored), else None."""
+    if isinstance(host, (bytes, bytearray)):
+        try:
+            host = host.decode("ascii")
+        except UnicodeDecodeError:
+            return None
+    if not isinstance(host, str):
+        return None
+    try:
+        return ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        return None
+
+
+def install_connect_guard(policy: IpPolicy = is_public_ip, *,
+                          resolve: Callable | None = None) -> None:
+    """Make every connection this process opens pass `policy` on the IP actually
+    connected. Process-wide and permanent; a second call does nothing.
+
+    Patches the Python-level socket.socket.connect/connect_ex (which every
+    instance, SSLSocket included, goes through), socket.getaddrinfo and
+    socket.create_connection. Hostnames are resolved through `resolve` (default:
+    the unpatched getaddrinfo), every answer is checked, and the socket connects
+    to the checked IP itself, so nothing re-resolves after the check.
+    """
+    global _installed
+    if _installed:
+        return
+
+    orig_getaddrinfo = socket.getaddrinfo
+    orig_create_connection = socket.create_connection
+    orig_connect = socket.socket.connect
+    orig_connect_ex = socket.socket.connect_ex
+    lookup = resolve or orig_getaddrinfo
+
+    def require_public(ip: IPAddress | None, raw: object) -> IPAddress:
+        if ip is None or not policy(ip):
+            raise _blocked(raw if ip is None else ip)
+        return ip
+
+    def checked_answers(host: object, port: object) -> list[tuple[int, IPAddress]]:
+        literal = _parse_ip(host)
+        if literal is not None:
+            family = socket.AF_INET if literal.version == 4 else socket.AF_INET6
+            return [(family, require_public(literal, host))]
+        answers = []
+        for family, _type, _proto, _canon, sockaddr in lookup(host, port, 0, socket.SOCK_STREAM):
+            ip = _parse_ip(sockaddr[0]) if family in _INET else None
+            answers.append((family, require_public(ip, sockaddr[0])))
+        if not answers:
+            raise socket.gaierror(socket.EAI_NONAME, f"no addresses for {host!r}")
+        return answers
+
+    def checked_target(sock: socket.socket, address: object) -> tuple:
+        family = sock.family
+        if family not in _INET:
+            raise _blocked(f"{getattr(family, 'name', family)} address {address!r}")
+        if not isinstance(address, tuple) or len(address) < 2:
+            raise _blocked(repr(address))
+        host, port, *rest = address  # rest: IPv6 flowinfo and scope_id, kept as given
+        ip = _parse_ip(host)
+        if ip is not None:
+            require_public(ip, host)
+        else:
+            ip = next((a for fam, a in checked_answers(host, port) if fam == family), None)
+            if ip is None:
+                raise socket.gaierror(socket.EAI_NONAME,
+                                      f"no {family.name} address for {host!r}")
+        return (str(ip), port, *rest)
+
+    @functools.wraps(orig_connect)
+    def connect(self, address):
+        return orig_connect(self, checked_target(self, address))
+
+    @functools.wraps(orig_connect_ex)
+    def connect_ex(self, address):
+        return orig_connect_ex(self, checked_target(self, address))
+
+    @functools.wraps(orig_getaddrinfo)
+    def getaddrinfo(*args, **kwargs):
+        answers = orig_getaddrinfo(*args, **kwargs)
+        for family, _type, _proto, _canon, sockaddr in answers:
+            if family in _INET:
+                require_public(_parse_ip(sockaddr[0]), sockaddr[0])
+        return answers
+
+    @functools.wraps(orig_create_connection)
+    def create_connection(address, *args, **kwargs):
+        # Fail early, before any socket exists, using the guard's own resolver.
+        # The original then still goes through the guarded getaddrinfo and connect.
+        host, port = address
+        checked_answers(host, port)
+        return orig_create_connection(address, *args, **kwargs)
+
+    socket.socket.connect = connect
+    socket.socket.connect_ex = connect_ex
+    socket.getaddrinfo = getaddrinfo
+    socket.create_connection = create_connection
+    _installed = True
