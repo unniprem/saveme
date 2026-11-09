@@ -87,6 +87,14 @@ def test_direct_link_unknown_codecs():
     assert p["notices"] == ["Details for this link are unknown until download."]
 
 
+def test_youtube_hls_audio_with_unknown_acodec_has_no_unknown_notice():
+    # YouTube's HLS audio formats: vcodec "none" (known: no video), acodec None.
+    hls_audio = f("233", None, None, "none", None, "mp4", proto="m3u8_native", tbr=48)
+    p = inspect_payload(info(YT + [hls_audio]))
+    assert "Details for this link are unknown until download." not in p["notices"]
+    assert [q["id"] for q in p["video"]["qualities"]] == ["best", "1080", "720", "480"]
+
+
 def test_generic_source_label():
     i = {**info(LOW), "extractor_key": "Generic", "webpage_url": "https://a.example/p"}
     assert inspect_payload(i)["source"] == "Web page · a.example"

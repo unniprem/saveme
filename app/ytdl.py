@@ -125,7 +125,7 @@ def inspect_payload(info: dict) -> dict:
     qualities += [{"id": str(n), "label": f"{n}p"} for n in tiers]
     if not tiers and max_side:
         notices.append(f"Only {max_side}p is available.")
-    if any(x.get("vcodec") is None or x.get("acodec") is None for x in formats):
+    if any(x.get("vcodec") is None for x in formats):  # unknown video codec (spec §5.2)
         notices.append("Details for this link are unknown until download.")
     return {
         "title": info.get("title"),
