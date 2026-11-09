@@ -39,6 +39,23 @@ def dir_size(path: Path) -> int:
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 
 
+def _replace_lone_surrogates(value):
+    """`value` with every lone surrogate in its strings (and dict keys) replaced by U+FFFD.
+
+    Source metadata can carry them (an HTML entity such as `&#xD800;`, or text cut
+    mid-pair); json.loads hands them back from `\\udXXX` escapes, and they can't be
+    encoded as UTF-8, so the API's JSON response would fail. Everything the worker
+    sends passes through here: inspect payloads, job results, progress and errors."""
+    if isinstance(value, str):
+        return value.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+    if isinstance(value, list):
+        return [_replace_lone_surrogates(v) for v in value]
+    if isinstance(value, dict):
+        return {_replace_lone_surrogates(k): _replace_lone_surrogates(v)
+                for k, v in value.items()}
+    return value
+
+
 def _clean_env() -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}
     existing = env.get("PYTHONPATH")
@@ -141,6 +158,7 @@ async def run_worker(
             if not isinstance(event, dict):
                 garbage = True
                 continue
+            event = _replace_lone_surrogates(event)
             kind = event.get("event")
             if kind in ("progress", "phase"):
                 if on_event is not None:

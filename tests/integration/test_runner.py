@@ -203,6 +203,33 @@ async def test_logged_stderr_tail_is_bounded(caplog):
     assert len(logged[0]) < 5 * 1024
 
 
+async def test_lone_surrogates_in_events_are_replaced():
+    # json.dumps escapes a lone surrogate as \udXXX; json.loads gives it back as a str
+    # that can't be encoded as UTF-8, so it would break the API's JSON response.
+    script = (
+        "import sys, json\n"
+        "sys.stdin.read()\n"
+        "print(json.dumps({'event':'progress','detail':'d\\udc80'}), flush=True)\n"
+        "print(json.dumps({'event':'result','data':{'title':'a\\ud800b',"
+        "'notices':['\\udfff'],'k\\ud800':{'n':1}}}))\n"
+    )
+    events = []
+    data = await run_worker({}, cmd=fake(script), timeout=10, on_event=events.append)
+    assert data == {"title": "a\ufffdb", "notices": ["\ufffd"], "k\ufffd": {"n": 1}}
+    assert events[0]["detail"] == "d\ufffd"
+
+
+async def test_lone_surrogate_in_error_message_is_replaced():
+    script = (
+        "import sys, json\n"
+        "print(json.dumps({'event':'error','code':'too_large','message':'big\\ud800'}))\n"
+        "sys.exit(1)\n"
+    )
+    with pytest.raises(AppError) as ei:
+        await run_worker({}, cmd=fake(script), timeout=10)
+    assert ei.value.code == "too_large" and ei.value.message == "big\ufffd"
+
+
 async def test_overlong_line_is_internal():
     script = "print('x' * (2*1024*1024))"
     with pytest.raises(AppError) as ei:

@@ -7,6 +7,7 @@ Routes:
   /hls/<name>          files under the media dir's hls/
   /redirect?to=<url>   302 to <url>
   /page?title=&video=&thumb=   HTML with <title>, og:title, og:video, og:image
+                       (title_html= instead of title= is inserted unescaped, entities and all)
   /plain               HTML with no media
   /evil.mp4            an HLS playlist pointing at /canary.ts, served as video/mp4
   /canary.ts           counts as a hit if anything fetches it
@@ -80,8 +81,13 @@ class _Handler(BaseHTTPRequestHandler):
         def meta(prop: str, value: str) -> str:
             return f'<meta property="og:{prop}" content="{html.escape(value)}">\n'
 
-        title = query.get("title", ["Test page"])[0]
-        head = f"<title>{html.escape(title)}</title>\n" + meta("title", title)
+        if "title_html" in query:
+            title_html = query["title_html"][0]
+            head = (f"<title>{title_html}</title>\n"
+                    f'<meta property="og:title" content="{title_html}">\n')
+        else:
+            title = query.get("title", ["Test page"])[0]
+            head = f"<title>{html.escape(title)}</title>\n" + meta("title", title)
         if "video" in query:
             video = query["video"][0]
             head += meta("video", self.server.media.url(video) if video.startswith("/") else video)

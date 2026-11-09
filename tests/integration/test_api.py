@@ -276,6 +276,31 @@ async def test_inspect_success(settings, media_server):
     assert all(set(q) == {"id", "label"} and isinstance(q["label"], str) for q in qualities)
 
 
+# "A&#xD800;B": yt-dlp unescapes the entity to a lone surrogate, which JSON can't encode as UTF-8.
+SURROGATE_PAGE = "/page?title_html=A%26%23xD800%3BB&video=/media/sample.mp4"
+
+
+async def test_inspect_title_with_lone_surrogate(settings, media_server):
+    async with running(make_app(settings)) as client:
+        r = await client.post("/api/inspect", json={"url": media_server.url(SURROGATE_PAGE)})
+    assert r.status_code == 200, r.text
+    assert r.json()["title"] == "A\ufffdB"
+
+
+async def test_job_title_with_lone_surrogate(settings, media_server):
+    async with running(make_app(settings)) as client:
+        r = await client.post("/api/jobs", json={"url": media_server.url(SURROGATE_PAGE),
+                                                 "output": "video", "quality": "best"})
+        assert r.status_code == 202, r.text
+        view = await poll_terminal(client, r.json()["job_id"], timeout=30)
+        assert view["status"] == "ready", view
+        assert view["filename"] == "A\ufffdB.mp4"
+        r = await client.get(f"/api/jobs/{view['job_id']}/file")
+        assert r.status_code == 200
+        assert r.headers["content-disposition"] == (
+            'attachment; filename="AB.mp4"; filename*=UTF-8\'\'A%EF%BF%BDB.mp4')
+
+
 async def test_inspect_busy_429(settings):
     stub = StubWorker(block=True)
     app = make_app(dataclasses.replace(settings, max_active_inspections=1), run_worker=stub)
