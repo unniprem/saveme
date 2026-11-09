@@ -50,6 +50,8 @@ USER app
 # No PYTHONPATH needed: `python -m app` runs from WORKDIR /app, and the runner sets
 # PYTHONPATH for the workers it starts (`python -P -m app.worker`).
 ENV PYTHONUNBUFFERED=1
+# Deno must not phone home to check for a newer version.
+ENV DENO_NO_UPDATE_CHECK=1
 EXPOSE 8000
 # GET /health skips the ALLOWED_HOSTS check; the empty ProxyHandler ignores *_proxy vars.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --start-interval=2s --retries=3 \

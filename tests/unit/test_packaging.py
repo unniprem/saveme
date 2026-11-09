@@ -125,3 +125,9 @@ def test_readme_hedges_the_reddit_cause():
         assert re.search(r"\b(likely|appears?)\b", line), line
     assert "Reddit blocks" not in text
     assert "This is why some Reddit links fail" not in text
+
+
+def test_runtime_stage_disables_deno_update_check():
+    # Deno must not phone home: everything after the last FROM is the runtime stage.
+    runtime = _read("Dockerfile").rsplit("\nFROM ", 1)[1]
+    assert re.search(r"^ENV DENO_NO_UPDATE_CHECK=1$", runtime, re.M)
