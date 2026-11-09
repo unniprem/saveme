@@ -221,6 +221,40 @@ def test_public_thumbnail_kept(media_server):
     assert result_of(*inspect(url))["thumbnail_url"] == "http://8.8.8.8/x.jpg"
 
 
+THUMBNAILS_ONLY = r"""
+import copy, json, sys
+from app.netguard import install_connect_guard
+install_connect_guard()  # the production policy, before yt-dlp loads
+from app import worker
+import yt_dlp
+
+INFO = {"id": "r1", "extractor_key": "Reddit", "title": "T", "webpage_url": "https://r.example/p",
+        "formats": [{"format_id": "hls-360", "url": "https://cdn.example/360.m3u8",
+                     "protocol": "m3u8_native", "width": 640, "height": 360,
+                     "vcodec": "avc1", "acodec": "mp4a"}],
+        "thumbnails": [{"url": "https://8.8.4.4/small.jpg"}, {"url": sys.argv[1]}]}
+
+def extract_info(self, url, download=True, ie_key=None, extra_info=None, process=True):
+    return copy.deepcopy(INFO)
+
+yt_dlp.YoutubeDL.extract_info = extract_info
+print(json.dumps(worker.run_inspect("https://r.example/p")["thumbnail_url"]))
+"""
+
+
+@pytest.mark.parametrize("thumb, expected", [
+    ("https://8.8.8.8/large.jpg", "https://8.8.8.8/large.jpg"),
+    ("//8.8.8.8/large.jpg", "https://8.8.8.8/large.jpg"),
+    ("https://10.0.0.1/large.jpg", None),
+], ids=["public", "protocol_relative", "private"])
+def test_thumbnails_list_only(thumb, expected):
+    # Reddit / X give only `thumbnails`; process=False skips yt-dlp's own fallback.
+    r = subprocess.run([sys.executable, "-c", THUMBNAILS_ONLY, thumb], capture_output=True,
+                       text=True, cwd=ROOT, env=worker_env(), timeout=30)
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout) == expected
+
+
 def test_stdout_is_protocol_only(media_server):
     # Fresh success and failure runs, plus every run made by the tests above.
     inspect(media_server.url("/media/sample.mp4"))

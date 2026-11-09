@@ -95,6 +95,21 @@ def test_youtube_hls_audio_with_unknown_acodec_has_no_unknown_notice():
     assert [q["id"] for q in p["video"]["qualities"]] == ["best", "1080", "720", "480"]
 
 
+@pytest.mark.parametrize("extra, expected", [
+    ({"thumbnail": "https://i.example/main.jpg",
+      "thumbnails": [{"url": "https://i.example/other.jpg"}]}, "https://i.example/main.jpg"),
+    ({"thumbnails": [{"url": "https://i.example/small.jpg"}, {"id": "no-url"},
+                     {"url": "https://i.example/large.jpg"}]}, "https://i.example/large.jpg"),
+    ({"thumbnails": [{"url": "//i.example/rel.jpg"}]}, "https://i.example/rel.jpg"),
+    ({"thumbnail": "//i.example/rel.jpg"}, "https://i.example/rel.jpg"),
+    ({"thumbnails": []}, None),
+    ({}, None),
+], ids=["thumbnail_wins", "last_thumbnails_entry", "relative_entry", "relative_thumbnail",
+        "empty_list", "none"])
+def test_thumbnail_falls_back_to_thumbnails_list(extra, expected):
+    assert inspect_payload({**info(LOW), **extra})["thumbnail_url"] == expected
+
+
 def test_generic_source_label():
     i = {**info(LOW), "extractor_key": "Generic", "webpage_url": "https://a.example/p"}
     assert inspect_payload(i)["source"] == "Web page · a.example"

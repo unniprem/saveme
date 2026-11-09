@@ -2,7 +2,7 @@
 from pathlib import Path
 from urllib.parse import urlparse
 
-from yt_dlp.utils import determine_protocol
+from yt_dlp.utils import determine_protocol, sanitize_url
 
 from app.errors import AppError
 from app.schemas import Quality
@@ -114,6 +114,17 @@ def _source(info: dict) -> str:
     return f"{name} · {domain}" if domain else name
 
 
+def _thumbnail(info: dict) -> str | None:
+    """`thumbnail`, else the last `thumbnails` entry (yt-dlp's own fallback, which
+    process=False skips); a protocol-relative URL gets https."""
+    url = info.get("thumbnail")
+    if not url:
+        entries = [t.get("url") for t in info.get("thumbnails") or [] if isinstance(t, dict)]
+        urls = [u for u in entries if isinstance(u, str) and u]
+        url = urls[-1] if urls else None
+    return sanitize_url(url, scheme="https") if isinstance(url, str) else None
+
+
 def inspect_payload(info: dict) -> dict:
     formats = info.get("formats") or [info]
     notices: list[str] = []
@@ -130,7 +141,7 @@ def inspect_payload(info: dict) -> dict:
     return {
         "title": info.get("title"),
         "duration_seconds": info.get("duration"),
-        "thumbnail_url": info.get("thumbnail"),
+        "thumbnail_url": _thumbnail(info),
         "source": _source(info),
         "webpage_url": info.get("webpage_url"),
         "video": {
