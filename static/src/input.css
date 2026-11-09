@@ -1,0 +1,4 @@
+/* source(none): scan only the files listed below, so local and Docker builds match. */
+@import "tailwindcss" source(none);
+@source "../index.html";
+@source "../app.js";

@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <title>saveme</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/dist/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body class="min-h-dvh bg-mist-50 font-sans text-mist-900 antialiased dark:bg-mist-950 dark:text-mist-100">
+  <div class="mx-auto flex min-h-dvh w-full max-w-xl flex-col px-4 pt-10 pb-6 sm:pt-16">
+
+    <header class="mb-8">
+      <h1 class="flex items-center gap-2 font-[ui-rounded,system-ui,sans-serif] text-4xl font-extrabold tracking-tight text-teal-800 dark:text-teal-300">
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" class="size-8 shrink-0">
+          <path d="M12 3.5v10"/>
+          <path d="m7.5 9.5 4.5 4.5 4.5-4.5"/>
+          <path d="M4 14.5v3a2.5 2.5 0 0 0 2.5 2.5h11a2.5 2.5 0 0 0 2.5-2.5v-3"/>
+        </svg>
+        saveme
+      </h1>
+      <p class="mt-3 text-base/relaxed text-mist-600 dark:text-mist-400">Paste a link to a video, then save it as a video file or as MP3 audio.</p>
+    </header>
+
+    <noscript>
+      <p class="mb-6 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:bg-amber-950/50 dark:text-amber-200">saveme needs JavaScript turned on to inspect and download links.</p>
+    </noscript>
+
+    <div id="banner" role="alert" hidden class="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-200">
+      <p class="font-semibold">saveme can't download anything until its settings are fixed.</p>
+      <p id="banner-text" class="mt-1 break-words"></p>
+    </div>
+
+    <main class="flex-1">
+      <form id="inspect-form" novalidate>
+        <label for="url" class="block text-sm font-semibold">Video link</label>
+        <div class="mt-2 flex flex-col gap-2 sm:flex-row">
+          <input id="url" name="url" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go"
+                 placeholder="https://…" aria-describedby="status"
+                 class="h-14 w-full min-w-0 rounded-2xl sm:flex-1 border-2 border-mist-300 bg-white px-4 text-lg text-mist-900 placeholder:text-mist-400 focus-visible:border-teal-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700 read-only:bg-mist-100 read-only:text-mist-600 dark:border-mist-700 dark:bg-mist-900 dark:text-mist-50 dark:placeholder:text-mist-500 dark:focus-visible:border-teal-400 dark:focus-visible:outline-teal-400 dark:read-only:bg-mist-800 dark:read-only:text-mist-400">
+          <button id="inspect" type="submit"
+                  class="h-14 shrink-0 rounded-2xl bg-teal-700 px-7 text-lg font-semibold text-white enabled:hover:bg-teal-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700 disabled:cursor-not-allowed disabled:bg-mist-300 disabled:text-mist-600 dark:bg-teal-400 dark:text-teal-950 dark:enabled:hover:bg-teal-300 dark:focus-visible:outline-teal-400 dark:disabled:bg-mist-800 dark:disabled:text-mist-400">Inspect</button>
+        </div>
+        <p id="status" aria-live="polite"
+           class="mt-2 flex min-h-6 items-center gap-2 text-sm text-mist-600 data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:text-mist-400 dark:data-[tone=error]:text-red-400">
+          <svg id="spinner" hidden aria-hidden="true" viewBox="0 0 24 24" fill="none" class="size-4 shrink-0 animate-spin motion-reduce:animate-none">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3" stroke-opacity="0.25"/>
+            <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+          </svg>
+          <span id="status-text"></span>
+        </p>
+      </form>
+
+      <section id="result" hidden aria-labelledby="result-title"
+               class="mt-6 overflow-hidden rounded-2xl border border-mist-200 bg-white dark:border-mist-800 dark:bg-mist-900">
+        <img id="thumb" hidden alt="" referrerpolicy="no-referrer" decoding="async"
+             class="aspect-video w-full bg-mist-100 object-cover dark:bg-mist-800">
+        <div class="space-y-5 p-4 sm:p-5">
+          <div>
+            <h2 id="result-title" class="text-lg/snug font-semibold break-words"></h2>
+            <p class="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-mist-600 dark:text-mist-400">
+              <span id="duration" hidden class="tabular-nums"><span class="sr-only">Duration </span><span id="duration-text"></span></span>
+              <a id="source" target="_blank" rel="noopener noreferrer"
+                 class="break-all underline decoration-mist-300 underline-offset-2 hover:text-mist-900 focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700 dark:decoration-mist-600 dark:hover:text-mist-100 dark:focus-visible:outline-teal-400"></a>
+            </p>
+          </div>
+
+          <ul id="notices" hidden class="space-y-1 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:bg-amber-950/40 dark:text-amber-200"></ul>
+
+          <div id="quality-row">
+            <label for="quality" class="block text-sm font-semibold">Video quality</label>
+            <select id="quality"
+                    class="mt-2 h-11 w-full rounded-xl border-2 border-mist-300 bg-white px-3 text-base text-mist-900 focus-visible:border-teal-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto sm:min-w-56 dark:border-mist-700 dark:bg-mist-900 dark:text-mist-50 dark:focus-visible:border-teal-400 dark:focus-visible:outline-teal-400"></select>
+          </div>
+
+          <div class="space-y-2">
+            <div class="flex flex-col gap-2 sm:flex-row">
+              <button id="dl-video" type="button" aria-describedby="video-reason"
+                      class="h-12 rounded-xl bg-teal-700 px-5 font-semibold text-white enabled:hover:bg-teal-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700 disabled:cursor-not-allowed disabled:bg-mist-200 disabled:text-mist-500 dark:bg-teal-400 dark:text-teal-950 dark:enabled:hover:bg-teal-300 dark:focus-visible:outline-teal-400 dark:disabled:bg-mist-800 dark:disabled:text-mist-500">Download Video</button>
+              <button id="dl-audio" type="button" aria-describedby="audio-reason"
+                      class="h-12 rounded-xl border-2 border-teal-700/40 px-5 font-semibold text-teal-800 enabled:hover:border-teal-700 enabled:hover:bg-teal-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700 disabled:cursor-not-allowed disabled:border-mist-200 disabled:bg-transparent disabled:text-mist-500 dark:border-teal-400/40 dark:text-teal-300 dark:enabled:hover:border-teal-400 dark:enabled:hover:bg-teal-950/40 dark:focus-visible:outline-teal-400 dark:disabled:border-mist-800 dark:disabled:text-mist-500">Download Audio (MP3)</button>
+            </div>
+            <p id="video-reason" hidden class="text-sm text-mist-600 dark:text-mist-400"></p>
+            <p id="audio-reason" hidden class="text-sm text-mist-600 dark:text-mist-400"></p>
+            <p id="action-msg" hidden class="text-sm break-words data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:data-[tone=error]:text-red-400"></p>
+          </div>
+        </div>
+      </section>
+
+      <section id="job" hidden tabindex="-1" aria-labelledby="job-status"
+               class="mt-6 rounded-2xl bg-teal-50 p-4 ring-1 ring-teal-800/15 outline-none sm:p-5 dark:bg-teal-950/40 dark:ring-teal-300/15">
+        <p class="flex min-w-0 items-center gap-2 text-sm text-mist-600 dark:text-mist-400">
+          <span id="job-kind" class="shrink-0 rounded-md bg-teal-700/10 px-1.5 py-0.5 text-xs font-semibold text-teal-900 empty:hidden dark:bg-teal-300/15 dark:text-teal-200"></span>
+          <span id="job-name" class="truncate"></span>
+        </p>
+        <div class="mt-2 flex items-baseline justify-between gap-3">
+          <h2 id="job-status" class="text-lg font-semibold"></h2>
+          <span id="job-percent" class="text-lg font-semibold tabular-nums text-teal-800 dark:text-teal-300"></span>
+        </div>
+        <div id="bar" role="progressbar" aria-labelledby="job-status" aria-valuemin="0" aria-valuemax="100"
+             class="mt-3 h-2.5 overflow-hidden rounded-full bg-teal-800/10 dark:bg-teal-200/10">
+          <div id="bar-fill"
+               class="h-full w-0 rounded-full bg-teal-600 transition-[width] duration-500 ease-out motion-reduce:transition-none data-[indeterminate]:bg-transparent data-[indeterminate]:bg-[repeating-linear-gradient(-45deg,var(--color-teal-600)_0_6px,transparent_6px_12px)] motion-safe:data-[indeterminate]:animate-pulse dark:bg-teal-400 dark:data-[indeterminate]:bg-[repeating-linear-gradient(-45deg,var(--color-teal-400)_0_6px,transparent_6px_12px)]"></div>
+        </div>
+        <p id="job-detail" hidden class="mt-3 text-sm break-words"></p>
+        <p id="job-meta" hidden class="mt-1 text-sm tabular-nums text-mist-600 dark:text-mist-400"></p>
+        <p id="job-notice" hidden class="mt-3 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:bg-amber-950/40 dark:text-amber-200"></p>
+        <p id="job-error" hidden class="mt-3 text-sm font-medium break-words text-red-700 dark:text-red-400"></p>
+        <div id="job-actions" hidden class="mt-4 flex flex-col gap-2 sm:flex-row">
+          <a id="save" hidden download
+             class="inline-flex h-12 items-center justify-center rounded-xl bg-teal-700 px-5 font-semibold text-white hover:bg-teal-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700 dark:bg-teal-400 dark:text-teal-950 dark:hover:bg-teal-300 dark:focus-visible:outline-teal-400">Save File</a>
+          <button id="again" hidden type="button"
+                  class="h-12 rounded-xl border-2 border-teal-700/40 px-5 font-semibold text-teal-800 hover:border-teal-700 hover:bg-white/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700 dark:border-teal-400/40 dark:text-teal-300 dark:hover:border-teal-400 dark:hover:bg-teal-950/60 dark:focus-visible:outline-teal-400">Try another link</button>
+        </div>
+      </section>
+
+      <p id="announcer" aria-live="polite" class="sr-only"></p>
+    </main>
+
+    <footer class="mt-12 border-t border-mist-200 pt-4 text-sm/relaxed text-mist-600 dark:border-mist-800 dark:text-mist-400">
+      Only download media you have the right to save. Works with many sites, not all — compatibility depends on the source.
+    </footer>
+  </div>
+</body>
+</html>
