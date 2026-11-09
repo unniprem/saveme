@@ -1,0 +1,24 @@
+services:
+  saveme:
+    build: .
+    image: saveme:local
+    # Loopback only: the app has no login, so it must never be reachable from the network.
+    ports: ["127.0.0.1:8000:8000"]
+    env_file:
+      - path: .env
+        required: false
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 20s
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.build_opener(u.ProxyHandler({})).open('http://127.0.0.1:8000/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      start_interval: 2s
+      retries: 3

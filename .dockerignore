@@ -1,0 +1,8 @@
+.git
+.venv
+.cache
+tests
+docs
+**/__pycache__
+static/dist
+.env
