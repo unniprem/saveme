@@ -2,6 +2,98 @@
 
 ---
 
+## 2026-11-10 00:06 IST — Session: Build 1 (MVP) Implementation
+
+### Summary
+
+The owner asked for the Build 1 plan to be executed end to end, with non-colliding tasks run in parallel, and everything pushed to main afterwards. All 15 plan tasks were implemented by subagents, using git worktrees for parallel work. Each task went through a spec-and-quality review; seven needed fix rounds. A final whole-branch review was followed by one fix wave. The result is a working local Docker app ("saveme"): a FastAPI API with host/origin checks and degraded mode, a guarded per-job worker subprocess (connect-time socket guard, native downloaders only, ffmpeg/ffprobe pinned to local files), an in-memory job manager (queue, disk budget, TTL, cleanup), a vanilla-JS + Tailwind page, and a hardened image. The offline suite has 345 tests passing. The Docker smoke test passed after a clean rebuild. The browser walkthrough checks M1–M6 all passed against the real container.
+
+**Sites verified against the container:**
+- YouTube: 480p MP4 (h264) and MP3.
+- youtu.be short link: inspect.
+- Direct MP4.
+- Unsupported-URL handling (example.com).
+- Private-IP blocking.
+
+**Tried and failed:**
+- Reddit: `login_required`. Reddit blocks non-browser clients, so this likely needs curl_cffi impersonation, which is banned by the spec.
+
+**Not verified:**
+- Facebook, Instagram, Twitter/X.
+- Streamtape, LuluVid: unreachable from the test host, and not supported in Build 1 anyway.
+
+### Changes Made
+
+| Commit    | Type  | Description |
+| --------- | ----- | ----------- |
+| `f5f652e` | chore | Scaffold project, settings and request schemas |
+| `ee5e85d` | feat  | Filename sanitization and content disposition |
+| `aa7eab3` | feat  | Error catalogue and yt-dlp error classification |
+| `dc956d3` | feat  | ffmpeg/ffprobe wrappers restricting inputs to local files |
+| `5c62093` | chore | pytest-asyncio default fixture loop scope |
+| `3acbf02` | feat  | IP policy and URL pre-validation |
+| `fbdfabf` | fix   | Harden URL pre-validation (IDNA, share-text punctuation, fec0::/10, SIIT) |
+| `efd393b` | feat  | yt-dlp option building, format safety and inspect mapping |
+| `5379162` | fix   | Infer missing format protocols before the native-only filter |
+| `676049f` | feat  | Worker runner with timeout, size and cancellation kill |
+| `e333894` | fix   | Map every runner failure to AppError |
+| `99c702a` | feat  | Single-page UI with polling, resume and accessible states |
+| `85f297f` | feat  | Connect-time socket guard |
+| `93e4924` | fix   | Worker importable from its job directory without trusting it (`-P`) |
+| `cb86a45` | feat  | Docker image, compose setup and smoke test |
+| `dba4b17` | feat  | Worker subprocess with guarded inspect mode |
+| `924f34f` | fix   | Classify yt-dlp errors without matching URL text |
+| `f889d88` | fix   | Ignore host and port text when classifying yt-dlp errors |
+| `0e10c7a` | feat  | Worker download mode with progress, limits and MP3/MP4 output |
+| `dc1d60b` | fix   | Detect missing tracks from yt-dlp's original message only |
+| `10b175b` | feat  | In-memory job manager with queue, disk budget, TTL and cleanup |
+| `fba8d99` | fix   | Only evict ready files when eviction makes room |
+| `0d120a8` | feat  | HTTP API with streamed delivery, host/origin checks and degraded mode |
+| `57a0203` | fix   | Pin Deno by digest, drop PYTHONPATH, fail smoke test fast |
+| `44a48f3` | docs  | README and real-site verification suite |
+| `533120c` | docs  | Correct unverified site claims in README |
+| `ff975bd` | fix   | Skip network tests per test so offline runs stay clean |
+| `2ae06c7` | fix   | Log worker failure code and stderr tail for every failure |
+| `b5b3e48` | fix   | Unknown-details notice only for an unknown video codec |
+| `330fce1` | fix   | Thumbnail fallback to the thumbnails list |
+| `081137a` | fix   | Exempt GET /health from the host check (custom ALLOWED_HOSTS stay healthy) |
+| `30e2566` | fix   | Drop lone surrogates from download filenames |
+| `b4891c8` | fix   | Whitespace-only ALLOWED_HOSTS means default |
+| `2ba3029` | docs  | State the Reddit/curl_cffi cause as likely, not fact |
+| `df1cdcd` | chore | Disable the Deno update check in the runtime image |
+| `d44d685` | fix   | Replace lone surrogates in inspect metadata |
+
+### Key Decisions
+
+- **Parallel waves in isolated worktrees.** Tasks with disjoint files ran at the same time, each in its own `.worktrees/tN` branch, and were cherry-picked onto the feature branch after review. Some tasks started before their predecessor's review ended (T8 on T4, T12 on T9 and T11, T15 early), because each consumed only stable interfaces. This cut the critical path from 15 stages to about 10.
+- **Disk budget accounting deviates from the literal spec formula, on purpose.**
+  - At submit time, other active jobs' reservations are not counted. Under the defaults the literal formula would return 503 for the third submission, making the 4-slot queue useless.
+  - At start time, each active job counts as max(actual usage, reservation) rather than usage plus reservation, which double-counted.
+  - Ready files are evicted only when eviction can actually make room. The spec's stated intent ("10 GB fits two concurrent max-size merges") won over its formula.
+- **Workers run as `python -P -m app.worker` with `PYTHONPATH=<project root>`.** The worker's cwd is the job directory, so it can't import `app` from there. `-P` keeps that untrusted directory off `sys.path`.
+- **The error classifier ignores URL, id, host and port text.** yt-dlp echoes URLs into its errors, so a port containing "429" was being classified as rate-limited. Keyword rules now run on cleaned text, and the blocked marker is checked first on the raw text.
+- **`GET /health` is exempt from the Host check.** Otherwise a custom `ALLOWED_HOSTS` without 127.0.0.1 would leave the container permanently unhealthy. The endpoint reveals only status or a config message.
+- **The Task 13 page and the Task 14 Docker files were pulled forward and split in two.** Page-contract tests read the files from disk, and the HTTP-level tests moved into the API task. Task 14 ran as 14a (image, early) and 14b (smoke run and walkthrough, after the API existed).
+
+### Issues Encountered
+
+- **Worker import bug.** The worker couldn't import `app` from its job directory, which would have failed every real job as `internal`. It was found during Task 8 integration and fixed in the runner (`-P` plus PYTHONPATH).
+- **Classifier misclassified from URL text.** It read substrings of the echoed URL and made one test flaky (~0.5–1%). Fixed in the classifier itself.
+- **FFmpeg already refuses the canary.** FFmpeg 8 (Homebrew) and FFmpeg 7.1 (Debian) default local inputs to `file,crypto,data`, so the plan's control canary fetched nothing. The control now passes an explicit permissive whitelist, and the test proves the wrappers override it.
+- **YouTube test video swapped.** The plan's video (`jNQXAC9IVRw`) only offers 240p, so the network suite now uses `C0DPdy98e4c`. The JS file hosts (Streamtape, LuluVid, Doodstream) returned 502 from the test host, so the unsupported probe uses example.com.
+- **Reddit fails with `login_required`.** It can't be fixed without curl_cffi, which the spec bans. This is a product decision for the owner.
+- **Subagent co-author trailers.** Some subagents used a different Co-Authored-By trailer; it was normalised to the project's trailer at cherry-pick, with message-only changes.
+- **Deferred minors.** Final review triage left these minor findings for later (not fixed):
+  - A large playlist URL inspect pages until the 30 s timeout (playlists are a non-goal).
+  - ALLOWED_HOSTS entries with a port or wildcard never match (fails closed).
+  - The smoke script takes its restart-count baseline on the first poll.
+  - A cancel during the runner's 1 s stderr drain skips task cleanup.
+  - No final size check after MP3 conversion (the parent's 2× workdir kill is the cap).
+  - Raw yt-dlp RequestErrors map to `internal` rather than a specific code.
+  - Assorted test-coverage gaps.
+
+---
+
 ## 2026-11-09 21:19 IST — Session: BRD Review, Design and Build Plan
 
 ### Summary
