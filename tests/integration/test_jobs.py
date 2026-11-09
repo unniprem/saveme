@@ -233,8 +233,11 @@ async def test_bad_worker_result_is_internal(make_manager, result):
 async def test_concurrency_and_queue_limit(make_manager):
     runner = StubRunner()
     manager = await make_manager(run_worker=runner)
-    jobs = [manager.submit(URL, "video", "best") for _ in range(6)]
+    jobs = [manager.submit(URL, "video", "best") for _ in range(2)]
     await wait_until(lambda: len(runner.calls) == 2)
+    # Submissions don't count active jobs' reservations (R4): with two active
+    # jobs under the defaults, more submissions still queue instead of 503ing.
+    jobs += [manager.submit(URL, "video", "best") for _ in range(4)]
     await asyncio.sleep(0.1)  # a broken limit would let more jobs start meanwhile
 
     seen_active: list[int] = []
@@ -336,55 +339,105 @@ async def test_delivery_states(make_manager, tmp_path):
 
 
 # --- Disk budget -------------------------------------------------------------
+# Defaults: 10240 MiB budget; each job reserves 2 x 2048 = 4096 MiB.
 
-async def test_disk_pressure_evicts_then_refuses(make_manager, settings, temp_dir):
-    # Defaults: 10240 MB budget, 2 x 2048 MB reservation per job. Each ready file
-    # "uses" 4000 MB, so the 3rd submission only fits after evicting one file.
+class FakeDisk:
+    """Per-path disk_usage stub. Each workdir in `sizes` reports its size while the
+    directory exists; TEMP_DIR reports those sizes plus `other` bytes."""
+
+    def __init__(self, temp_dir: Path):
+        self.temp_dir = temp_dir
+        self.sizes: dict[Path, int] = {}
+        self.other = 0
+
+    def __call__(self, path: Path) -> int:
+        if path == self.temp_dir:
+            return self.other + sum(self(p) for p in self.sizes)
+        return self.sizes.get(path, 0) if path.exists() else 0
+
+
+async def test_disk_pressure_evicts_just_enough(make_manager, temp_dir):
+    # Three 2500 MiB ready files + 4096 reserved = 11596 > 10240: evicting the
+    # oldest one (-> 9096) is enough, so the newer two are kept.
     clock = FakeClock()
     runner = StubRunner(auto_finish=True)
-    jobs: list = []
-    extra = {"bytes": 0}
-
-    def disk_usage(path: Path) -> int:
-        assert path == temp_dir
-        return extra["bytes"] + 4000 * MiB * sum(j.status == "ready" for j in jobs)
-
-    manager = await make_manager(run_worker=runner, disk_usage=disk_usage, clock=clock)
+    disk = FakeDisk(temp_dir)
+    manager = await make_manager(run_worker=runner, disk_usage=disk, clock=clock)
+    ready = []
     for _ in range(3):
-        jobs.append(await ready_job(manager, runner))
+        job = await ready_job(manager, runner)
+        disk.sizes[job.workdir] = 2500 * MiB
+        ready.append(job)
         clock.advance(1)
-    first, second, third = jobs
-    assert first.status == "expired" and first.reason == "evicted"
-    assert not first.workdir.exists()
-    assert second.status == "ready" and third.status == "ready"
 
-    extra["bytes"] = 10**15
+    newest = manager.submit(URL, "video", "best")
+    oldest, *kept = ready
+    assert oldest.status == "expired" and oldest.reason == "evicted"
+    assert not oldest.workdir.exists()
+    await wait_until(lambda: newest.status == "ready")
+    assert all(j.status == "ready" and j.file_path.is_file() for j in kept)
+
+
+async def test_disk_full_when_eviction_cannot_help(make_manager, temp_dir):
+    runner = StubRunner(auto_finish=True)
+    disk = FakeDisk(temp_dir)
+    manager = await make_manager(run_worker=runner, disk_usage=disk)
+    ready = [await ready_job(manager, runner) for _ in range(2)]
+    for job in ready:
+        disk.sizes[job.workdir] = 100 * MiB
+    disk.other = 20000 * MiB  # freeing both ready files (200 MiB) can't make room
+
     with pytest.raises(AppError) as ei:
         manager.submit(URL, "video", "best")
     assert (ei.value.code, ei.value.status) == ("disk_full", 503)
     assert ei.value.message == "Server storage is full, try again later."
-    for job in (second, third):
-        assert job.status == "expired" and job.reason == "evicted"
-        assert not job.workdir.exists()
-    assert job_dirs(temp_dir) == []
-    assert len(runner.calls) == 3
+    assert all(j.status == "ready" and j.file_path.is_file() for j in ready)
+    assert len(runner.calls) == 2
 
 
-async def test_queued_job_waits_for_disk(make_manager):
+@pytest.mark.parametrize("partial_mib, ready_mib, evicted", [
+    (3000, 1, False),  # the partial counts once (as its 4096 reservation): fits, keep the file
+    (0, 3000, True),   # 3000 + 4096 + 4096 > 10240: evicting the ready file makes room
+], ids=["partial-counted-once", "eviction-makes-room"])
+async def test_start_evicts_only_when_eviction_makes_room(make_manager, partial_mib, ready_mib,
+                                                          evicted):
+    # Real dir_size; the big files are sparse, so they cost no real disk.
     runner = StubRunner()
-    usage = {"bytes": 0}
-    manager = await make_manager(run_worker=runner, disk_usage=lambda p: usage["bytes"])
+    manager = await make_manager(run_worker=runner)
+    ready = await ready_job(manager, runner)
+    os.truncate(ready.file_path, ready_mib * MiB)
+    active = manager.submit(URL, "video", "best")
+    await wait_until(lambda: len(runner.calls) == 2)
+    os.truncate(active.workdir / "media.mp4.part", partial_mib * MiB)
+
+    second = manager.submit(URL, "video", "best")
+    await wait_until(lambda: len(runner.calls) == 3, timeout=5)
+    assert second.status == "downloading" and active.status == "downloading"
+    if evicted:
+        assert ready.status == "expired" and ready.reason == "evicted"
+        assert not ready.workdir.exists()
+    else:
+        assert ready.status == "ready" and ready.file_path.is_file()
+
+
+async def test_queued_job_waits_for_disk(make_manager, temp_dir):
+    runner = StubRunner()
+    disk = FakeDisk(temp_dir)
+    manager = await make_manager(run_worker=runner, disk_usage=disk)
+    kept = await ready_job(manager, runner)
+    disk.sizes[kept.workdir] = 100 * MiB
     job = manager.submit(URL, "video", "best")
-    usage["bytes"] = 10**15  # over budget by the time the job tries to start
+    disk.other = 20000 * MiB  # over budget by the time the job tries to start
 
     await asyncio.sleep(0.5)
-    assert job.status == "queued" and runner.calls == []
-    assert not job.workdir.exists()
+    assert job.status == "queued" and job.detail == "Waiting for storage space"
+    assert len(runner.calls) == 1 and not job.workdir.exists()
+    assert kept.status == "ready"  # evicting it couldn't have made room
 
-    usage["bytes"] = 0
-    await wait_until(lambda: runner.calls, timeout=5)
-    assert job.status == "downloading"
-    runner.calls[0].finish()
+    disk.other = 0
+    await wait_until(lambda: len(runner.calls) == 2, timeout=5)
+    assert job.status == "downloading" and kept.status == "ready"
+    runner.calls[1].finish()
     await wait_until(lambda: job.status == "ready")
 
 
@@ -408,14 +461,13 @@ async def test_start_counts_other_active_reservations(make_manager, settings):
     await wait_until(lambda: second.status == "ready")
 
 
-async def test_disk_wait_gives_up_at_job_deadline(make_manager, settings):
+async def test_disk_wait_gives_up_at_job_deadline(make_manager, settings, temp_dir):
     clock = FakeClock()
     runner = StubRunner()
-    usage = {"bytes": 0}
-    manager = await make_manager(run_worker=runner, clock=clock,
-                                 disk_usage=lambda p: usage["bytes"])
+    disk = FakeDisk(temp_dir)
+    manager = await make_manager(run_worker=runner, clock=clock, disk_usage=disk)
     job = manager.submit(URL, "video", "best")
-    usage["bytes"] = 10**15
+    disk.other = 20000 * MiB
     await asyncio.sleep(0.3)
     assert job.status == "queued"
 

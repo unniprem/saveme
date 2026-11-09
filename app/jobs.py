@@ -160,7 +160,7 @@ class JobManager:
         pending = sum(j.status in _PENDING for j in self._jobs.values())
         if pending >= self._settings.max_active_jobs + self._settings.max_queued_jobs:
             raise AppError("busy")
-        if not self._make_room(lambda: self._fits(other_active=0)):
+        if not self._make_room(count_active=False):
             raise AppError("disk_full")
         job_id = secrets.token_urlsafe(16)
         while job_id in self._jobs:
@@ -224,20 +224,35 @@ class JobManager:
 
     # --- Disk budget ----------------------------------------------------------
 
-    def _fits(self, *, other_active: int) -> bool:
-        usage = self._disk_usage(self._temp_dir)
-        needed = (other_active + 1) * self._reserve
-        return usage + needed <= self._settings.max_total_disk_bytes
+    def _make_room(self, *, count_active: bool) -> bool:
+        """True if one more job fits the disk budget. Unsaved ready files are
+        evicted (oldest first, only as many as needed) only when that is enough.
 
-    def _make_room(self, fits: Callable[[], bool]) -> bool:
-        """Evict unsaved ready files, oldest first, until fits() holds."""
-        while not fits():
-            ready = [j for j in self._jobs.values() if j.status == "ready"]
-            if not ready:
-                return False
-            oldest = min(ready, key=lambda j: j.ready_at)
-            logger.info("evicting ready job %s to free disk space", oldest.id)
-            self._expire(oldest, "evicted")
+        Projected use = TEMP_DIR usage outside active workdirs + this job's
+        reservation. At start (count_active) each active job adds max(its actual
+        usage, its reservation), so a partial download isn't counted twice. At
+        submit, active jobs are left out entirely: they're transient, and a
+        queued job is checked again when it starts.
+        """
+        usage = self._disk_usage
+        active = [usage(j.workdir) for j in self._jobs.values() if j.status in _ACTIVE]
+        projected = max(0, usage(self._temp_dir) - sum(active)) + self._reserve
+        if count_active:
+            projected += sum(max(used, self._reserve) for used in active)
+        budget = self._settings.max_total_disk_bytes
+        if projected <= budget:
+            return True
+        ready = sorted((j for j in self._jobs.values() if j.status == "ready"),
+                       key=lambda j: j.ready_at)
+        sizes = [usage(j.workdir) for j in ready]
+        if projected - sum(sizes) > budget:
+            return False
+        for job, size in zip(ready, sizes):
+            if projected <= budget:
+                break
+            logger.info("evicting ready job %s to free disk space", job.id)
+            self._expire(job, "evicted")
+            projected -= size
         return True
 
     async def _acquire_slot(self, job: Job) -> None:
@@ -245,8 +260,7 @@ class JobManager:
         deadline = job.created_at + self._settings.max_job_seconds
         while True:
             await self._slots.acquire()
-            others = sum(j.status in _ACTIVE for j in self._jobs.values() if j is not job)
-            if self._make_room(lambda: self._fits(other_active=others)):
+            if self._make_room(count_active=True):
                 return
             self._slots.release()
             if self._clock() >= deadline:
