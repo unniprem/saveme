@@ -29,12 +29,10 @@ def _reachable() -> bool:
         return False
 
 
-if not _reachable():
-    pytest.skip(f"saveme is not reachable at {BASE_URL}/health", allow_module_level=True)
-
-
 @pytest.fixture
 def client():
+    if not _reachable():
+        pytest.skip(f"saveme is not reachable at {BASE_URL}/health")
     # No Origin header; Host comes from the base URL (127.0.0.1).
     with httpx.Client(base_url=BASE_URL, timeout=60, trust_env=False) as c:
         yield c
