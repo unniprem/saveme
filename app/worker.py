@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
 from urllib.parse import urlsplit
 
-from app.errors import AppError, classify_ytdlp_error, too_large_message
+from app.errors import BLOCKED_MARKER, AppError, classify_ytdlp_error, too_large_message
 from app.filenames import media_type_for
 from app.netguard import BlockedAddressError, check_url_syntax, install_connect_guard
 
@@ -359,6 +359,19 @@ def _clear(workdir: Path, keep: str | None = None) -> None:
             print(f"worker: cleanup failed: {exc!r}", file=sys.stderr)
 
 
+def _is_missing_format(exc: BaseException) -> bool:
+    """yt-dlp's own "Requested format is not available" (format selection found
+    nothing), judged by the ExtractorError's original message, also when a
+    DownloadError wraps it; never by str(exc), which echoes URL and id text."""
+    from yt_dlp.utils import ExtractorError
+
+    wrapped = getattr(exc, "exc_info", None)
+    for err in (exc, wrapped[1] if isinstance(wrapped, tuple) and len(wrapped) > 1 else None):
+        if isinstance(err, ExtractorError) and err.orig_msg.startswith("Requested format is not available"):
+            return True
+    return False
+
+
 def _download_args(req: dict) -> tuple[str, str, Path, int]:
     from typing import get_args
 
@@ -397,7 +410,9 @@ def _download(url: str, output: str, quality: str, workdir: Path, max_bytes: int
     except _TooLarge:
         raise AppError("too_large", too_large_message(max_bytes)) from None
     except (DownloadError, ExtractorError) as exc:
-        if "requested format is not available" in str(exc).lower():
+        if BLOCKED_MARKER in str(exc).lower():
+            raise  # a guard block anywhere in the text wins (classified as blocked_address)
+        if _is_missing_format(exc):
             raise AppError(_MISSING_TRACK[output]) from exc
         if output == "audio" and _lacks_audio(workdir):
             raise AppError("no_audio") from exc

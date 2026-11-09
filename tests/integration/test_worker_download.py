@@ -131,6 +131,23 @@ def test_video_without_video_stream_fails(media_server, job, audio_in_mp4):
     assert listing(job) == []
 
 
+PHRASE = "Requested%20format%20is%20not%20available"
+
+
+@pytest.mark.parametrize("output", ["video", "audio"])
+def test_missing_track_phrase_in_url_is_not_a_missing_track(media_server, job, output):
+    # yt-dlp echoes the URL (and an id made from it) in its errors; that text must
+    # not turn a 404 into no_video / no_audio.
+    error = error_of(*download(media_server, f"/nope/{PHRASE}.mp4", job, output=output))
+    assert error["code"] == "unavailable"
+    assert listing(job) == []
+
+
+def test_blocked_marker_wins_over_missing_track_phrase(media_server, job):
+    path = f"/redirect?to=http://169.254.169.254/{PHRASE}.mp4"
+    assert error_of(*download(media_server, path, job))["code"] == "blocked_address"
+
+
 @pytest.mark.parametrize("path", ["/media/big.mp4", "/chunked/big.mp4"],
                          ids=["content_length", "chunked"])
 def test_size_limit_aborts(media_server, job, path):
@@ -215,6 +232,22 @@ def test_estimate_alone_gives_no_percent():
     hook({**base, "status": "finished", "downloaded_bytes": 20, "total_bytes": 20})
     assert [(e["detail"], e["total_bytes"], e["percent"]) for e in events] == [
         ("Downloading", None, None), ("Downloading", None, None)]
+
+
+def test_missing_format_judged_by_ytdlp_message_only():
+    from yt_dlp.utils import DownloadError, ExtractorError
+
+    from app.worker import _is_missing_format
+
+    real = ExtractorError("Requested format is not available. Use --list-formats for a list of "
+                          "available formats", expected=True, video_id="v1", ie="generic")
+    echoed = ExtractorError("Unable to download webpage: HTTP Error 404: Not Found",
+                            video_id="Requested format is not available", ie="generic")
+    assert _is_missing_format(real)
+    assert _is_missing_format(DownloadError(f"ERROR: {real}", (ExtractorError, real, None)))
+    assert not _is_missing_format(echoed)
+    assert not _is_missing_format(DownloadError(f"ERROR: {echoed}", (ExtractorError, echoed, None)))
+    assert not _is_missing_format(DownloadError("ERROR: Requested format is not available"))
 
 
 @pytest.mark.parametrize("name, outcome", [
