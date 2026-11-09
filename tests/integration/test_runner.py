@@ -7,7 +7,7 @@ import time
 import pytest
 
 from app.errors import AppError
-from app.runner import dir_size, run_worker
+from app.runner import DEFAULT_WORKER_CMD, dir_size, run_worker
 
 
 def fake(script: str) -> list[str]:
@@ -206,3 +206,28 @@ async def test_error_event_with_unhashable_code_is_internal():
     with pytest.raises(AppError) as ei:
         await run_worker({}, cmd=fake(script), timeout=10)
     assert ei.value.code == "internal"
+
+
+async def test_app_importable_from_foreign_cwd(tmp_path):
+    job = tmp_path / "job"
+    job.mkdir()
+    script = ("import json, app.errors; "
+              "print(json.dumps({'event':'result','data':{'ok':True}}))")
+    data = await run_worker({}, cmd=[sys.executable, "-P", "-c", script],
+                            timeout=10, workdir=job)
+    assert data == {"ok": True}
+
+
+async def test_workdir_is_not_on_sys_path(tmp_path):
+    job = tmp_path / "job"
+    job.mkdir()
+    (job / "json.py").write_text("raise RuntimeError('planted')\n")
+    script = ("import json; "
+              "print(json.dumps({'event':'result','data':{'ok':True}}))")
+    data = await run_worker({}, cmd=[sys.executable, "-P", "-c", script],
+                            timeout=10, workdir=job)
+    assert data == {"ok": True}
+
+
+def test_default_cmd_uses_isolated_path_flag():
+    assert "-P" in DEFAULT_WORKER_CMD

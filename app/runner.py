@@ -14,7 +14,7 @@ from app.errors import CATALOG, AppError, too_large_message
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_WORKER_CMD: tuple[str, ...] = (sys.executable, "-m", "app.worker")
+DEFAULT_WORKER_CMD: tuple[str, ...] = (sys.executable, "-P", "-m", "app.worker")
 
 RunWorker = Callable[..., Awaitable[dict]]
 
@@ -35,8 +35,15 @@ def dir_size(path: Path) -> int:
     return total
 
 
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+
+
 def _clean_env() -> dict[str, str]:
-    return {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}
+    env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        _PROJECT_ROOT + os.pathsep + existing if existing else _PROJECT_ROOT)
+    return env
 
 
 async def _kill_group(proc: asyncio.subprocess.Process) -> None:
