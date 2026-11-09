@@ -58,16 +58,21 @@ _RULES: list[tuple[str, tuple[str, ...]]] = [
 ]
 
 
-# Text that names the request rather than describing the failure: URLs, and
-# yt-dlp's "[extractor] <id>:" prefix (not "[generic] Unable ..." or "[Errno 8] ...").
+# Text that names the request rather than describing the failure: URLs,
+# yt-dlp's "[extractor] <id>:" prefix (not "[generic] Unable ..." or "[Errno 8] ..."),
+# and urllib3's endpoint details: host='...', port=N, and quoted space-free tokens
+# containing "." or "/" ('login.example.com'), so prose like "isn't ... it's" stays.
 _URL_TEXT = re.compile(r"[a-z][a-z0-9+.-]*://\S+", re.IGNORECASE)
 _ID_PREFIX = re.compile(r"\[[^\]]+\]\s*[^\s:]+:")
+_ENDPOINT_TEXT = re.compile(r"""\bhost=(['"])[^'"]*\1|\bport=\d+|(['"])[^'"\s]*[./][^'"\s]*\2""")
 
 
 def classify_ytdlp_error(text: str) -> AppError:
     if BLOCKED_MARKER in text.lower():
         return AppError("blocked_address")
-    low = _ID_PREFIX.sub(" ", _URL_TEXT.sub(" ", text)).lower()
+    for pattern in (_URL_TEXT, _ID_PREFIX, _ENDPOINT_TEXT):
+        text = pattern.sub(" ", text)
+    low = text.lower()
     for code, keys in _RULES:
         if any(k in low for k in keys):
             return AppError(code)

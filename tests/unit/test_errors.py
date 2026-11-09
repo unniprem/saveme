@@ -28,6 +28,13 @@ def test_classify(text, code):
     ("ERROR: [youtube] geo404abcde: Video unavailable", "unavailable"),
     (f"ERROR: [generic] x: Unable to download webpage: {BLOCKED_MARKER} ::1 is not a public address",
      "blocked_address"),
+    ("ERROR: [generic] x: Unable to download webpage: HTTPSConnection(host='login.example.com', port=443): "
+     "Failed to resolve 'login.example.com' ([Errno 8] nodename nor servname provided, or not known)",
+     "unreachable"),
+    ("ERROR: [generic] x: Unable to download webpage: HTTPConnection(host='127.0.0.1', port=54290): "
+     "Failed to establish a new connection: [Errno 61] Connection refused", "unreachable"),
+    # Apostrophes in prose are not quoted host/path tokens.
+    ("ERROR: [youtube] x: This video isn't available, it's private", "login_required"),
 ])
 def test_classify_ignores_urls_and_ids(text, code):
     assert classify_ytdlp_error(text).code == code
