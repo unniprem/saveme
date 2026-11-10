@@ -92,7 +92,7 @@ cd saveme
 ```
 
 > [!NOTE]
-> **On Windows**, clone with `git clone -c core.autocrlf=false https://github.com/unniprem/saveme.git` so the shell scripts keep Unix line endings. Windows hasn't been tested yet; reports are welcome.
+> Windows with Docker Desktop hasn't been tested yet. The repository keeps Unix line endings on every platform, so a normal clone should build; reports are welcome.
 
 **2. (Optional) Change the settings**
 
