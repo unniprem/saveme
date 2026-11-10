@@ -19,12 +19,14 @@ The owner plans to make the repository public and asked for a professional READM
 | --------- | ---- | ----------- |
 | `01c7406` | docs | Rewrite README for the public release |
 | `603fe8e` | chore | Check out text files with LF line endings on every platform (`.gitattributes`) |
+| `53e74bb` | docs | State that SaveMe has no login by design |
 
 The owner then asked for the `.gitattributes` and a repository description. The description is now set on GitHub: "A private, self-hosted media downloader. Paste a link and save it as MP4 or MP3. Runs locally in Docker, built on yt-dlp and FFmpeg." A clone with `core.autocrlf=true` had 89 CR bytes in `scripts/build-css.sh` at `3b02d7b`. At `603fe8e` that file and both `app/bin` wrappers had none.
 
 ### Key Decisions
 
-- **"Public" means the repository, not hosting.** The app still has no login (#2), so the README keeps a prominent warning never to expose it to a network.
+- **"Public" means the repository, not hosting.** The README keeps a prominent warning never to expose the app to a network.
+- **No login, by the owner's decision.** SaveMe is for one person running it locally, so authentication isn't planned. The README no longer links #2 as a future step, and Contributing lists logins, accounts and hosting for others as out of scope. Issue #2 is still open on GitHub.
 - **Uninstall uses `docker compose down --rmi all`.** The compose file sets `image: saveme:local`, a custom tag, so `--rmi local` would leave the image behind.
 - **Native run documented under Development only.** It skips the container hardening and uses the system FFmpeg, so Docker stays the recommended install.
 - **`* text=auto eol=lf` for the whole repo, not just `*.sh`.** The `app/bin` wrappers have no extension, and every tracked file was already LF in the index, so the blanket rule changed no file contents. The README's Windows note dropped its `core.autocrlf=false` clone flag; Windows is still marked untested.
