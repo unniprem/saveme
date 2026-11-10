@@ -247,7 +247,7 @@ docker compose up -d
 
 SaveMe fetches whatever URL it's given, so it's designed so that a link can't be turned against you.
 
-**Local only.** There is no login. Compose publishes the app on `127.0.0.1` only, and `python -m app` (outside Docker) also listens on loopback by default. Inside the container the app listens on `0.0.0.0`, which the port mapping needs; that address stays inside the container's network. **Never expose SaveMe publicly**: no port forwarding, no `0.0.0.0` binding on the host and no public reverse proxy. Authentication would have to come first ([#2](https://github.com/unniprem/saveme/issues/2)).
+**Local only.** SaveMe is a personal tool that runs on your own computer, so it has no login or accounts by design. Compose publishes the app on `127.0.0.1` only, and `python -m app` (outside Docker) also listens on loopback by default. Inside the container the app listens on `0.0.0.0`, which the port mapping needs; that address stays inside the container's network. **Never expose SaveMe publicly**: no port forwarding, no `0.0.0.0` binding on the host and no public reverse proxy.
 
 **Links can't reach your network (SSRF protection).**
 - The API checks each URL first (scheme, no embedded credentials, length) and resolves its host. Every address must be public.
@@ -334,6 +334,7 @@ Bug reports, site compatibility reports and pull requests are welcome.
 - **A site doesn't work?** Check that it also fails with the latest yt-dlp. Most extraction problems belong [upstream](https://github.com/yt-dlp/yt-dlp/issues); open an issue here if SaveMe handles the failure badly.
 - **Pull requests:** keep each one focused on a single change, add tests for new behaviour, and make sure `.venv/bin/pytest -q` passes. For changes to the Docker image, also run `scripts/docker-smoke.sh`.
 - **Larger changes:** open an issue first so we can agree on the approach.
+- **Out of scope:** logins, user accounts and hosting SaveMe for other people. It's a single-user, local tool by design.
 
 ## Acknowledgements
 
