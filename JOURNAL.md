@@ -18,18 +18,21 @@ The owner plans to make the repository public and asked for a professional READM
 | Commit    | Type | Description |
 | --------- | ---- | ----------- |
 | `01c7406` | docs | Rewrite README for the public release |
+| `603fe8e` | chore | Check out text files with LF line endings on every platform (`.gitattributes`) |
+
+The owner then asked for the `.gitattributes` and a repository description. The description is now set on GitHub: "A private, self-hosted media downloader. Paste a link and save it as MP4 or MP3. Runs locally in Docker, built on yt-dlp and FFmpeg." A clone with `core.autocrlf=true` had 89 CR bytes in `scripts/build-css.sh` at `3b02d7b`. At `603fe8e` that file and both `app/bin` wrappers had none.
 
 ### Key Decisions
 
 - **"Public" means the repository, not hosting.** The app still has no login (#2), so the README keeps a prominent warning never to expose it to a network.
 - **Uninstall uses `docker compose down --rmi all`.** The compose file sets `image: saveme:local`, a custom tag, so `--rmi local` would leave the image behind.
 - **Native run documented under Development only.** It skips the container hardening and uses the system FFmpeg, so Docker stays the recommended install.
-- **Windows marked as untested, with `core.autocrlf=false` on clone.** There is no `.gitattributes`, so a default Windows checkout would give `scripts/build-css.sh` and the `app/bin` wrappers CRLF line endings, which breaks their shebangs.
+- **`* text=auto eol=lf` for the whole repo, not just `*.sh`.** The `app/bin` wrappers have no extension, and every tracked file was already LF in the index, so the blanket rule changed no file contents. The README's Windows note dropped its `core.autocrlf=false` clone flag; Windows is still marked untested.
 
 ### Issues Encountered
 
 - Other uncommitted work on this branch (`app/`, `tests/`) was left untouched; only `README.md` was committed.
-- Follow-ups before going public: enable private vulnerability reporting (the README points to it), add a `.gitattributes` forcing LF line endings, set a repository description, and consider merging or closing the security fixes, since issues #1–#8 become public with the repo.
+- Follow-ups before going public: enable private vulnerability reporting (the README points to it), and consider merging or closing the security fixes, since issues #1–#8 become public with the repo.
 
 ---
 
