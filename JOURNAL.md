@@ -2,6 +2,45 @@
 
 ---
 
+## 2026-11-10 14:08 IST — Session: SaveMe Brand Redesign
+
+### Summary
+
+The owner shared a SaveMe logo sheet and asked for the page to be redesigned around it, keeping it simple and effective: the old page "doesn't look professional". From browser mockups they chose a purple header band (direction B) and a single row of format buttons. They also asked for a better word than "Inspect", for video and MP3 to be one step, and for the file to save without asking. Built on `feature/brand-redesign` (not merged):
+- **Logo:** redrawn as vector SVGs: a white lockup for the header and the square app icon as the tab icon.
+- **Page:** restyled with a dark mode. The button is now "Fetch", and one Format radio group with a single Download button replaces the quality menu and two buttons.
+- **Saving:** a ready file is saved automatically. "Didn't start? Save file" is the fallback link.
+
+**Verified:**
+- 354 offline tests pass.
+- Every state was checked in Chromium against a throwaway stub API that sends the real CSP: start, fetching, fetch error, inspected, no audio or thumbnail, downloading, converting, saving, saved, failed, and reload while ready. Checked on phone and desktop, in light and dark, with keyboard arrows on the format buttons. No console errors.
+
+### Changes Made
+
+| Commit    | Type | Description |
+| --------- | ---- | ----------- |
+| `b919980` | feat | Add SaveMe logo lockup and app icon SVGs |
+| `2344eb8` | feat | Redesign the page around the SaveMe brand (Fetch, one format choice, automatic save) |
+| `4a418fa` | test | Cover the brand assets and the single format choice |
+| `e47e588` | docs | Describe the Fetch, Format and automatic-save flow in the README |
+
+### Key Decisions
+
+- **Wordmark outlined into the SVG, not a web font.** The CSP allows only same-origin assets, and a font file would be one more download. The letters come from Nunito Black (weight 900), converted with fontTools outside the repo.
+- **Dark text on the coral Fetch button.** White on coral `#fe5d3b` is about 3:1 contrast, below AA for body-size text. Dark indigo on coral is about 5.7:1.
+- **Formats are radio inputs inside labels, cloned from a `<template>`.** This gives keyboard arrows and screen-reader grouping for free, and the markup stays in `index.html` (no `innerHTML`).
+- **Auto-save once per job, recorded in sessionStorage (`autoSaved`).** A reload after the first attempt shows "Ready to save" with the Save file link, instead of starting a second download unasked.
+- **"Didn't start? Save file" shows immediately.** Some browsers (Chrome from the second automatic download) ask before allowing it, so the fallback should not wait for the 60-second delivery timeout.
+- **Kept the pinned copy.** The saved headline is now "Saved", with "File removed from server." underneath; the full pinned sentence is still what screen readers hear.
+
+### Issues Encountered
+
+- An `<svg>` has no `hidden` property, so `node.hidden = …` on one does nothing. The old status spinner never showed for that reason. Toggled icons are now wrapped in `<span>`s.
+- A browser test download overwrote `.playwright-mcp/Sunset-over-the-harbour.mp4` (a leftover from an earlier session; ignored by git) with 17 fake bytes.
+- `.superpowers/` (brainstorm mockups) shows as untracked; it is not in `.gitignore` yet.
+
+---
+
 ## 2026-11-10 11:46 IST — Session: Security Review and Always-On Deployment
 
 ### Summary
