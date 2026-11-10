@@ -257,6 +257,8 @@ SaveMe fetches whatever URL it's given, so it's designed so that a link can't be
 - Proxies are disabled, and `curl_cffi` isn't installed, because its networking runs in C and would bypass the guard.
 - Deno, which yt-dlp needs for YouTube, runs without network permission.
 
+**One bad link fails only its own job.** A worker reads at most 16 MB from any page, manifest or API response (media downloads aren't affected). Each worker process, including the Deno and FFmpeg it starts, is limited to 1 GB of memory, so a hostile page can't use up the memory the rest of the app shares. The memory limit applies in the Docker image; macOS doesn't allow it, so a native macOS run goes without. The API also caps request bodies at 64 KB, counts link lookups against the inspection and queue limits, and accepts a POST only from the page's own origin.
+
 **A locked-down container.** It runs as a non-root user with all Linux capabilities dropped, `no-new-privileges`, and memory, CPU and process limits. The app code is read-only to the app user. The build verifies what it downloads: the FFmpeg source by SHA-256, the Deno image by digest and the Tailwind CLI by checksum.
 
 ### Reporting a vulnerability
