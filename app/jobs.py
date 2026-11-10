@@ -3,7 +3,10 @@
 A job ends ready (then expired), failed, or cancelled by the user. A cancel kills
 the worker but keeps its partial files for RESUME_WINDOW_SECONDS: a resume runs the
 job again in the same folder, where yt-dlp continues the partial files; after the
-window the sweep removes them. Job records live only in this process. Each job's
+window the sweep removes them. At most MAX_ACTIVE_JOBS + MAX_QUEUED_JOBS cancelled jobs
+can be resumed at once (a later cancel ends the oldest window), and at most
+MAX_FINISHED_RECORDS finished records are kept, so create-and-cancel can't grow the
+record table. Job records live only in this process. Each job's
 files live in TEMP_DIR/<job_id>/ under fixed names; the job ID is the only name derived from
 anything, and it is validated before any filesystem use.
 """
@@ -31,6 +34,8 @@ MARKER_NAME = ".saveme-tempdir"
 APP_DIR = Path(__file__).resolve().parent.parent
 
 RECORD_RETENTION_SECONDS = 3600
+# Failed, expired and no-longer-resumable records kept for status polls, newest first.
+MAX_FINISHED_RECORDS = 100
 DISK_RETRY_SECONDS = 2.0
 RESUME_WINDOW_SECONDS = 300
 
@@ -168,6 +173,7 @@ class JobManager:
 
     def submit(self, url: str, output: str, quality: str) -> Job:
         self._admit()
+        self._prune_finished_records()
         job_id = secrets.token_urlsafe(16)
         while job_id in self._jobs:
             job_id = secrets.token_urlsafe(16)
@@ -222,6 +228,7 @@ class JobManager:
         job.file_path = None
         job.finished_at = self._clock()
         logger.info("job %s cancelled", job.id)
+        self._cap_resumable()
         return job
 
     def resume(self, job_id: str) -> Job:
@@ -288,6 +295,23 @@ class JobManager:
             return None
         left = job.resume_until - self._clock()
         return max(1, math.ceil(left)) if left > 0 else None
+
+    def _cap_resumable(self) -> None:
+        """End the oldest resume windows beyond one per queue place."""
+        limit = self._settings.max_active_jobs + self._settings.max_queued_jobs
+        resumable = sorted((j for j in self._jobs.values() if j.resume_until is not None),
+                           key=lambda j: j.finished_at)
+        for job in resumable[:max(0, len(resumable) - limit)]:
+            self._end_resume_window(job)
+
+    def _prune_finished_records(self) -> None:
+        """Forget the oldest finished records beyond MAX_FINISHED_RECORDS (their files are
+        already gone); a poll for one then gets job_not_found."""
+        finished = sorted((j for j in self._jobs.values()
+                           if j.status in _TERMINAL and j.resume_until is None),
+                          key=lambda j: j.finished_at)
+        for job in finished[:max(0, len(finished) - MAX_FINISHED_RECORDS)]:
+            del self._jobs[job.id]
 
     def _end_resume_window(self, job: Job) -> None:
         job.resume_until = None

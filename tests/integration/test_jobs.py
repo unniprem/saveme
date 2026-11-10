@@ -19,8 +19,8 @@ import pytest
 
 from app.config import ConfigError, Settings, load_settings
 from app.errors import AppError
-from app.jobs import (APP_DIR, JOB_ID_RE, MARKER_NAME, RESUME_WINDOW_SECONDS, JobManager,
-                      prepare_temp_dir)
+from app.jobs import (APP_DIR, JOB_ID_RE, MARKER_NAME, MAX_FINISHED_RECORDS,
+                      RESUME_WINDOW_SECONDS, JobManager, prepare_temp_dir)
 from app.runner import DEFAULT_WORKER_CMD
 
 URL = "https://example.com/watch?v=1"
@@ -561,6 +561,48 @@ async def test_cancelled_record_is_purged(make_manager):
     await manager.sweep()
     with pytest.raises(AppError):
         manager.get(job.id)
+
+
+async def test_resumable_jobs_capped_by_queue_size(make_manager, settings):
+    # Cancelling more jobs than the queue holds ends the oldest resume windows first.
+    clock = FakeClock()
+    manager = await make_manager(run_worker=StubRunner(), clock=clock)
+    limit = settings.max_active_jobs + settings.max_queued_jobs
+    jobs = []
+    for _ in range(limit + 2):
+        job = manager.submit(URL, "video", "best")
+        manager.cancel(job.id)
+        jobs.append(job)
+        clock.advance(1)
+    for job in jobs[:2]:
+        assert manager.public_view(job)["resume_seconds"] is None
+        with pytest.raises(AppError) as ei:
+            manager.resume(job.id)
+        assert ei.value.code == "not_resumable"
+    assert all(manager.public_view(job)["resume_seconds"] for job in jobs[2:])
+
+
+async def test_finished_records_capped_by_count(make_manager):
+    # Create-and-cancel can't grow the record table: the oldest finished records go first.
+    clock = FakeClock()
+    manager = await make_manager(run_worker=StubRunner(), clock=clock)
+    jobs = []
+    for _ in range(MAX_FINISHED_RECORDS + 50):
+        job = manager.submit(URL, "video", "best")
+        manager.cancel(job.id)
+        jobs.append(job)
+        clock.advance(1)
+    gone = 0
+    for job in jobs:
+        try:
+            manager.get(job.id)
+        except AppError as exc:
+            assert exc.code == "job_not_found"
+            gone += 1
+    assert gone >= 40  # all but the newest MAX_FINISHED_RECORDS (+ the resumable ones)
+    assert manager.get(jobs[-1].id) is jobs[-1]
+    with pytest.raises(AppError):
+        manager.get(jobs[0].id)
 
 
 # --- Disk budget -------------------------------------------------------------

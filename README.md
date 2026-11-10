@@ -20,7 +20,7 @@ Settings are optional. To change any, copy `.env.example` to `.env`, edit it and
 2. Pick a format (a video quality, or **MP3 audio**) and choose **Download**.
 3. When the file is ready, your browser saves it straight away. If the browser holds it back, use the **Save file** link. Each file can be fetched once; it is deleted after it is saved, or after `JOB_TTL_MINUTES` if it never is.
 
-To stop a download, choose **Cancel**. The partial download stays on the server for 5 minutes, and **Resume download** continues where it stopped (it still works after a page reload). After 5 minutes the partial download is deleted.
+To stop a download, choose **Cancel**. The partial download stays on the server for 5 minutes, and **Resume download** continues where it stopped (it still works after a page reload). After 5 minutes the partial download is deleted. The server keeps one partial download per place in the queue (`MAX_ACTIVE_JOBS` + `MAX_QUEUED_JOBS`); cancelling more than that deletes the oldest one first.
 
 Video qualities are Best, 1080, 720 and 480. The default is the highest H.264 tier, so the file plays almost everywhere.
 
