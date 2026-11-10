@@ -91,6 +91,7 @@ docker compose build --no-cache --build-arg YTDLP_VERSION=<new> && docker compos
 ## Safety notes
 
 - The app has no login. Compose binds it to `127.0.0.1:8000` only. **Never expose it publicly** (no port forwarding, no `0.0.0.0` binding, no public reverse proxy).
+  - Run without Docker, `python -m app` also listens on `127.0.0.1` only. Inside the container the image passes `--host 0.0.0.0`, which the Compose port mapping needs; that address stays inside the container's network.
 - The container runs as a non-root user with all capabilities dropped, `no-new-privileges`, and memory, CPU and process limits.
 - **SSRF model.** A pasted link must not make the app reach into your network.
   - The API checks each URL first (scheme, no embedded credentials, length) and resolves its host; every address must be public.

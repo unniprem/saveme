@@ -61,6 +61,15 @@ def test_compose_binds_loopback_only():
     assert "network_mode" not in text
 
 
+def test_container_listens_on_all_interfaces():
+    # `python -m app` defaults to loopback, but inside the container it must listen on
+    # every interface so compose's 127.0.0.1 port mapping can reach it. A CLI flag, not an
+    # env var, so a .env copied from .env.example can't override it.
+    runtime = _read("Dockerfile").rsplit("\nFROM ", 1)[1]
+    assert re.findall(r"^CMD .*$", runtime, re.M) == [
+        'CMD ["python", "-m", "app", "--host", "0.0.0.0"]']
+
+
 def test_env_example_port_matches_compose_default():
     assert dict(_parse_env_file(_read(".env.example")))["SAVEME_PORT"] == "8000"
 
