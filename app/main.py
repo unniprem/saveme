@@ -4,7 +4,8 @@ Every HTTP request first passes _Guard, a pure ASGI middleware (so streamed
 downloads and client disconnects go straight through it). It:
 - adds the security headers to every response, error responses included;
 - answers 400 when the Host header's host (port and case ignored) isn't in ALLOWED_HOSTS;
-- answers 403 forbidden_origin when a POST carries an Origin whose host isn't allowed
+- answers 403 forbidden_origin when a POST carries an Origin other than the origin the
+  request itself was sent to: its scheme, the Host header's host, and the effective port
   (no Origin header is fine: curl and scripts don't send one);
 - answers 503 config_error for /api/* while the app is degraded;
 - turns an unexpected exception into a 500 `internal` body; the traceback goes to the log only.
@@ -56,7 +57,8 @@ SECURITY_HEADERS = {
 # Degraded by a settings error: the configured hosts are unknown, so use the defaults.
 _DEFAULT_ALLOWED_HOSTS = load_settings({}).allowed_hosts
 # `host`, `host:port`, `[v6]` or `[v6]:port`.
-_AUTHORITY = re.compile(r"(?:\[(?P<v6>[^\[\]]+)\]|(?P<name>[^:\[\]]+))(?::\d{1,5})?")
+_AUTHORITY = re.compile(r"(?:\[(?P<v6>[^\[\]]+)\]|(?P<name>[^:\[\]]+))(?::(?P<port>\d{1,5}))?")
+_DEFAULT_PORTS = {"http": 80, "https": 443}
 _HTTP_MESSAGES = {404: "Not found.", 405: "Method not allowed."}
 _CHOICES = {"output": get_args(Output), "quality": get_args(Quality)}
 _FIELD_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
@@ -129,20 +131,35 @@ def _normalize_host(host: str) -> str:
     return host
 
 
-def _host_of(authority: str) -> str | None:
-    """The lowercased host of a Host-header style `host[:port]`, without IPv6 brackets."""
+def _host_and_port(authority: str) -> tuple[str, int | None] | None:
+    """The lowercased host (without IPv6 brackets) and port of a `host[:port]`."""
     match = _AUTHORITY.fullmatch(authority.strip())
     if match is None:
         return None
-    return (match["v6"] or match["name"]).lower()
+    port = match["port"]
+    return (match["v6"] or match["name"]).lower(), None if port is None else int(port)
 
 
-def _origin_host(origin: str) -> str | None:
-    """The host of an `http(s)://host[:port]` Origin; None for `null` or anything else."""
-    scheme, sep, authority = origin.partition("://")
-    if not sep or scheme.lower() not in ("http", "https"):
+def _host_of(authority: str) -> str | None:
+    """The lowercased host of a Host-header style `host[:port]`, without IPv6 brackets."""
+    parsed = _host_and_port(authority)
+    return None if parsed is None else parsed[0]
+
+
+def _origin(scheme: str, authority: str) -> tuple[str, str, int] | None:
+    """(scheme, host, effective port) for an http(s) scheme and a `host[:port]`."""
+    scheme = scheme.lower()
+    parsed = _host_and_port(authority)
+    if scheme not in _DEFAULT_PORTS or parsed is None:
         return None
-    return _host_of(authority)
+    host, port = parsed
+    return scheme, host, _DEFAULT_PORTS[scheme] if port is None else port
+
+
+def _origin_of_header(origin: str) -> tuple[str, str, int] | None:
+    """The parts of an `http(s)://host[:port]` Origin; None for `null` or anything else."""
+    scheme, sep, authority = origin.partition("://")
+    return _origin(scheme, authority) if sep else None
 
 
 class _Guard:
@@ -187,10 +204,13 @@ class _Guard:
         is_health_check = scope["method"] == "GET" and scope["path"] == "/health"
         if not is_health_check and _host_of(headers.get("host", "")) not in self.allowed:
             return _error_response(400, "invalid_request", "Invalid host header.")
+        # The Origin must be the page's own origin, not just an allowed host: another
+        # service on the same host but another port or scheme is a different origin.
         origin = headers.get("origin")
-        if (scope["method"] == "POST" and origin is not None
-                and _origin_host(origin) not in self.allowed):
-            return _app_error_response(AppError("forbidden_origin"))
+        if scope["method"] == "POST" and origin is not None:
+            own = _origin(scope.get("scheme", "http"), headers.get("host", ""))
+            if own is None or _origin_of_header(origin) != own:
+                return _app_error_response(AppError("forbidden_origin"))
         if scope["path"].startswith("/api/"):
             error = self.unavailable()
             if error is not None:

@@ -608,25 +608,69 @@ async def test_ipv6_allowed_host(temp_dir, stub, allowed, host):
 
 
 @pytest.mark.parametrize("origin", ["http://evil.example", "null", "http://127.0.0.1.evil.example",
-                                    "https://evil.example:8000", "file://", "http://localhost/"])
+                                    "https://evil.example:8000", "file://", "http://localhost/",
+                                    # An allowed host on another port or scheme is another origin.
+                                    "http://127.0.0.1:9999", "http://127.0.0.1:8000",
+                                    "https://127.0.0.1", "https://127.0.0.1:80",
+                                    # So is another allowed host.
+                                    "http://localhost", "http://localhost:80"])
 async def test_cross_origin_post_403(client, stub, origin):
     for path, body in (("/api/inspect", {"url": URL}),
                        ("/api/jobs", {"url": URL, "output": "video"}),
                        ("/api/jobs/AAAAAAAAAAAAAAAAAAAAAA/cancel", {}),
                        ("/api/jobs/AAAAAAAAAAAAAAAAAAAAAA/resume", {})):
+        # The client's Host header is 127.0.0.1, so the page's own origin is http://127.0.0.1.
         r = await client.post(path, json=body, headers={"Origin": origin})
         assert r.status_code == 403, (origin, path)
         assert r.json() == error_body("forbidden_origin")
     assert stub.calls == []
 
 
-@pytest.mark.parametrize("origin", [None, "http://127.0.0.1:8000", "http://LOCALHOST:5173",
-                                    "https://localhost"])
-async def test_same_origin_or_no_origin_post_allowed(client, origin):
-    headers = {"Origin": origin} if origin else {}
+@pytest.mark.parametrize("host, origin", [
+    ("127.0.0.1", None),
+    ("127.0.0.1", "http://127.0.0.1"),
+    ("127.0.0.1", "http://127.0.0.1:80"),
+    ("127.0.0.1", "HTTP://127.0.0.1"),
+    ("127.0.0.1:80", "http://127.0.0.1"),
+    ("127.0.0.1:8000", "http://127.0.0.1:8000"),
+    ("LocalHost:8000", "http://localhost:8000"),
+    ("localhost:8000", None),
+])
+async def test_same_origin_or_no_origin_post_allowed(client, host, origin):
+    headers = {"Host": host} | ({"Origin": origin} if origin else {})
     r = await client.post("/api/inspect", json={"url": "not a url"}, headers=headers)
     assert r.status_code == 400  # past the origin check, rejected by URL validation
     assert r.json()["error"]["code"] == "invalid_url"
+
+
+@pytest.mark.parametrize("host, origin, allowed", [
+    ("localhost:8000", "http://localhost:8000", True),
+    ("localhost:8000", "http://127.0.0.1:8000", False),
+    ("localhost:8000", "http://localhost:8001", False),
+    ("localhost:8000", "http://localhost", False),
+    ("[::1]:8000", "http://[::1]:8000", True),
+    ("[::1]:8000", "http://[::1]", False),
+    ("[::1]", "http://[::1]:80", True),
+])
+async def test_origin_must_match_the_requested_origin(temp_dir, stub, host, origin, allowed):
+    settings = load_settings({"TEMP_DIR": str(temp_dir), "ALLOWED_HOSTS": "localhost,127.0.0.1,::1"})
+    async with running(make_app(settings, run_worker=stub)) as client:
+        r = await client.post("/api/inspect", json={"url": "not a url"},
+                              headers={"Host": host, "Origin": origin})
+    assert r.status_code == (400 if allowed else 403), r.text
+
+
+async def test_origin_scheme_follows_the_request_scheme(settings, stub):
+    app = make_app(settings, run_worker=stub)
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="https://127.0.0.1") as client:
+            r = await client.post("/api/inspect", json={"url": "not a url"},
+                                  headers={"Origin": "https://127.0.0.1"})
+            assert r.status_code == 400
+            r = await client.post("/api/inspect", json={"url": "not a url"},
+                                  headers={"Origin": "http://127.0.0.1"})
+            assert r.status_code == 403
 
 
 # --- Degraded mode ----------------------------------------------------------------
