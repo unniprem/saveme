@@ -2,6 +2,40 @@
 
 ---
 
+## 2026-11-10 16:50 IST — Session: Security review follow-up
+
+### Summary
+
+The owner asked me to go through the security review in `/tmp/saveme-security-review.md`, then to file every finding as a GitHub issue and fix the two quick ones. Each finding was checked against the code at `bd527ec` and all seven held up. They are filed as issues #1–#8 on `unniprem/saveme` under a new `security` label; the review's finding 1 is split into #1 (native bind) and #2 (no authentication). Fixed on `feature/security-quick-fixes` (not merged or pushed):
+- **#7:** `.gitignore` now covers `.superpowers/` (it held a local session token one `git add -A` away from a commit), `.env.*` (with `.env.example` kept), `.playwright-mcp/` and `.worktrees/`.
+- **#1:** `python -m app` listens on `127.0.0.1` by default; `--host` sets another address, and the Dockerfile passes `--host 0.0.0.0`. The README safety note says so.
+
+**Verified:**
+- 375 offline tests pass. The new entrypoint and Dockerfile `CMD` tests failed first, for the missing feature.
+- `git check-ignore` now matches all five paths and not `.env.example`; `git status` is clean.
+- A native run listened on `127.0.0.1:8000` only: `/health` answered on loopback, and the LAN address refused the connection.
+- An image built from the branch under a throwaway tag became healthy and answered `/health` through a `127.0.0.1:18000` mapping, with uvicorn on `0.0.0.0` inside. The tag and container were removed; the running `saveme-saveme-1` was left alone.
+
+### Changes Made
+
+| Commit    | Type | Description |
+| --------- | ---- | ----------- |
+| `a69084f` | chore | Ignore local tool state and `.env` variants (closes #7) |
+| `6fdcfee` | fix | Listen on loopback by default when run natively (closes #1) |
+
+### Key Decisions
+
+- **A `--host` flag, not an environment variable.** Compose loads `.env` into the container, so a `.env` copied from `.env.example` carrying a loopback default would override the container's bind and make it unreachable.
+- **Finding 1 split into two issues.** The bind is fixed now; authentication and job ownership stay open until public hosting is planned, and are tracked separately so closing #1 doesn't hide them.
+- **Gitignore change verified with `git check-ignore`, not a test.** It is configuration; the before/after check shows what it ignores.
+
+### Issues Encountered
+
+- The review's scan left a repo copy in `/tmp/saveme-secret-scan-1nhdr259/`, including `.env` and the session token. Its folder is owner-only, but it should be deleted once the review is no longer needed.
+- The running container still uses the old image. It behaves the same (it bound `0.0.0.0` inside before too), so it wasn't rebuilt.
+
+---
+
 ## 2026-11-10 14:53 IST — Session: Cancel and Resume
 
 ### Summary
