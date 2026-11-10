@@ -2,6 +2,58 @@
 
 ---
 
+## 2026-11-10 17:26 IST — Session: Security hardening (#3–#8)
+
+### Summary
+
+The owner asked me to go through the open issues, fix the ones that need fixing, merge into `main` and close them. #1 and #7 were already fixed on `feature/security-quick-fixes`. #3, #4, #5, #6 and #8 are fixed on `feature/security-hardening`, which was branched from it. #2 (authentication) stays open: the issue itself says it is needed only before public or shared hosting, and the app is meant for one person on loopback.
+- **#8:** a POST's `Origin` must equal the request's own origin (scheme, Host-header host, effective port), not just an allowed host.
+- **#3:** POST bodies are read by the Guard and capped at 64 KiB (chunked too) before JSON parsing; raw link input is capped at 8,192 characters before stripping; DNS lookups run inside the inspection slot or a held queue place.
+- **#5:** at most `MAX_ACTIVE_JOBS + MAX_QUEUED_JOBS` resumable cancelled jobs (a later cancel ends the oldest window), and at most 100 finished records.
+- **#6:** one download per file at a time (409 `delivery_in_progress`); a file being sent stays on disk and in the budget and is skipped by TTL, eviction and the ready cap; a client idle for 60 s or still downloading after an hour is cut off, and the file stays for another try.
+- **#4:** whole-body reads in the worker are capped at 16 MiB decoded (`source_too_large`); the playlist unwrap is lazy; each worker sets `RLIMIT_DATA` to 1 GiB, inherited by deno and ffmpeg.
+
+A parallel session (README for the public release) committed on this same branch while I worked, because the two sessions share the working tree. Its commits touch only `README.md`, `JOURNAL.md` and `.gitattributes`, and its README rewrite kept my two README notes (#5, #6).
+
+**Verified:**
+- Offline suite on macOS: 418 passed, 2 skipped (the Linux-only memory tests), 1 failed. The failure is `test_readme_hedges_the_reddit_cause`, from the parallel README rewrite; that session was told.
+- `scripts/docker-ffmpeg-check.sh` on an image built from the branch: 249 integration tests passed on Linux, including the two `RLIMIT_DATA` tests.
+- The same image, run as a throwaway container with Compose's limits: `pytest -m network` passed YouTube, youtu.be, direct MP4, unsupported and private-IP. Reddit failed with `login_required`, exactly as on the old container and as the README documents.
+- Memory in that container on a real YouTube download: deno peaked at 563 MiB data segment (314 MiB RSS), the worker at 76 MiB (109 MiB RSS); all five processes showed a 1 GiB `Max data size`.
+- Each new test failed first for the missing behaviour. The two delivery-timeout tests failed first only on a missing option, so each timeout was disabled by hand to confirm its test catches the break.
+- 413 replies were also checked on a real uvicorn server, with and without `Content-Length`.
+
+### Changes Made
+
+| Commit    | Type | Description |
+| --------- | ---- | ----------- |
+| `84410d6` | fix | Require a POST's Origin to be the request's own origin (#8) |
+| `3b4eef1` | fix | Cap request bodies and resolve links inside the concurrency caps (#3) |
+| `f868a3e` | fix | Bound cancelled and finished job records by count (#5) |
+| `3b19dd8` | fix | Deliver each file to one client at a time, with deadlines (#6) |
+| `767b916` | fix | Bound worker memory during extraction (#4) |
+
+### Key Decisions
+
+- **The expected Origin comes from the request, not a new setting.** A configured origin list would have to track `SAVEME_PORT` and any proxy; the Host header is already allowlisted, and the page is always same-origin.
+- **DNS inside the slot, syntax check outside it.** A malformed link still never takes a slot. A blocked or unresolvable link holds one only for the lookup (at most 5 s), and while busy it gets "busy" instead of its own error. For jobs, a link being resolved holds a queue place, so lookups never exceed the queue.
+- **No time-based rate limits.** The concurrency and count bounds cap memory, CPU and lookups. Per-user quotas belong with authentication in #2.
+- **Delivery is claimed inside the response's `__call__`, not the route handler.** Claim, open, send and release share one try/finally, so a claim can't leak and pin a file forever.
+- **A file being sent stays on disk rather than being unlinked under the reader.** It then stays honestly counted in the budget; the deadlines bound how long a slow client can hold it.
+- **The 1 GiB worker limit is a constant, sized from a measurement.** deno inherits it and needs about 570 MiB, so a lower cap would break YouTube. `RLIMIT_DATA`, not `RLIMIT_AS`: V8 reserves large address ranges it never touches.
+- **The page cap wraps `YoutubeDL.urlopen`.** Extractors and downloaders all open responses there, and only reads with no size are capped, so media downloads (read in blocks) are untouched.
+- **macOS refuses any `RLIMIT_DATA` change,** so the worker logs that and runs without it; the Docker image (Linux) enforces it.
+
+### Issues Encountered
+
+- **A parallel session shares this working tree** and committed README, journal and `.gitattributes` changes onto `feature/security-hardening`. They don't overlap my files. To avoid moving the branch under it, `main` is merged from a temporary worktree.
+- **The first README edit for #4 missed** its anchor line, because the README had been rewritten meanwhile, so the safety note wasn't added. The rewritten README's security section doesn't yet mention the page cap or the memory limit.
+- **The trickle-reader test failed on Linux only:** a 4 KiB receive buffer gives 8 KiB reads there, so the slow drain outlasted the timeout. The test now trickles only past the deadline, then drains at full speed.
+- **Known limitation:** ending a resume window early (the #5 cap) can remove partial files while the cancelled worker is still being killed (up to its 5 s grace). The worker may write into a removed folder, and the next sweep removes anything it leaves.
+- **Not done:** the running `saveme-saveme-1` container still uses the old image, and nothing is pushed.
+
+---
+
 ## 2026-11-10 17:21 IST — Session: README for the public release
 
 ### Summary
