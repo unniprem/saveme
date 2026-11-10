@@ -16,7 +16,7 @@ The owner asked me to go through the open issues, fix the ones that need fixing,
 A parallel session (README for the public release) committed on this same branch while I worked, because the two sessions share the working tree. Its commits touch only `README.md`, `JOURNAL.md` and `.gitattributes`, and its README rewrite kept my two README notes (#5, #6).
 
 **Verified:**
-- Offline suite on macOS: 418 passed, 2 skipped (the Linux-only memory tests), 1 failed. The failure is `test_readme_hedges_the_reddit_cause`, from the parallel README rewrite; that session was told.
+- Offline suite on macOS: 419 passed, 2 skipped (the Linux-only memory tests). `test_readme_hedges_the_reddit_cause` failed for a while after the parallel README rewrite; that session was told and fixed it in `6360cfc`.
 - `scripts/docker-ffmpeg-check.sh` on an image built from the branch: 249 integration tests passed on Linux, including the two `RLIMIT_DATA` tests.
 - The same image, run as a throwaway container with Compose's limits: `pytest -m network` passed YouTube, youtu.be, direct MP4, unsupported and private-IP. Reddit failed with `login_required`, exactly as on the old container and as the README documents.
 - Memory in that container on a real YouTube download: deno peaked at 563 MiB data segment (314 MiB RSS), the worker at 76 MiB (109 MiB RSS); all five processes showed a 1 GiB `Max data size`.
@@ -32,6 +32,7 @@ A parallel session (README for the public release) committed on this same branch
 | `f868a3e` | fix | Bound cancelled and finished job records by count (#5) |
 | `3b19dd8` | fix | Deliver each file to one client at a time, with deadlines (#6) |
 | `767b916` | fix | Bound worker memory during extraction (#4) |
+| `7a3b1c4` | docs | Describe the page, memory, body and origin limits under Security |
 
 ### Key Decisions
 
@@ -47,7 +48,7 @@ A parallel session (README for the public release) committed on this same branch
 ### Issues Encountered
 
 - **A parallel session shares this working tree** and committed README, journal and `.gitattributes` changes onto `feature/security-hardening`. They don't overlap my files. To avoid moving the branch under it, `main` is merged from a temporary worktree.
-- **The first README edit for #4 missed** its anchor line, because the README had been rewritten meanwhile, so the safety note wasn't added. The rewritten README's security section doesn't yet mention the page cap or the memory limit.
+- **The first README edit for #4 missed** its anchor line, because the README had been rewritten meanwhile. The note went into the rewritten README's Security section afterwards (`7a3b1c4`).
 - **The trickle-reader test failed on Linux only:** a 4 KiB receive buffer gives 8 KiB reads there, so the slow drain outlasted the timeout. The test now trickles only past the deadline, then drains at full speed.
 - **Known limitation:** ending a resume window early (the #5 cap) can remove partial files while the cancelled worker is still being killed (up to its 5 s grace). The worker may write into a removed folder, and the next sweep removes anything it leaves.
 - **Not done:** the running `saveme-saveme-1` container still uses the old image, and nothing is pushed.
