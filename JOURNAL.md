@@ -2,6 +2,48 @@
 
 ---
 
+## 2026-11-10 11:35 IST — Session: Shrink the Docker Image (Minimal ffmpeg)
+
+### Summary
+
+The owner asked how to cut the 709 MB image and whether all of it is needed. Per-layer sizes showed `apt-get install ffmpeg` was 411 MB. The ffmpeg binaries themselves were under 1 MB; the rest was Debian's dependency tree (LLVM 120 MB via Mesa, a speech synthesizer, x265/aom/svt-av1 encoders, X11). The app only stream-copies video (merge, remux, yt-dlp fixups), decodes audio for MP3 and runs ffprobe. The image now builds FFmpeg 9.0.2 from a signature-checked, SHA-256-pinned source release with only those components. Results:
+- **arm64:** 709 MB → 311 MB.
+- **amd64:** 298 MB.
+- **ffmpeg + ffprobe:** about 12 MB together.
+
+**Verified:**
+- A new `scripts/docker-ffmpeg-check.sh`, on both arm64 and amd64 (amd64 under emulation). It runs a 17-case codec/container matrix and the 187 integration tests inside the image.
+- `pytest -m network` against a separate container on port 8123: 5 passed. Reddit failed with `login_required` at inspect, the known issue.
+- Manual jobs: YouTube Best (AV1 + Opus → MP4), 720 → 480p H.264, and direct MP4 → MP3.
+- 347 offline tests pass.
+
+**Not run:** `scripts/docker-smoke.sh`. It would have recreated the owner's running port-80 container, so its checks (health, uid 10001, no curl_cffi, deno and ffmpeg run) were done by hand on the test container instead.
+
+### Changes Made
+
+| Commit    | Type | Description |
+| --------- | ---- | ----------- |
+| `886e687` | feat | Build a minimal ffmpeg instead of Debian's package |
+| `e6f6668` | test | Add docker-ffmpeg-check.sh for the minimal ffmpeg build |
+
+### Key Decisions
+
+- **Build ffmpeg from source, not a prebuilt static binary.** The registry showed `mwader/static-ffmpeg`'s arm64 layer is 255 MB, which only gets the image to about 550 MB, and it means trusting third-party binaries. A source build with `--disable-everything` came to about 12 MB. It also drops network protocols and the HLS/DASH/concat demuxers, which backs up the `-protocol_whitelist file,pipe` wrapper.
+- **The VP9 decoder stays in, although no video is decoded.** Without it, VP9 → MP4 (remux or merge) wrote an MP4 that wouldn't open, and ffmpeg still exited 0 ("Unsupported pixel format (-1)"). The muxer's vpcC box needs the pixel format, and only the decoder derives it while probing. Debian's full ffmpeg was the control: it handled the same input.
+- **No subtitle codecs.** yt-dlp passes `-c:s mov_text` only in postprocessors the app doesn't enable (metadata/subtitle embedding, concat). The fixups it does run stream-copy subtitles, which needs no codec.
+- **The check script verifies outputs, not exit codes.** Because of the VP9 case, each matrix output must open in Debian's full ffprobe with exactly the expected streams. Run against the build without the VP9 decoder, it failed both VP9 → MP4 cases.
+- **Packaging tests lock in the pin and the hardening.** The checksum, `--disable-network`, `--enable-protocol=file,pipe` and the absence of `apt-get install ffmpeg` are now tested. A mutation check confirmed each new test fails when its guard is removed.
+- **Branched from `main`, not `feature/saveme-local-url`.** The port change is unrelated. Both branches touch `tests/unit/test_packaging.py`, but in different tests.
+
+### Issues Encountered
+
+- ffmpeg.org dropped the tarball download once (TLS EOF after 128 s). The Dockerfile's curl now uses `--retry 5 --retry-all-errors`.
+- The first amd64 build failed in the existing `css` stage: the Tailwind CLI download hit curl exit 56. A retry passed. Under emulation the build is slow (its apt step alone took about 12 minutes).
+- The first matrix run flagged the timestamp fixup as dropping video. That came from the test clip: one keyframe, and yt-dlp's `-ss 0.001` with stream copy waits for the next one. Debian's full ffmpeg did the same. The clip now has a keyframe every 5 frames.
+- Pulling and running `mwader/static-ffmpeg` was blocked by the permission classifier, so its size came from the registry manifest only.
+
+---
+
 ## 2026-11-10 00:06 IST — Session: Build 1 (MVP) Implementation
 
 ### Summary
