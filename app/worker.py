@@ -38,6 +38,14 @@ _MAX_HOPS = 5
 _EMIT_INTERVAL = 0.25
 _PROBE_TIMEOUT = 60
 _MEDIA_NAME = re.compile(r"media\.[A-Za-z0-9]+")
+# Largest decoded body read whole (pages, manifests, API responses). Media is read in
+# blocks and isn't affected. Large enough for real pages (YouTube's are a few MB).
+MAX_PAGE_BYTES = 16 * 1024 * 1024
+_READ_BLOCK = 1024 * 1024
+# Data-segment cap for the worker and everything it starts, which inherit it (deno,
+# ffmpeg). Measured on a YouTube job (10 Nov 2026): deno peaks near 570 MiB, the worker
+# near 85 MiB, ffmpeg near 2 MiB.
+WORKER_MEMORY_BYTES = 1024 * 1024 * 1024
 _MISSING_TRACK = {"video": "no_video", "audio": "no_audio"}
 
 
@@ -62,6 +70,57 @@ class _DownloadLogger(_StderrLogger):
         super().debug(msg)
 
     info = warning = error = debug
+
+
+def limit_memory(limit: int = WORKER_MEMORY_BYTES) -> None:
+    """Cap this process's data segment (heap and other private writable memory), soft
+    and hard, so a hostile link can exhaust only its own worker, not the memory every
+    worker and the API share. Children inherit the cap. Linux (the Docker image)
+    enforces RLIMIT_DATA on every such allocation; macOS refuses to set it, so a native
+    macOS run goes without and says so on stderr."""
+    import resource
+
+    _soft, hard = resource.getrlimit(resource.RLIMIT_DATA)
+    if hard != resource.RLIM_INFINITY:
+        limit = min(limit, hard)
+    try:
+        resource.setrlimit(resource.RLIMIT_DATA, (limit, limit))
+    except (ValueError, OSError) as exc:
+        print(f"worker: memory limit not applied: {exc}", file=sys.stderr)
+
+
+def _cap_whole_reads(response, limit: int):
+    """Make `response.read()` with no size stop at `limit` decoded bytes, raising
+    source_too_large. yt-dlp reads pages this way (after a small first read), with no
+    bound of its own; sized reads (media downloads) pass straight through."""
+    read = response.read
+
+    def capped_read(amt: int | None = None) -> bytes:
+        if amt is not None and amt >= 0:
+            return read(amt)
+        chunks, total = [], 0
+        while chunk := read(_READ_BLOCK):
+            total += len(chunk)
+            if total > limit:
+                response.close()
+                raise AppError("source_too_large")
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    response.read = capped_read
+    return response
+
+
+def _youtube_dl(params: dict) -> YoutubeDL:
+    """A YoutubeDL whose every response (extractors and downloaders alike go through
+    urlopen) has its whole-body reads capped at MAX_PAGE_BYTES."""
+    from yt_dlp import YoutubeDL
+
+    class CappedYoutubeDL(YoutubeDL):
+        def urlopen(self, req):
+            return _cap_whole_reads(super().urlopen(req), MAX_PAGE_BYTES)
+
+    return CappedYoutubeDL(params)
 
 
 def _ydl_params(*parts: dict) -> dict:
@@ -149,11 +208,9 @@ def resolve(ydl: YoutubeDL, url: str) -> tuple[dict, str | None]:
 
 
 def run_inspect(url: str) -> dict:
-    from yt_dlp import YoutubeDL
-
     from app.ytdl import base_opts, inspect_payload
 
-    with YoutubeDL(_ydl_params(base_opts(None))) as ydl:
+    with _youtube_dl(_ydl_params(base_opts(None))) as ydl:
         info, notice = resolve(ydl, url)
     payload = inspect_payload(info)
     payload["thumbnail_url"] = safe_thumbnail(payload["thumbnail_url"])
@@ -392,7 +449,6 @@ def _download_args(req: dict) -> tuple[str, str, Path, int]:
 
 def _download(url: str, output: str, quality: str, workdir: Path, max_bytes: int,
               emit: Callable[[dict], None]) -> dict:
-    from yt_dlp import YoutubeDL
     from yt_dlp.utils import DownloadError, ExtractorError
 
     from app.ytdl import audio_opts, base_opts, chosen_formats, downgrade_notice, inspect_payload, video_opts
@@ -403,7 +459,7 @@ def _download(url: str, output: str, quality: str, workdir: Path, max_bytes: int
                           "postprocessor_hooks": [phases]})
     params["logger"] = logger
     try:
-        with YoutubeDL(params) as ydl:
+        with _youtube_dl(params) as ydl:
             ydl.add_post_processor(_parts_recorder(progress), when="before_dl")
             info, playlist_notice = resolve(ydl, url)
             # Same availability rule as inspect: an unknown codec may hold the track.
@@ -467,6 +523,8 @@ def _read_request(stdin: TextIO) -> dict:
 def _to_app_error(exc: Exception) -> AppError:
     if isinstance(exc, AppError):
         err = exc
+    elif isinstance(exc, MemoryError):  # the worker hit limit_memory's cap
+        err = AppError("source_too_large")
     elif isinstance(exc, BlockedAddressError):
         err = AppError("blocked_address")
     else:
@@ -513,6 +571,7 @@ def serve(stdin: TextIO, out: TextIO) -> int:
 
 
 def main() -> None:
+    limit_memory()
     install_connect_guard()
     with protocol_out() as out:
         code = serve(sys.stdin, out)

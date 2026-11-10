@@ -680,12 +680,20 @@ def stalled_download(port: int, job_id: str) -> Iterator[socket.socket]:
         raw.close()
 
 
-def read_to_eof(raw: socket.socket, pause: float = 0.0, timeout: float = 15.0) -> int:
+def read_to_eof(raw: socket.socket, timeout: float = 15.0) -> int:
     """Bytes read until the server closes the connection."""
     received, deadline = 0, time.monotonic() + timeout
     while chunk := raw.recv(64 * 1024):
         received += len(chunk)
         assert time.monotonic() < deadline, "the server never closed the connection"
+    return received
+
+
+def read_slowly(raw: socket.socket, seconds: float, pause: float = 0.05) -> int:
+    """Keep taking a little at a time for `seconds` (so the client is never idle)."""
+    received, until = 0, time.monotonic() + seconds
+    while time.monotonic() < until and (chunk := raw.recv(64 * 1024)):
+        received += len(chunk)
         time.sleep(pause)
     return received
 
@@ -738,8 +746,8 @@ def test_slow_download_hits_the_delivery_deadline(settings):
                                                trust_env=False, timeout=10) as http:
         job_id = live_ready_job(http)
         with stalled_download(port, job_id) as raw:
-            # About 1 MiB/s, never idle for long: only the overall deadline stops it.
-            assert read_to_eof(raw, pause=0.05) < size
+            # A trickle that is never idle for long: only the overall deadline stops it.
+            assert read_slowly(raw, seconds=2.5) + read_to_eof(raw) < size
         assert http.get(f"/api/jobs/{job_id}").json()["status"] == "ready"
         r = get_file_when_free(http, job_id)
         assert r.status_code == 200 and len(r.content) == size

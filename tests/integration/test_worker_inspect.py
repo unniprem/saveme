@@ -263,3 +263,72 @@ def test_stdout_is_protocol_only(media_server):
     for line in procs.STDOUT_LINES:
         event = json.loads(line)
         assert isinstance(event, dict) and "event" in event, line
+
+
+# --- Memory: page-size cap ---------------------------------------------------
+
+@pytest.mark.parametrize("path", ["/big-page", "/gzip-bomb"])
+def test_oversized_page_is_refused(media_server, path):
+    # The cap counts decoded bytes, so a small compressed body can't expand past it.
+    assert error_code_of(*inspect(media_server.url(path))) == "source_too_large"
+
+
+# --- Memory: per-worker limit ------------------------------------------------
+
+LINUX_ONLY = pytest.mark.skipif(sys.platform != "linux",
+                                reason="RLIMIT_DATA is enforced (and settable) on Linux only")
+
+
+@LINUX_ONLY
+def test_limit_memory_caps_the_data_segment():
+    r = run_python("import resource\nfrom app.worker import limit_memory\n"
+                   "limit_memory(768 << 20)\nprint(resource.getrlimit(resource.RLIMIT_DATA))")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == str((768 << 20, 768 << 20))
+
+
+@LINUX_ONLY
+def test_limit_memory_stops_a_runaway_allocation():
+    r = run_python("from app.worker import limit_memory\nlimit_memory(256 << 20)\n"
+                   "try:\n    bytearray(512 << 20)\nexcept MemoryError:\n    print('refused')")
+    assert r.returncode == 0 and r.stdout.strip() == "refused", r.stdout + r.stderr
+
+
+def test_limit_memory_is_skipped_where_refused(monkeypatch, capsys):
+    # macOS refuses RLIMIT_DATA changes; the worker still runs, and says so on stderr.
+    import resource
+
+    from app.worker import limit_memory
+
+    def refuse(*args):
+        raise ValueError("current limit exceeds maximum limit")
+
+    monkeypatch.setattr(resource, "setrlimit", refuse)
+    limit_memory()
+    assert "memory limit not applied" in capsys.readouterr().err
+
+
+def test_main_limits_memory_before_serving(monkeypatch):
+    from app import worker
+
+    order = []
+    monkeypatch.setattr(worker, "limit_memory", lambda: order.append("limit"))
+    monkeypatch.setattr(worker, "install_connect_guard", lambda: order.append("guard"))
+    monkeypatch.setattr(worker, "protocol_out", lambda: io.StringIO())
+    monkeypatch.setattr(worker, "serve", lambda stdin, out: order.append("serve") or 0)
+    with pytest.raises(SystemExit):
+        worker.main()
+    assert order == ["limit", "guard", "serve"]
+
+
+def test_memory_error_maps_to_source_too_large(monkeypatch, capsys):
+    from app import worker
+
+    def boom(url):
+        raise MemoryError
+
+    monkeypatch.setattr(worker, "run_inspect", boom)
+    out = io.StringIO()
+    assert worker.serve(io.StringIO(json.dumps({"mode": "inspect", "url": "https://example.com/"})), out) == 1
+    event = json.loads(out.getvalue().splitlines()[-1])
+    assert event["code"] == "source_too_large"

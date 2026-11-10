@@ -186,3 +186,32 @@ def test_mixed_drm_keeps_clean_only():
     out = keep_safe_formats(info([{**f("d", 640, 360, "avc1", "mp4a", "mp4"), "has_drm": True},
                                   f("c", 640, 360, "avc1", "mp4a", "mp4")]))
     assert [x["format_id"] for x in out["formats"]] == ["c"]
+
+
+def test_unwrap_takes_the_first_entry_lazily():
+    e1, e2 = info(LOW), info(LOW)
+
+    def entries():
+        yield None  # yt-dlp leaves holes for entries it skipped
+        yield e1
+        yield e2
+        raise AssertionError("read past the second entry")
+
+    first, notice = unwrap_first_entry({"_type": "playlist", "entries": entries()})
+    assert first is e1
+    assert notice == "This post has more than one video; the first will be downloaded."
+
+
+def test_unwrap_lazy_single_entry_has_no_notice():
+    e1 = info(LOW)
+    assert unwrap_first_entry({"_type": "playlist", "entries": iter([e1])}) == (e1, None)
+
+
+def test_unwrap_stops_scanning_empty_entries():
+    def holes():
+        while True:
+            yield None
+
+    with pytest.raises(AppError) as e:
+        unwrap_first_entry({"_type": "playlist", "entries": holes()})
+    assert e.value.code == "playlist_unsupported"

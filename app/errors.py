@@ -25,6 +25,7 @@ CATALOG: dict[str, tuple[int, str]] = {
     "no_audio": (422, "This media has no audio track."),
     "no_video": (422, "This media has no video track."),
     "extraction_failed": (422, "Couldn't get this media from the link. Try again later or try a different link."),
+    "source_too_large": (422, "The page at this link is too large to read. Try a link to the media itself."),
     "too_large": (413, "This file is larger than the allowed size limit. Try a lower quality or audio only."),
     "busy": (429, "The server is busy right now. Please try again shortly."),
     "rate_limited": (429, "The source site is limiting requests right now. Please try again later."),

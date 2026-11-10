@@ -1,4 +1,5 @@
 """yt-dlp option building, format safety, inspect mapping and selection (pure, no network)."""
+import itertools
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -13,6 +14,8 @@ NATIVE_PROTOCOLS = frozenset(
 )
 TIERS = (1080, 720, 480)
 TIER_TOLERANCE = 16
+# Playlist entries examined for a first item; entries can be lazy pages from the source.
+MAX_PLAYLIST_SCAN = 50
 
 
 def base_opts(workdir: Path | None) -> dict:
@@ -63,14 +66,25 @@ def short_side(fmt: dict) -> int | None:
 
 
 def unwrap_first_entry(info: dict) -> tuple[dict, str | None]:
+    """The first entry of a playlist and a notice when there are more. Entries may be
+    lazy (a generator or yt-dlp's paged lists), so at most two non-empty entries out of
+    the first MAX_PLAYLIST_SCAN are read; the rest are never fetched."""
     if info.get("_type") != "playlist" and "entries" not in info:
         return info, None
-    entries = [e for e in (info.get("entries") or []) if e]
-    if not entries:
+    entries = info.get("entries") or []
+    scanned = itertools.islice(entries, MAX_PLAYLIST_SCAN)
+    found = list(itertools.islice((e for e in scanned if e), 2))
+    if not found:
         raise AppError("playlist_unsupported")
-    count = info.get("playlist_count") or len(entries)
-    notice = f"This post has {count} videos; the first will be downloaded." if count > 1 else None
-    return entries[0], notice
+    count = info.get("playlist_count")
+    if not count and isinstance(entries, (list, tuple)):
+        count = sum(1 for e in entries if e)
+    if count:
+        notice = f"This post has {count} videos; the first will be downloaded." if count > 1 else None
+    else:
+        notice = ("This post has more than one video; the first will be downloaded."
+                  if len(found) > 1 else None)
+    return found[0], notice
 
 
 def _is_native(fmt: dict) -> bool:
