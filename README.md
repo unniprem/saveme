@@ -106,6 +106,10 @@ docker compose build --no-cache --build-arg YTDLP_VERSION=<new> && docker compos
 # Docker smoke test: builds, waits for healthy, checks the API basics and image hardening
 scripts/docker-smoke.sh
 
+# The image's minimal ffmpeg: a codec/container matrix plus the integration tests, run
+# inside a copy of the built image. Run it after changing the ffmpeg configure flags.
+scripts/docker-ffmpeg-check.sh
+
 # Real-site checks: need the container running and internet access
 docker compose up -d --build
 .venv/bin/pytest -m network -v

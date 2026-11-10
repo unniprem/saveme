@@ -37,6 +37,7 @@ FROM denoland/deno:bin-${DENO_VERSION}@${DENO_DIGEST} AS deno
 #   - for MP3: common web audio decoders, plus libmp3lame.
 #   - local files only: no network protocols, and no HLS/DASH/concat demuxers that open
 #     other files. This also shrinks the attack surface for hostile media.
+# After changing these flags, run scripts/docker-ffmpeg-check.sh.
 # libav* is linked statically into ffmpeg/ffprobe; libmp3lame stays a Debian shared library.
 FROM debian:trixie-slim AS ffmpeg
 RUN apt-get update \
