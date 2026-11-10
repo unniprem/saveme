@@ -2,6 +2,44 @@
 
 ---
 
+## 2026-11-10 11:46 IST — Session: Security Review and Always-On Deployment
+
+### Summary
+
+The owner asked for a security review of `feature/slim-ffmpeg`, then for the app to run in the background all the time and restart on its own. The review found no high- or medium-severity vulnerabilities, because the minimal build removes network protocols and the playlist demuxers. It did find issues to follow up (below). Both unmerged branches went into `main` locally (not pushed), and the container was rebuilt from `main`:
+- **Image:** about 311 MB, FFmpeg 9.0.2.
+- **URL:** still `http://127.0.0.1` (port 80, from `SAVEME_PORT` in `.env`).
+- **Restart policy:** `unless-stopped`.
+
+**Verified:**
+- 348 offline tests pass on the merged `main`.
+- The container reports healthy, and `/health` returns 200 from the host.
+- It runs as uid 10001, and `ffmpeg -version` reports 9.0.2.
+
+### Changes Made
+
+| Commit    | Type  | Description |
+| --------- | ----- | ----------- |
+| `b570247` | merge | Merge `feature/saveme-local-url` (configurable host port) into `main` |
+| `469d125` | merge | Merge `feature/slim-ffmpeg` (minimal ffmpeg build) into `main` |
+
+### Key Decisions
+
+- **Merge both branches before deploying.** The slim build is on `feature/slim-ffmpeg`, but `SAVEME_PORT` is on `feature/saveme-local-url`. Building from either branch alone would have dropped one of them: the slim ffmpeg, or the port-80 URL.
+- **Keep `restart: unless-stopped`, not `always`.** The container restarts after a crash or a Docker restart, but stays stopped if the owner stops it on purpose.
+
+### Issues Encountered
+
+- After the first `docker compose up -d`, the container was healthy inside, but Docker Desktop reset every host connection to 127.0.0.1:80. Another container on the same network could reach it. `docker compose down && docker compose up -d` recreated the network and fixed it.
+- Reboots: the container comes back only if Docker Desktop starts at login. macOS blocked reading Docker Desktop's settings file, so this is not verified (Settings → General → "Start Docker Desktop when you sign in").
+- Review follow-ups, not yet fixed:
+  - `test_ffmpeg_build_reads_local_files_only` misses `ffmpeg` re-added on an `apt-get install` continuation line, and checks only the first `--enable-demuxer=`.
+  - The ffmpeg build has no hardening flags (`--toolchain=hardened`).
+  - FFmpeg security releases now need a manual version and checksum bump.
+  - `.mpg`/`.vob` remux, and MP3 from WMA, AIFF or AMR, no longer work.
+
+---
+
 ## 2026-11-10 11:35 IST — Session: Shrink the Docker Image (Minimal ffmpeg)
 
 ### Summary
