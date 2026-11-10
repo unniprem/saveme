@@ -39,21 +39,30 @@ def test_dockerfile_ytdlp_arg_matches_lock():
     assert arg.group(1) == pin.group(1)
 
 
+# Variables in .env.example that Docker Compose reads and the app does not.
+_COMPOSE_VARS = ["SAVEME_PORT"]
+
+
 def test_env_example_matches_settings_defaults():
     pairs = _parse_env_file(_read(".env.example"))
     keys = [k for k, _ in pairs]
-    settings_vars = sorted(f.name.upper() for f in dataclasses.fields(Settings))
-    assert sorted(keys) == settings_vars  # exactly the Settings variables, no duplicates
+    settings_vars = [f.name.upper() for f in dataclasses.fields(Settings)]
+    # exactly the Settings variables plus the compose ones, no duplicates
+    assert sorted(keys) == sorted(settings_vars + _COMPOSE_VARS)
     assert all(v for _, v in pairs), "every variable carries its default value"
     assert load_settings(dict(pairs)) == load_settings({})
 
 
 def test_compose_binds_loopback_only():
+    # SAVEME_PORT picks the host port; the address is always loopback.
     text = _read("compose.yaml")
-    assert '"127.0.0.1:8000:8000"' in text
     ports = [v.strip() for v in re.findall(r"^\s*ports:(.*)$", text, re.M)]
-    assert ports == ['["127.0.0.1:8000:8000"]']
+    assert ports == ['["127.0.0.1:${SAVEME_PORT:-8000}:8000"]']
     assert "network_mode" not in text
+
+
+def test_env_example_port_matches_compose_default():
+    assert dict(_parse_env_file(_read(".env.example")))["SAVEME_PORT"] == "8000"
 
 
 def test_no_curl_cffi_in_lock():
