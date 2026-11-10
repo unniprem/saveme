@@ -193,7 +193,7 @@ SaveMe works with sites [yt-dlp supports](https://github.com/yt-dlp/yt-dlp/blob/
 | YouTube | ✅ Verified | Inspect, 480p MP4 (H.264) and MP3 download. `youtu.be` short links: inspect verified. |
 | Direct media links (e.g. `.mp4`) | ✅ Verified | Inspect and download. |
 | Facebook, Instagram, X/Twitter | ⚠️ Best effort | yt-dlp has extractors, but they're untested here and often need a login. |
-| Reddit | ⚠️ Often fails | Reddit refused the test post with 403 ("requires a login"). yt-dlp needs browser impersonation for Reddit, which needs `curl_cffi`, and SaveMe deliberately leaves that out (see [Security](#security)). |
+| Reddit | ⚠️ Often fails | Reddit refused the test post with 403 ("requires a login"). The likely cause is that Reddit refuses clients that don't look like a browser: yt-dlp asks for browser impersonation for Reddit, which needs `curl_cffi`, and SaveMe deliberately leaves that out (see [Security](#security)). |
 | JavaScript file hosts (Streamtape, LuluVid, …) | ❌ Not supported | yt-dlp has no extractor for them. A headless-browser fallback is planned. |
 | DRM-protected video, anything behind a login, playlists, live streams | ❌ Not supported | One public video at a time. |
 
