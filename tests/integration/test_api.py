@@ -178,7 +178,17 @@ async def test_app_js_served(client):
     assert r.content == (STATIC_DIR / "app.js").read_bytes()
 
 
-@pytest.mark.parametrize("path", ["/", "/health", "/static/app.js", "/nope", "/api/jobs/x"])
+@pytest.mark.parametrize("name", ["icon.svg", "lockup-white.svg"])
+async def test_brand_svgs_served_as_images(client, name):
+    # nosniff is on, so the browser only draws these if the type is exactly image/svg+xml.
+    r = await client.get(f"/static/brand/{name}")
+    assert r.status_code == 200
+    assert r.headers["content-type"].split(";")[0] == "image/svg+xml"
+    assert r.content == (STATIC_DIR / "brand" / name).read_bytes()
+
+
+@pytest.mark.parametrize("path", ["/", "/health", "/static/app.js", "/static/brand/icon.svg", "/nope",
+                                  "/api/jobs/x"])
 async def test_security_headers_on_index(client, path):
     r = await client.get(path)
     assert r.headers["content-security-policy"] == CSP
