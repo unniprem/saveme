@@ -4,3 +4,9 @@ __pycache__/
 .cache/
 static/dist/
 .env
+.env.*
+!.env.example
+# Local tool state: session tokens, browser captures, worktrees
+.superpowers/
+.playwright-mcp/
+.worktrees/
