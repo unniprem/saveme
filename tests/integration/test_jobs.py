@@ -19,7 +19,8 @@ import pytest
 
 from app.config import ConfigError, Settings, load_settings
 from app.errors import AppError
-from app.jobs import APP_DIR, JOB_ID_RE, MARKER_NAME, JobManager, prepare_temp_dir
+from app.jobs import (APP_DIR, JOB_ID_RE, MARKER_NAME, RESUME_WINDOW_SECONDS, JobManager,
+                      prepare_temp_dir)
 from app.runner import DEFAULT_WORKER_CMD
 
 URL = "https://example.com/watch?v=1"
@@ -187,9 +188,11 @@ async def test_lifecycle_to_ready(make_manager, settings, temp_dir):
 
     view = manager.public_view(job)
     assert set(view) == {"job_id", "status", "detail", "progress_percent", "downloaded_bytes",
-                         "total_bytes", "notice", "error", "filename", "reason"}
+                         "total_bytes", "notice", "error", "filename", "reason",
+                         "resume_seconds"}
     assert view["job_id"] == job.id and view["status"] == "ready"
     assert view["filename"] == "My Video.mp4" and view["error"] is None
+    assert view["resume_seconds"] is None
     assert str(temp_dir) not in json.dumps(view)
 
 
@@ -336,6 +339,228 @@ async def test_delivery_states(make_manager, tmp_path):
             manager.file_for_delivery(bad)
         manager.mark_delivered(bad)
     assert sorted(str(p) for p in tmp_path.rglob("*")) == before
+
+
+# --- Cancel and resume -------------------------------------------------------
+
+class SlowKillRunner(StubRunner):
+    """A StubRunner whose cancelled calls take until `killed` is set to finish, like
+    run_worker waiting out the SIGTERM grace."""
+
+    def __init__(self):
+        super().__init__()
+        self.killed = asyncio.Event()
+
+    async def __call__(self, request, **kwargs):
+        try:
+            return await super().__call__(request, **kwargs)
+        except asyncio.CancelledError:
+            await self.killed.wait()
+            raise
+
+
+async def test_cancel_running_job_keeps_partial_files(make_manager, settings, temp_dir):
+    clock = FakeClock()
+    runner = StubRunner()
+    manager = await make_manager(dataclasses.replace(settings, max_active_jobs=1),
+                                 run_worker=runner, clock=clock)
+    job = manager.submit(URL, "video", "best")
+    waiting = manager.submit(URL, "video", "best")
+    await wait_until(lambda: runner.calls)
+    call = runner.calls[0]
+    call.emit({"event": "progress", "detail": "Downloading video track (1 of 2)",
+               "downloaded_bytes": 100, "total_bytes": 400, "percent": 25.0})
+    assert waiting.status == "queued"
+
+    assert manager.cancel(job.id) is job
+    assert job.status == "cancelled" and job.finished_at == clock.now
+    view = manager.public_view(job)
+    assert (view["status"], view["detail"], view["progress_percent"], view["error"]) == (
+        "cancelled", None, None, None)
+    assert view["resume_seconds"] == RESUME_WINDOW_SECONDS
+
+    await wait_until(lambda: call.cancelled)
+    await wait_until(lambda: len(runner.calls) == 2)  # its slot went to the queued job
+    assert waiting.status == "downloading"
+    assert (job.workdir / "media.mp4.part").is_file()  # kept for a resume
+    call.emit({"event": "progress", "detail": "late", "percent": 50.0})
+    assert job.status == "cancelled" and job.detail is None
+    with pytest.raises(AppError) as ei:
+        manager.file_for_delivery(job.id)
+    assert (ei.value.code, ei.value.status) == ("cancelled", 410)
+
+    await manager.sweep()  # inside the window: not an orphan
+    assert job.workdir.is_dir()
+    clock.advance(RESUME_WINDOW_SECONDS - 0.5)
+    assert manager.public_view(job)["resume_seconds"] == 1
+    clock.advance(0.5)
+    await manager.sweep()
+    assert not job.workdir.exists() and manager.public_view(job)["resume_seconds"] is None
+    assert job_dirs(temp_dir) == [waiting.id]
+    with pytest.raises(AppError) as ei:
+        manager.resume(job.id)
+    assert (ei.value.code, ei.value.status) == ("not_resumable", 410)
+
+
+async def test_resume_reuses_workdir(make_manager):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    job = manager.submit(URL, "video", "best")
+    await wait_until(lambda: runner.calls)
+    runner.calls[0].emit({"event": "progress", "downloaded_bytes": 100, "percent": 25.0})
+    manager.cancel(job.id)
+    await wait_until(lambda: runner.calls[0].cancelled)
+    (job.workdir / "media.f1.mp4").write_bytes(b"finished track")
+
+    assert manager.resume(job.id) is job
+    assert job.status == "queued" and job.resume_until is None and job.finished_at is None
+    assert (job.downloaded_bytes, job.progress_percent) == (None, None)
+    assert manager.public_view(job)["resume_seconds"] is None
+    assert manager.resume(job.id) is job  # a repeated resume changes nothing
+    await wait_until(lambda: len(runner.calls) == 2)
+    await asyncio.sleep(0.05)
+    assert len(runner.calls) == 2
+    second = runner.calls[1]
+    assert second.workdir == job.workdir and second.request == runner.calls[0].request
+    assert (job.workdir / "media.f1.mp4").read_bytes() == b"finished track"
+
+    second.finish()
+    await wait_until(lambda: job.status == "ready")
+    assert job.file_path.is_file()
+
+
+async def test_resume_waits_for_the_cancelled_run(make_manager):
+    runner = SlowKillRunner()
+    manager = await make_manager(run_worker=runner)
+    job = manager.submit(URL, "video", "best")
+    await wait_until(lambda: runner.calls)
+    manager.cancel(job.id)
+    manager.resume(job.id)
+    await asyncio.sleep(0.1)
+    assert len(runner.calls) == 1  # the first worker isn't dead yet
+    manager.cancel(job.id)  # cancel and resume again while it waits
+    manager.resume(job.id)
+    await asyncio.sleep(0.1)
+    assert len(runner.calls) == 1
+
+    runner.killed.set()
+    await wait_until(lambda: len(runner.calls) == 2)
+    await asyncio.sleep(0.05)
+    assert len(runner.calls) == 2 and runner.max_inflight == 1
+    runner.calls[1].finish()
+    await wait_until(lambda: job.status == "ready")
+
+
+async def test_resume_after_window_without_sweep(make_manager):
+    clock = FakeClock()
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner, clock=clock)
+    job = manager.submit(URL, "video", "best")
+    await wait_until(lambda: runner.calls)
+    manager.cancel(job.id)
+    await wait_until(lambda: runner.calls[0].cancelled)
+    clock.advance(RESUME_WINDOW_SECONDS)
+    with pytest.raises(AppError) as ei:
+        manager.resume(job.id)
+    assert ei.value.code == "not_resumable"
+    assert not job.workdir.exists() and job.status == "cancelled"
+
+
+async def test_resume_respects_queue_limit(make_manager, settings):
+    runner = StubRunner()
+    manager = await make_manager(
+        dataclasses.replace(settings, max_active_jobs=1, max_queued_jobs=1), run_worker=runner)
+    job = manager.submit(URL, "video", "best")
+    manager.cancel(job.id)
+    others = [manager.submit(URL, "video", "best") for _ in range(2)]
+    with pytest.raises(AppError) as ei:
+        manager.resume(job.id)
+    assert ei.value.code == "busy"
+    assert job.status == "cancelled" and job.resume_until is not None
+    manager.cancel(others[1].id)
+    assert manager.resume(job.id).status == "queued"
+
+
+async def test_cancel_queued_job_never_starts(make_manager, settings):
+    runner = StubRunner()
+    manager = await make_manager(dataclasses.replace(settings, max_active_jobs=1),
+                                 run_worker=runner)
+    running = manager.submit(URL, "video", "best")
+    queued = manager.submit(URL, "audio", "best")
+    await wait_until(lambda: runner.calls)
+    manager.cancel(queued.id)
+    assert queued.status == "cancelled"
+
+    runner.calls[0].finish()
+    await wait_until(lambda: running.status == "ready")
+    await asyncio.sleep(0.1)  # a queued job that wasn't stopped would start now
+    assert len(runner.calls) == 1 and queued.status == "cancelled"
+    assert not queued.workdir.exists()
+
+
+async def test_cancel_job_submitted_this_tick(make_manager):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    job = manager.submit(URL, "video", "best")
+    manager.cancel(job.id)  # before its task has run at all
+    await asyncio.sleep(0.1)
+    assert job.status == "cancelled" and runner.calls == [] and not job.workdir.exists()
+
+
+async def test_cancel_ready_job_discards_file(make_manager):
+    runner = StubRunner(auto_finish=True)
+    manager = await make_manager(run_worker=runner)
+    job = await ready_job(manager, runner)
+    manager.cancel(job.id)
+    assert job.status == "cancelled" and job.file_path is None
+    assert not job.workdir.exists()
+    assert manager.public_view(job)["resume_seconds"] is None
+    with pytest.raises(AppError) as ei:
+        manager.resume(job.id)
+    assert ei.value.code == "not_resumable"
+
+
+async def test_cancel_or_resume_after_the_end_changes_nothing(make_manager):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    failed = manager.submit(URL, "video", "best")
+    await wait_until(lambda: runner.calls)
+    runner.calls[0].fail(AppError("unavailable"))
+    await wait_until(lambda: failed.status == "failed")
+    delivered = await ready_job(manager, runner)
+    manager.mark_delivered(delivered.id)
+
+    for job, status in ((failed, "failed"), (delivered, "expired")):
+        before = manager.public_view(job)
+        assert manager.cancel(job.id) is job
+        with pytest.raises(AppError) as ei:
+            manager.resume(job.id)
+        assert ei.value.code == "not_resumable"
+        assert job.status == status and manager.public_view(job) == before
+    cancelled = manager.submit(URL, "video", "best")
+    manager.cancel(cancelled.id)
+    finished_at, resume_until = cancelled.finished_at, cancelled.resume_until
+    manager.cancel(cancelled.id)  # twice is fine
+    assert cancelled.status == "cancelled"
+    assert (cancelled.finished_at, cancelled.resume_until) == (finished_at, resume_until)
+
+    for action in (manager.cancel, manager.resume):
+        with pytest.raises(AppError) as ei:
+            action("A" * 22)
+        assert (ei.value.code, ei.value.status) == ("job_not_found", 404)
+
+
+async def test_cancelled_record_is_purged(make_manager):
+    clock = FakeClock()
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner, clock=clock)
+    job = manager.submit(URL, "video", "best")
+    manager.cancel(job.id)
+    clock.advance(3601)
+    await manager.sweep()  # ends the resume window first
+    await manager.sweep()
+    with pytest.raises(AppError):
+        manager.get(job.id)
 
 
 # --- Disk budget -------------------------------------------------------------
@@ -560,6 +785,46 @@ async def test_shutdown_kills_real_worker_group(make_manager, tmp_path):
         await wait_until(lambda: not alive(pid), timeout=8)
 
 
+# The worker and its child ignore SIGTERM, so each cancel waits the 5 s grace for SIGKILL.
+STUBBORN_WORKER = (
+    "import os, signal, subprocess, sys, time\n"
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"  # inherited by the child
+    "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+    "open({pidfile!r}, 'w').write('%d %d' % (os.getpid(), child.pid))\n"
+    "time.sleep(60)\n"
+)
+
+
+async def start_stubborn_job(make_manager, tmp_path):
+    pidfile = tmp_path / "pids"
+    script = STUBBORN_WORKER.format(pidfile=str(pidfile))
+    manager = await make_manager(worker_cmd=(sys.executable, "-c", script))
+    job = manager.submit(URL, "video", "best")
+    await wait_until(lambda: pidfile.exists() and pidfile.read_text().count(" ") == 1,
+                     timeout=10)
+    return manager, job, [int(p) for p in pidfile.read_text().split()]
+
+
+async def test_cancel_kills_real_worker_group(make_manager, tmp_path):
+    manager, job, pids = await start_stubborn_job(make_manager, tmp_path)
+    manager.cancel(job.id)
+    assert job.status == "cancelled"
+    for pid in pids:
+        await wait_until(lambda: not alive(pid), timeout=10)
+    assert job.workdir.is_dir()  # kept for a resume
+
+
+async def test_shutdown_during_cancel_still_kills_worker(make_manager, tmp_path):
+    # A second task.cancel() would cut run_worker's kill short before its SIGKILL.
+    manager, job, pids = await start_stubborn_job(make_manager, tmp_path)
+    manager.cancel(job.id)
+    await asyncio.sleep(0.2)  # the cancel's kill is now waiting out the SIGTERM grace
+    await manager.shutdown()
+    for pid in pids:
+        await wait_until(lambda: not alive(pid), timeout=2)
+    assert not job.workdir.exists()
+
+
 def alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -632,6 +897,23 @@ async def test_timeout_job_fails_cleanly(make_manager, settings, media_server):
     assert job.status == "failed", manager.public_view(job)
     assert job.error.code == "timeout"
     assert not job.workdir.exists()
+
+
+async def test_resume_continues_a_real_partial_download(make_manager, media_server, media):
+    manager = await make_manager(worker_cmd=TEST_WORKER_CMD)
+    job = manager.submit(media_server.url("/resumable/sample.mp4"), "video", "best")
+    await wait_until(lambda: (job.downloaded_bytes or 0) >= 4096, timeout=30)
+    manager.cancel(job.id)
+    await wait_until(lambda: not job.runs, timeout=10)  # the worker is dead
+    parts = list(job.workdir.glob("*.part"))  # less than reported: the kill loses buffered bytes
+    assert len(parts) == 1 and parts[0].stat().st_size > 0
+    kept = parts[0].stat().st_size
+
+    manager.resume(job.id)
+    await wait_terminal(job)
+    assert job.status == "ready", manager.public_view(job)
+    assert job.file_path.read_bytes() == media["sample.mp4"].read_bytes()
+    assert media_server.ranges and media_server.ranges[-1] == kept  # continued, not restarted
 
 
 async def test_real_video_job_ready(make_manager, media_server):

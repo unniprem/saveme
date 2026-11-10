@@ -11,6 +11,8 @@ CATALOG: dict[str, tuple[int, str]] = {
     "job_not_found": (404, "That download couldn't be found. It may have expired or the server may have restarted."),
     "not_ready": (409, "The file isn't ready yet. Please wait for the download to finish."),
     "expired": (410, "This download has expired. Please start again."),
+    "cancelled": (410, "This download was cancelled. Please start again."),
+    "not_resumable": (410, "This download can no longer be resumed. Please start again."),
     "unsupported": (422, "This link isn't supported, or it doesn't contain downloadable media."),
     "login_required": (422, "This media requires a login or is private, so it can't be downloaded."),
     "unavailable": (422, "This media is unavailable. It may have been removed or doesn't exist."),

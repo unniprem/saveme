@@ -395,6 +395,51 @@ async def test_unknown_job_is_404_job_not_found(client):
             assert r.json() == error_body("job_not_found")
 
 
+async def test_cancel_and_resume_job(settings, temp_dir):
+    stub = StubWorker(block=True)
+    async with running(make_app(settings, run_worker=stub)) as client:
+        r = await client.post("/api/jobs", json={"url": URL, "output": "video"})
+        job_id = r.json()["job_id"]
+        await wait_until(lambda: stub.calls and (temp_dir / job_id).is_dir())
+        r = await client.post(f"/api/jobs/{job_id}/cancel", headers={"Origin": "http://127.0.0.1"})
+        assert r.status_code == 200
+        view = r.json()
+        assert (view["job_id"], view["status"], view["resume_seconds"]) == (job_id, "cancelled", 300)
+        assert (await client.get(f"/api/jobs/{job_id}")).json()["status"] == "cancelled"
+        r = await client.get(f"/api/jobs/{job_id}/file")
+        assert r.status_code == 410
+        assert r.json() == error_body("cancelled")
+        r = await client.post(f"/api/jobs/{job_id}/cancel")  # again: unchanged
+        assert r.status_code == 200 and r.json()["status"] == "cancelled"
+        assert (temp_dir / job_id).is_dir()  # kept for a resume
+
+        r = await client.post(f"/api/jobs/{job_id}/resume")
+        assert r.status_code == 200
+        assert r.json()["status"] == "queued" and r.json()["resume_seconds"] is None
+        await wait_until(lambda: len(stub.calls) == 2)
+        stub.gate.set()
+        view = await poll_terminal(client, job_id)
+        assert view["status"] == "ready"
+        for action in ("cancel", "resume"):
+            assert (await client.get(f"/api/jobs/{job_id}/{action}")).status_code == 405
+
+
+async def test_resume_after_end_410(client):
+    job_id = await ready_job(client)
+    assert (await client.get(f"/api/jobs/{job_id}/file")).status_code == 200  # delivered
+    r = await client.post(f"/api/jobs/{job_id}/resume")
+    assert r.status_code == 410
+    assert r.json() == error_body("not_resumable")
+
+
+async def test_cancel_or_resume_unknown_job_404(client):
+    for job_id in ("AAAAAAAAAAAAAAAAAAAAAA", "not-a-job"):
+        for action in ("cancel", "resume"):
+            r = await client.post(f"/api/jobs/{job_id}/{action}")
+            assert r.status_code == 404, (job_id, action)
+            assert r.json() == error_body("job_not_found")
+
+
 async def test_file_not_ready_409(settings):
     stub = StubWorker(block=True)
     async with running(make_app(settings, run_worker=stub)) as client:
@@ -566,7 +611,9 @@ async def test_ipv6_allowed_host(temp_dir, stub, allowed, host):
                                     "https://evil.example:8000", "file://", "http://localhost/"])
 async def test_cross_origin_post_403(client, stub, origin):
     for path, body in (("/api/inspect", {"url": URL}),
-                       ("/api/jobs", {"url": URL, "output": "video"})):
+                       ("/api/jobs", {"url": URL, "output": "video"}),
+                       ("/api/jobs/AAAAAAAAAAAAAAAAAAAAAA/cancel", {}),
+                       ("/api/jobs/AAAAAAAAAAAAAAAAAAAAAA/resume", {})):
         r = await client.post(path, json=body, headers={"Origin": origin})
         assert r.status_code == 403, (origin, path)
         assert r.json() == error_body("forbidden_origin")

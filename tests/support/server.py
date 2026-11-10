@@ -4,6 +4,8 @@ Routes:
   /media/<name>        file from the media dir, with Content-Type and Content-Length
   /chunked/<name>      the same file, chunked transfer encoding (no Content-Length)
   /slow/<name>         the same file, trickled 1 KiB every 0.5 s
+  /resumable/<name>    the same file, trickled 1 KiB every 0.05 s; a `Range: bytes=N-`
+                       request (N > 0) gets the rest at once as a 206 (recorded in .ranges)
   /hls/<name>          files under the media dir's hls/
   /redirect?to=<url>   302 to <url>
   /page?title=&video=&thumb=   HTML with <title>, og:title, og:video, og:image
@@ -14,6 +16,7 @@ Routes:
   anything else        404 (e.g. /missing)
 """
 import html
+import re
 import sys
 import threading
 import time
@@ -30,6 +33,8 @@ CONTENT_TYPES = {
 }
 SLOW_CHUNK = 1024
 SLOW_DELAY = 0.5
+RESUMABLE_DELAY = 0.05
+_RANGE = re.compile(r"bytes=(\d+)-")
 
 
 class _HTTPServer(ThreadingHTTPServer):
@@ -57,7 +62,8 @@ class _Handler(BaseHTTPRequestHandler):
         path, query = parts.path, parse_qs(parts.query)
         media = self.server.media
         media.record_hit(path)
-        for prefix, mode in (("/media/", "plain"), ("/chunked/", "chunked"), ("/slow/", "slow")):
+        for prefix, mode in (("/media/", "plain"), ("/chunked/", "chunked"), ("/slow/", "slow"),
+                             ("/resumable/", "resumable")):
             if path.startswith(prefix):
                 return self._file(path[len(prefix):], mode)
         if path.startswith("/hls/"):
@@ -104,6 +110,21 @@ class _Handler(BaseHTTPRequestHandler):
         ctype = CONTENT_TYPES.get(target.suffix, "application/octet-stream")
         if mode == "plain":
             return self._send(200, data, ctype)
+        delay = SLOW_DELAY
+        if mode == "resumable":
+            delay = RESUMABLE_DELAY
+            match = _RANGE.fullmatch(self.headers.get("Range", ""))
+            start = int(match[1]) if match else 0
+            if 0 < start < len(data):
+                self.server.media.record_range(start)
+                self.send_response(206)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Range", f"bytes {start}-{len(data) - 1}/{len(data)}")
+                self.send_header("Connection", "close")
+                self.send_header("Content-Length", str(len(data) - start))
+                self.end_headers()
+                self.wfile.write(data[start:])
+                return
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Connection", "close")
@@ -119,7 +140,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         for i in range(0, len(data), SLOW_CHUNK):
             self.wfile.write(data[i:i + SLOW_CHUNK])
-            time.sleep(SLOW_DELAY)
+            time.sleep(delay)
 
     def _send(self, status: int, body: bytes, ctype: str, *, location: str | None = None) -> None:
         self.send_response(status)
@@ -138,6 +159,7 @@ class MediaServer:
     def __init__(self, root: Path):
         self.root = root.resolve()
         self.hits: Counter[str] = Counter()
+        self.ranges: list[int] = []  # start offsets of the 206s /resumable/ sent
         self._lock = threading.Lock()
         self._httpd = _HTTPServer(("127.0.0.1", 0), _Handler)
         self._httpd.media = self
@@ -151,6 +173,10 @@ class MediaServer:
     def record_hit(self, path: str) -> None:
         with self._lock:
             self.hits[path] += 1
+
+    def record_range(self, start: int) -> None:
+        with self._lock:
+            self.ranges.append(start)
 
     def close(self) -> None:
         self._httpd.shutdown()

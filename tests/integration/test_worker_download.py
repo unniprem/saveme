@@ -221,6 +221,20 @@ def test_progress_hook_throttles_and_caps():
         tick("a", "downloading", 601, fragment_index=2, fragment_count=4)
 
 
+def test_kept_track_counts_toward_the_cap():
+    from app.worker import _Progress, _TooLarge
+
+    events: list[dict] = []
+    hook = _Progress(events.append, max_bytes=1000)
+    # A track a cancelled run finished: yt-dlp reports only its size, as total_bytes.
+    hook({"status": "finished", "total_bytes": 900, "filename": "/job/media.fv.mp4",
+          "info_dict": {"format_id": "v"}})
+    assert events[-1]["downloaded_bytes"] == 900
+    with pytest.raises(_TooLarge):
+        hook({"status": "downloading", "downloaded_bytes": 101, "total_bytes": 200,
+              "filename": "/job/media.fa.m4a", "info_dict": {"format_id": "a"}})
+
+
 def test_estimate_alone_gives_no_percent():
     from app.worker import _Progress
 
