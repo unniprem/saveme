@@ -72,3 +72,9 @@ async def test_resolver_unicode_error_is_unreachable():
 ])
 def test_share_text_trailing_punctuation(raw, want):
     assert check_url_syntax(raw) == want
+
+def test_raw_input_length_is_capped_before_stripping():
+    # Whitespace padding can't smuggle a huge body past the 2,048-character URL limit.
+    with pytest.raises(AppError) as e: check_url_syntax(" " * 9000 + "https://example.com/v")
+    assert e.value.code == "invalid_url"
+    assert check_url_syntax(" " * 100 + "https://example.com/v") == "https://example.com/v"

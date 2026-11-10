@@ -2,6 +2,129 @@
 
 ---
 
+## 2026-11-10 17:26 IST — Session: Security hardening (#3–#8)
+
+### Summary
+
+The owner asked me to go through the open issues, fix the ones that need fixing, merge into `main` and close them. #1 and #7 were already fixed on `feature/security-quick-fixes`. #3, #4, #5, #6 and #8 are fixed on `feature/security-hardening`, which was branched from it. #2 (authentication) stays open: the issue itself says it is needed only before public or shared hosting, and the app is meant for one person on loopback.
+- **#8:** a POST's `Origin` must equal the request's own origin (scheme, Host-header host, effective port), not just an allowed host.
+- **#3:** POST bodies are read by the Guard and capped at 64 KiB (chunked too) before JSON parsing; raw link input is capped at 8,192 characters before stripping; DNS lookups run inside the inspection slot or a held queue place.
+- **#5:** at most `MAX_ACTIVE_JOBS + MAX_QUEUED_JOBS` resumable cancelled jobs (a later cancel ends the oldest window), and at most 100 finished records.
+- **#6:** one download per file at a time (409 `delivery_in_progress`); a file being sent stays on disk and in the budget and is skipped by TTL, eviction and the ready cap; a client idle for 60 s or still downloading after an hour is cut off, and the file stays for another try.
+- **#4:** whole-body reads in the worker are capped at 16 MiB decoded (`source_too_large`); the playlist unwrap is lazy; each worker sets `RLIMIT_DATA` to 1 GiB, inherited by deno and ffmpeg.
+
+A parallel session (README for the public release) committed on this same branch while I worked, because the two sessions share the working tree. Its commits touch only `README.md`, `JOURNAL.md` and `.gitattributes`, and its README rewrite kept my two README notes (#5, #6).
+
+**Verified:**
+- Offline suite on macOS: 419 passed, 2 skipped (the Linux-only memory tests). `test_readme_hedges_the_reddit_cause` failed for a while after the parallel README rewrite; that session was told and fixed it in `6360cfc`.
+- `scripts/docker-ffmpeg-check.sh` on an image built from the branch: 249 integration tests passed on Linux, including the two `RLIMIT_DATA` tests.
+- The same image, run as a throwaway container with Compose's limits: `pytest -m network` passed YouTube, youtu.be, direct MP4, unsupported and private-IP. Reddit failed with `login_required`, exactly as on the old container and as the README documents.
+- Memory in that container on a real YouTube download: deno peaked at 563 MiB data segment (314 MiB RSS), the worker at 76 MiB (109 MiB RSS); all five processes showed a 1 GiB `Max data size`.
+- Each new test failed first for the missing behaviour. The two delivery-timeout tests failed first only on a missing option, so each timeout was disabled by hand to confirm its test catches the break.
+- 413 replies were also checked on a real uvicorn server, with and without `Content-Length`.
+
+### Changes Made
+
+| Commit    | Type | Description |
+| --------- | ---- | ----------- |
+| `84410d6` | fix | Require a POST's Origin to be the request's own origin (#8) |
+| `3b4eef1` | fix | Cap request bodies and resolve links inside the concurrency caps (#3) |
+| `f868a3e` | fix | Bound cancelled and finished job records by count (#5) |
+| `3b19dd8` | fix | Deliver each file to one client at a time, with deadlines (#6) |
+| `767b916` | fix | Bound worker memory during extraction (#4) |
+| `7a3b1c4` | docs | Describe the page, memory, body and origin limits under Security |
+
+### Key Decisions
+
+- **The expected Origin comes from the request, not a new setting.** A configured origin list would have to track `SAVEME_PORT` and any proxy; the Host header is already allowlisted, and the page is always same-origin.
+- **DNS inside the slot, syntax check outside it.** A malformed link still never takes a slot. A blocked or unresolvable link holds one only for the lookup (at most 5 s), and while busy it gets "busy" instead of its own error. For jobs, a link being resolved holds a queue place, so lookups never exceed the queue.
+- **No time-based rate limits.** The concurrency and count bounds cap memory, CPU and lookups. Per-user quotas belong with authentication in #2.
+- **Delivery is claimed inside the response's `__call__`, not the route handler.** Claim, open, send and release share one try/finally, so a claim can't leak and pin a file forever.
+- **A file being sent stays on disk rather than being unlinked under the reader.** It then stays honestly counted in the budget; the deadlines bound how long a slow client can hold it.
+- **The 1 GiB worker limit is a constant, sized from a measurement.** deno inherits it and needs about 570 MiB, so a lower cap would break YouTube. `RLIMIT_DATA`, not `RLIMIT_AS`: V8 reserves large address ranges it never touches.
+- **The page cap wraps `YoutubeDL.urlopen`.** Extractors and downloaders all open responses there, and only reads with no size are capped, so media downloads (read in blocks) are untouched.
+- **macOS refuses any `RLIMIT_DATA` change,** so the worker logs that and runs without it; the Docker image (Linux) enforces it.
+
+### Issues Encountered
+
+- **A parallel session shares this working tree** and committed README, journal and `.gitattributes` changes onto `feature/security-hardening`. They don't overlap my files. To avoid moving the branch under it, `main` is merged from a temporary worktree.
+- **The first README edit for #4 missed** its anchor line, because the README had been rewritten meanwhile. The note went into the rewritten README's Security section afterwards (`7a3b1c4`).
+- **The trickle-reader test failed on Linux only:** a 4 KiB receive buffer gives 8 KiB reads there, so the slow drain outlasted the timeout. The test now trickles only past the deadline, then drains at full speed.
+- **Known limitation:** ending a resume window early (the #5 cap) can remove partial files while the cancelled worker is still being killed (up to its 5 s grace). The worker may write into a removed folder, and the next sweep removes anything it leaves.
+- **Not done:** the running `saveme-saveme-1` container still uses the old image, and nothing is pushed.
+
+---
+
+## 2026-11-10 17:21 IST — Session: README for the public release
+
+### Summary
+
+The owner plans to make the repository public and asked for a professional README that explains why the app is needed and covers installation and removal. The README was rewritten on `feature/security-hardening` (it describes behaviour from this branch, such as one download per file at a time). It adds a "Why SaveMe" section comparing online downloader sites and the yt-dlp CLI, a features list, step-by-step install, update and uninstall sections, a supported-sites table, a security section with a vulnerability-reporting route, a native development run, project layout, responsible-use guidance and contributing notes. The existing settings, troubleshooting and safety content was kept and reorganised.
+
+**Verified:**
+- A native run (`.venv/bin/python -m app`) answered `/health` with 200 and served the page on `127.0.0.1:8000`; `docker compose config` is valid.
+- Every in-page anchor and local link in the README resolves.
+- Claims were checked against the code: startup cleanup of leftover job folders, MP3 VBR quality 2, the default quality tier, and what the build verifies by checksum or digest. The draft said base images were pinned; they aren't (only FFmpeg, Deno and the Tailwind CLI are), so that line was corrected.
+
+### Changes Made
+
+| Commit    | Type | Description |
+| --------- | ---- | ----------- |
+| `01c7406` | docs | Rewrite README for the public release |
+| `603fe8e` | chore | Check out text files with LF line endings on every platform (`.gitattributes`) |
+| `53e74bb` | docs | State that SaveMe has no login by design |
+
+The owner then asked for the `.gitattributes` and a repository description. The description is now set on GitHub: "A private, self-hosted media downloader. Paste a link and save it as MP4 or MP3. Runs locally in Docker, built on yt-dlp and FFmpeg." A clone with `core.autocrlf=true` had 89 CR bytes in `scripts/build-css.sh` at `3b02d7b`. At `603fe8e` that file and both `app/bin` wrappers had none.
+
+### Key Decisions
+
+- **"Public" means the repository, not hosting.** The README keeps a prominent warning never to expose the app to a network.
+- **No login, by the owner's decision.** SaveMe is for one person running it locally, so authentication isn't planned. The README no longer links #2 as a future step, and Contributing lists logins, accounts and hosting for others as out of scope. Issue #2 is still open on GitHub.
+- **Uninstall uses `docker compose down --rmi all`.** The compose file sets `image: saveme:local`, a custom tag, so `--rmi local` would leave the image behind.
+- **Native run documented under Development only.** It skips the container hardening and uses the system FFmpeg, so Docker stays the recommended install.
+- **`* text=auto eol=lf` for the whole repo, not just `*.sh`.** The `app/bin` wrappers have no extension, and every tracked file was already LF in the index, so the blanket rule changed no file contents. The README's Windows note dropped its `core.autocrlf=false` clone flag; Windows is still marked untested.
+
+### Issues Encountered
+
+- Other uncommitted work on this branch (`app/`, `tests/`) was left untouched; only `README.md` was committed.
+- Follow-ups before going public: enable private vulnerability reporting (the README points to it), and consider merging or closing the security fixes, since issues #1–#8 become public with the repo.
+
+---
+
+## 2026-11-10 16:50 IST — Session: Security review follow-up
+
+### Summary
+
+The owner asked me to go through the security review in `/tmp/saveme-security-review.md`, then to file every finding as a GitHub issue and fix the two quick ones. Each finding was checked against the code at `bd527ec` and all seven held up. They are filed as issues #1–#8 on `unniprem/saveme` under a new `security` label; the review's finding 1 is split into #1 (native bind) and #2 (no authentication). Fixed on `feature/security-quick-fixes` (not merged or pushed):
+- **#7:** `.gitignore` now covers `.superpowers/` (it held a local session token one `git add -A` away from a commit), `.env.*` (with `.env.example` kept), `.playwright-mcp/` and `.worktrees/`.
+- **#1:** `python -m app` listens on `127.0.0.1` by default; `--host` sets another address, and the Dockerfile passes `--host 0.0.0.0`. The README safety note says so.
+
+**Verified:**
+- 375 offline tests pass. The new entrypoint and Dockerfile `CMD` tests failed first, for the missing feature.
+- `git check-ignore` now matches all five paths and not `.env.example`; `git status` is clean.
+- A native run listened on `127.0.0.1:8000` only: `/health` answered on loopback, and the LAN address refused the connection.
+- An image built from the branch under a throwaway tag became healthy and answered `/health` through a `127.0.0.1:18000` mapping, with uvicorn on `0.0.0.0` inside. The tag and container were removed; the running `saveme-saveme-1` was left alone.
+
+### Changes Made
+
+| Commit    | Type | Description |
+| --------- | ---- | ----------- |
+| `a69084f` | chore | Ignore local tool state and `.env` variants (closes #7) |
+| `6fdcfee` | fix | Listen on loopback by default when run natively (closes #1) |
+
+### Key Decisions
+
+- **A `--host` flag, not an environment variable.** Compose loads `.env` into the container, so a `.env` copied from `.env.example` carrying a loopback default would override the container's bind and make it unreachable.
+- **Finding 1 split into two issues.** The bind is fixed now; authentication and job ownership stay open until public hosting is planned, and are tracked separately so closing #1 doesn't hide them.
+- **Gitignore change verified with `git check-ignore`, not a test.** It is configuration; the before/after check shows what it ignores.
+
+### Issues Encountered
+
+- The review's scan left a repo copy in `/tmp/saveme-secret-scan-1nhdr259/`, including `.env` and the session token. Its folder is owner-only, but it should be deleted once the review is no longer needed.
+- The running container still uses the old image. It behaves the same (it bound `0.0.0.0` inside before too), so it wasn't rebuilt.
+
+---
+
 ## 2026-11-10 14:53 IST — Session: Cancel and Resume
 
 ### Summary

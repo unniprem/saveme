@@ -3,7 +3,13 @@
 A job ends ready (then expired), failed, or cancelled by the user. A cancel kills
 the worker but keeps its partial files for RESUME_WINDOW_SECONDS: a resume runs the
 job again in the same folder, where yt-dlp continues the partial files; after the
-window the sweep removes them. Job records live only in this process. Each job's
+window the sweep removes them. At most MAX_ACTIVE_JOBS + MAX_QUEUED_JOBS cancelled jobs
+can be resumed at once (a later cancel ends the oldest window), and at most
+MAX_FINISHED_RECORDS finished records are kept, so create-and-cancel can't grow the
+record table. A ready file is sent to one client at a time: while it is being sent it
+stays on disk (and in the disk budget) and the TTL, eviction and the ready-file cap
+skip it; an interrupted send leaves it ready for another try. Job records live only
+in this process. Each job's
 files live in TEMP_DIR/<job_id>/ under fixed names; the job ID is the only name derived from
 anything, and it is validated before any filesystem use.
 """
@@ -31,6 +37,8 @@ MARKER_NAME = ".saveme-tempdir"
 APP_DIR = Path(__file__).resolve().parent.parent
 
 RECORD_RETENTION_SECONDS = 3600
+# Failed, expired and no-longer-resumable records kept for status polls, newest first.
+MAX_FINISHED_RECORDS = 100
 DISK_RETRY_SECONDS = 2.0
 RESUME_WINDOW_SECONDS = 300
 
@@ -105,6 +113,7 @@ class Job:
     ready_at: float | None = None
     finished_at: float | None = None
     resume_until: float | None = None  # set while a cancelled job can be resumed
+    delivering: bool = False  # its file is being sent to a client
     task: asyncio.Task | None = field(default=None, repr=False)  # the latest run
     runs: set[asyncio.Task] = field(default_factory=set, repr=False)  # unfinished runs
 
@@ -168,6 +177,7 @@ class JobManager:
 
     def submit(self, url: str, output: str, quality: str) -> Job:
         self._admit()
+        self._prune_finished_records()
         job_id = secrets.token_urlsafe(16)
         while job_id in self._jobs:
             job_id = secrets.token_urlsafe(16)
@@ -209,7 +219,8 @@ class JobManager:
         """
         job = self.get(job_id)
         if job.status == "ready":
-            _remove_dir(job.workdir)  # its run has finished: nothing else will remove it
+            if not job.delivering:  # else finish_delivery removes it once the send ends
+                _remove_dir(job.workdir)  # its run has finished: nothing else will remove it
         elif job.status in _PENDING:
             job.resume_until = self._clock() + RESUME_WINDOW_SECONDS
             if job.task is not None:
@@ -222,6 +233,7 @@ class JobManager:
         job.file_path = None
         job.finished_at = self._clock()
         logger.info("job %s cancelled", job.id)
+        self._cap_resumable()
         return job
 
     def resume(self, job_id: str) -> Job:
@@ -249,7 +261,8 @@ class JobManager:
         logger.info("job %s resumed", job.id)
         return job
 
-    def file_for_delivery(self, job_id: str) -> Job:
+    def claim_delivery(self, job_id: str) -> Job:
+        """Claim a ready file for one client to download; finish_delivery ends the claim."""
         job = self.get(job_id)
         if job.status == "expired":
             raise AppError("expired")
@@ -257,17 +270,26 @@ class JobManager:
             raise AppError("cancelled")
         if job.status != "ready":
             raise AppError("not_ready")
+        if job.delivering:
+            raise AppError("delivery_in_progress")
+        job.delivering = True
         return job
 
-    def mark_delivered(self, job_id: str) -> None:
-        job = self._jobs.get(job_id) if _is_job_id(job_id) else None
-        if job is not None and job.status == "ready":
+    def finish_delivery(self, job: Job, *, complete: bool) -> None:
+        """End a claim. A complete delivery expires the job; an interrupted one leaves it
+        ready (the TTL then applies). A job cancelled meanwhile loses its file now."""
+        job.delivering = False
+        if job.status != "ready":
+            _remove_dir(job.workdir)
+        elif complete:
             self._expire(job, "delivered")
 
     async def sweep(self) -> None:
         now = self._clock()
         ttl = self._settings.job_ttl_seconds
         for job in list(self._jobs.values()):
+            if job.delivering:
+                continue
             if job.status == "ready" and now - job.ready_at >= ttl:
                 self._expire(job, "ttl")
             elif job.resume_until is not None and now >= job.resume_until:
@@ -276,7 +298,7 @@ class JobManager:
                   and now - job.finished_at >= RECORD_RETENTION_SECONDS):
                 del self._jobs[job.id]
         live = {j.id for j in self._jobs.values()
-                if j.status not in _TERMINAL or j.resume_until is not None}
+                if j.status not in _TERMINAL or j.resume_until is not None or j.delivering}
         for path in _job_dirs(self._temp_dir):
             if path.name not in live:
                 logger.info("removing orphan job directory %s", path.name)
@@ -288,6 +310,23 @@ class JobManager:
             return None
         left = job.resume_until - self._clock()
         return max(1, math.ceil(left)) if left > 0 else None
+
+    def _cap_resumable(self) -> None:
+        """End the oldest resume windows beyond one per queue place."""
+        limit = self._settings.max_active_jobs + self._settings.max_queued_jobs
+        resumable = sorted((j for j in self._jobs.values() if j.resume_until is not None),
+                           key=lambda j: j.finished_at)
+        for job in resumable[:max(0, len(resumable) - limit)]:
+            self._end_resume_window(job)
+
+    def _prune_finished_records(self) -> None:
+        """Forget the oldest finished records beyond MAX_FINISHED_RECORDS (their files are
+        already gone); a poll for one then gets job_not_found."""
+        finished = sorted((j for j in self._jobs.values() if j.status in _TERMINAL
+                           and j.resume_until is None and not j.delivering),
+                          key=lambda j: j.finished_at)
+        for job in finished[:max(0, len(finished) - MAX_FINISHED_RECORDS)]:
+            del self._jobs[job.id]
 
     def _end_resume_window(self, job: Job) -> None:
         job.resume_until = None
@@ -314,7 +353,7 @@ class JobManager:
         budget = self._settings.max_total_disk_bytes
         if projected <= budget:
             return True
-        ready = sorted((j for j in self._jobs.values() if j.status == "ready"),
+        ready = sorted((j for j in self._jobs.values() if j.status == "ready" and not j.delivering),
                        key=lambda j: j.ready_at)
         sizes = [usage(j.workdir) for j in ready]
         if projected - sum(sizes) > budget:
@@ -327,11 +366,16 @@ class JobManager:
             projected -= size
         return True
 
+    def ensure_queue_room(self, reserved: int = 0) -> None:
+        """Raise busy unless one more job fits the queue beside `reserved` places
+        (requests whose links are still being checked)."""
+        pending = sum(j.status in _PENDING for j in self._jobs.values())
+        if pending + reserved >= self._settings.max_active_jobs + self._settings.max_queued_jobs:
+            raise AppError("busy")
+
     def _admit(self) -> None:
         """Raise busy when the queue is full, or disk_full when one more job can't fit."""
-        pending = sum(j.status in _PENDING for j in self._jobs.values())
-        if pending >= self._settings.max_active_jobs + self._settings.max_queued_jobs:
-            raise AppError("busy")
+        self.ensure_queue_room()
         if not self._make_room(count_active=False):
             raise AppError("disk_full")
 
@@ -447,7 +491,9 @@ class JobManager:
         self._enforce_ready_cap()
 
     def _enforce_ready_cap(self) -> None:
-        ready = sorted((j for j in self._jobs.values() if j.status == "ready"),
+        """Evict the oldest waiting files beyond MAX_READY_FILES; files being sent are
+        on their way out and don't count."""
+        ready = sorted((j for j in self._jobs.values() if j.status == "ready" and not j.delivering),
                        key=lambda j: j.ready_at)
         for job in ready[:max(0, len(ready) - self._settings.max_ready_files)]:
             logger.info("evicting ready job %s (ready-file cap)", job.id)

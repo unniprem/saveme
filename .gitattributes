@@ -1,0 +1,4 @@
+# Check out text files with Unix line endings on every platform. On Windows, CRLF would
+# break the shebangs of scripts/*.sh and the app/bin ffmpeg/ffprobe wrappers, which run
+# inside the Linux container.
+* text=auto eol=lf

@@ -15,6 +15,8 @@ Routes:
   /canary.ts           counts as a hit if anything fetches it
   anything else        404 (e.g. /missing)
 """
+import functools
+import gzip
 import html
 import re
 import sys
@@ -35,6 +37,13 @@ SLOW_CHUNK = 1024
 SLOW_DELAY = 0.5
 RESUMABLE_DELAY = 0.05
 _RANGE = re.compile(r"bytes=(\d+)-")
+BIG_PAGE_MIB = 20  # past the worker's page-size cap
+
+
+@functools.cache
+def _gzip_bomb() -> bytes:
+    """A small gzip body that decodes to 64 MiB of HTML."""
+    return gzip.compress(b"<!doctype html><html><body>" + b" " * (64 << 20) + b"</body></html>")
 
 
 class _HTTPServer(ThreadingHTTPServer):
@@ -75,6 +84,12 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/plain":
             body = b"<!doctype html><html><head><title>Plain</title></head><body><p>No media.</p></body></html>"
             return self._send(200, body, "text/html; charset=utf-8")
+        if path == "/big-page":
+            body = (b"<!doctype html><html><head><title>Big</title></head><body>"
+                    + b" " * (BIG_PAGE_MIB << 20) + b"</body></html>")
+            return self._send(200, body, "text/html; charset=utf-8")
+        if path == "/gzip-bomb":
+            return self._send(200, _gzip_bomb(), "text/html; charset=utf-8", encoding="gzip")
         if path == "/evil.mp4":
             playlist = ("#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\n"
                         f"{media.url('/canary.ts')}\n#EXT-X-ENDLIST\n")
@@ -142,9 +157,12 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(data[i:i + SLOW_CHUNK])
             time.sleep(delay)
 
-    def _send(self, status: int, body: bytes, ctype: str, *, location: str | None = None) -> None:
+    def _send(self, status: int, body: bytes, ctype: str, *, location: str | None = None,
+              encoding: str | None = None) -> None:
         self.send_response(status)
         self.send_header("Content-Type", ctype)
+        if encoding is not None:
+            self.send_header("Content-Encoding", encoding)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Connection", "close")
         if location is not None:

@@ -20,6 +20,8 @@ _COMPAT = ipaddress.ip_network("::/96")
 _SIIT = ipaddress.ip_network("::ffff:0:0:0/96")
 _SITE_LOCAL = ipaddress.ip_network("fec0::/10")
 _MAX_URL_LEN = 2048
+# Pasted share text may surround the link, but the whole input is capped before any work.
+_MAX_INPUT_LEN = 4 * _MAX_URL_LEN
 _URL_TOKEN = re.compile(r"https?://\S+", re.IGNORECASE)
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -79,6 +81,8 @@ def _trim_trailing(token: str) -> str:
 
 
 def check_url_syntax(raw: str) -> str:
+    if len(raw) > _MAX_INPUT_LEN:
+        raise _invalid()
     text = raw.strip()
     if re.search(r"\s", text):
         tokens = _URL_TOKEN.findall(text)
@@ -114,6 +118,13 @@ async def system_resolver(host: str, port: int) -> list[IPAddress]:
 async def validate_source_url(raw: str, *, policy: IpPolicy = is_public_ip,
                               resolver: Resolver = system_resolver, timeout: float = 5.0) -> str:
     url = check_url_syntax(raw)
+    await check_source_address(url, policy=policy, resolver=resolver, timeout=timeout)
+    return url
+
+
+async def check_source_address(url: str, *, policy: IpPolicy = is_public_ip,
+                               resolver: Resolver = system_resolver, timeout: float = 5.0) -> None:
+    """Resolve a URL that passed check_url_syntax; every address must pass `policy`."""
     parts = urlsplit(url)
     port = parts.port or (443 if parts.scheme.lower() == "https" else 80)
     try:
@@ -124,7 +135,6 @@ async def validate_source_url(raw: str, *, policy: IpPolicy = is_public_ip,
         raise AppError("unreachable")
     if not all(policy(ip) for ip in ips):
         raise AppError("blocked_address")
-    return url
 
 
 # --- Layer 2: connect-time guard ------------------------------------------

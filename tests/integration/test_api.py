@@ -210,6 +210,42 @@ async def test_unknown_route_and_wrong_method_error_shape(client):
     assert r.json() == error_body("invalid_request", "Method not allowed.")
 
 
+# --- Request bodies -------------------------------------------------------------
+
+@pytest.mark.parametrize("path", ["/api/inspect", "/api/jobs"])
+async def test_oversized_body_413(client, stub, path):
+    padded = {"url": " " * (4 * MiB) + URL, "output": "video"}
+    r = await client.post(path, json=padded)
+    assert r.status_code == 413
+    assert r.json() == error_body("request_too_large")
+    assert stub.calls == []
+
+
+async def test_oversized_chunked_body_413(client, stub):
+    # No Content-Length: the limit counts the bytes as they arrive.
+    async def chunks():
+        yield b'{"url": "'
+        for _ in range(64):
+            yield b" " * (64 * 1024)
+        yield URL.encode() + b'"}'
+
+    r = await client.post("/api/inspect", content=chunks(),
+                          headers={"Content-Type": "application/json"})
+    assert "content-length" not in r.request.headers
+    assert r.status_code == 413
+    assert r.json() == error_body("request_too_large")
+    assert stub.calls == []
+
+
+async def test_body_just_under_the_limit_is_read(client, stub):
+    from app.main import MAX_BODY_BYTES
+    raw = b'{"url": "' + b" " * (MAX_BODY_BYTES - 64) + b'not a url"}'
+    assert len(raw) <= MAX_BODY_BYTES
+    r = await client.post("/api/inspect", content=raw, headers={"Content-Type": "application/json"})
+    assert r.status_code == 400  # read and parsed; rejected as an invalid link
+    assert r.json()["error"]["code"] == "invalid_url"
+
+
 # --- Inspect ------------------------------------------------------------------
 
 async def test_inspect_invalid_400_shape(client, stub):
@@ -320,7 +356,7 @@ async def test_inspect_busy_429(settings):
         r = await client.post("/api/inspect", json={"url": URL})
         assert r.status_code == 429
         assert r.json() == error_body("busy")
-        # URL validation comes first, so a bad link never waits for (or takes) a slot.
+        # The syntax check comes first, so a malformed link never waits for (or takes) a slot.
         r = await client.post("/api/inspect", json={"url": "not a url"})
         assert r.status_code == 400
         stub.gate.set()
@@ -328,6 +364,70 @@ async def test_inspect_busy_429(settings):
         r = await client.post("/api/inspect", json={"url": URL})  # the slot was released
         assert r.status_code == 200
     assert len(stub.calls) == 2
+
+
+class GatedResolver:
+    """A resolver that waits on `gate`, counting lookups in flight."""
+
+    def __init__(self) -> None:
+        self.gate = asyncio.Event()
+        self.inflight = self.max_inflight = self.calls = 0
+
+    async def __call__(self, host: str, port: int) -> list:
+        self.calls += 1
+        self.inflight += 1
+        self.max_inflight = max(self.max_inflight, self.inflight)
+        try:
+            await self.gate.wait()
+            return [ip_address(host)]
+        finally:
+            self.inflight -= 1
+
+
+async def test_inspect_busy_skips_dns(settings):
+    # With one inspection slot, twenty requests at once make one DNS lookup, not twenty.
+    resolver, stub = GatedResolver(), StubWorker()
+    app = make_app(dataclasses.replace(settings, max_active_inspections=1), run_worker=stub,
+                   resolver=resolver)
+    async with running(app) as client:
+        posts = [asyncio.create_task(client.post("/api/inspect", json={"url": URL}))
+                 for _ in range(20)]
+        await wait_until(lambda: sum(t.done() for t in posts) == 19)
+        assert resolver.max_inflight == 1 and resolver.calls == 1
+        resolver.gate.set()
+        codes = sorted(r.status_code for r in await asyncio.gather(*posts))
+    assert codes == [200] + [429] * 19
+    assert len(stub.calls) == 1
+
+
+async def test_job_queue_full_skips_dns(settings):
+    # A link being checked holds a queue place, so lookups never exceed the queue.
+    resolver, stub = GatedResolver(), StubWorker(block=True)
+    app = make_app(dataclasses.replace(settings, max_active_jobs=1, max_queued_jobs=1),
+                   run_worker=stub, resolver=resolver)
+    async with running(app) as client:
+        body = {"url": URL, "output": "video"}
+        posts = [asyncio.create_task(client.post("/api/jobs", json=body)) for _ in range(20)]
+        await wait_until(lambda: sum(t.done() for t in posts) == 18)
+        assert resolver.max_inflight == 2 and resolver.calls == 2
+        resolver.gate.set()
+        codes = sorted(r.status_code for r in await asyncio.gather(*posts))
+        assert codes == [202, 202] + [429] * 18
+        r = await client.post("/api/jobs", json=body)  # both places are now real jobs
+        assert r.status_code == 429 and resolver.calls == 2
+        stub.gate.set()
+
+
+async def test_failed_lookup_frees_its_queue_place(settings):
+    resolver = GatedResolver()
+    app = make_app(dataclasses.replace(settings, max_active_jobs=1, max_queued_jobs=0),
+                   run_worker=StubWorker(), resolver=resolver)
+    async with running(app) as client:
+        resolver.gate.set()
+        r = await client.post("/api/jobs", json={"url": "http://bad-host.invalid/", "output": "video"})
+        assert r.status_code == 502  # literal_resolver can't parse the name: unreachable
+        r = await client.post("/api/jobs", json={"url": URL, "output": "video"})
+        assert r.status_code == 202, r.text
 
 
 async def test_inspect_timeout_504(settings):
@@ -553,6 +653,106 @@ def test_aborted_download_keeps_file(settings, temp_dir):
         assert not path.exists()
 
 
+def live_ready_job(http: httpx.Client) -> str:
+    r = http.post("/api/jobs", json={"url": URL, "output": "video"})
+    assert r.status_code == 202, r.text
+    job_id = r.json()["job_id"]
+    deadline = time.monotonic() + 10
+    while http.get(f"/api/jobs/{job_id}").json()["status"] != "ready":
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+    return job_id
+
+
+@contextmanager
+def stalled_download(port: int, job_id: str) -> Iterator[socket.socket]:
+    """A raw client that requests the file, takes the first bytes, then stops reading."""
+    raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    raw.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    raw.settimeout(10)
+    try:
+        raw.connect(("127.0.0.1", port))
+        raw.sendall(f"GET /api/jobs/{job_id}/file HTTP/1.1\r\n"
+                    f"Host: 127.0.0.1:{port}\r\n\r\n".encode())
+        assert raw.recv(4096).startswith(b"HTTP/1.1 200")
+        yield raw
+    finally:
+        raw.close()
+
+
+def read_to_eof(raw: socket.socket, timeout: float = 15.0) -> int:
+    """Bytes read until the server closes the connection."""
+    received, deadline = 0, time.monotonic() + timeout
+    while chunk := raw.recv(64 * 1024):
+        received += len(chunk)
+        assert time.monotonic() < deadline, "the server never closed the connection"
+    return received
+
+
+def read_slowly(raw: socket.socket, seconds: float, pause: float = 0.05) -> int:
+    """Keep taking a little at a time for `seconds` (so the client is never idle)."""
+    received, until = 0, time.monotonic() + seconds
+    while time.monotonic() < until and (chunk := raw.recv(64 * 1024)):
+        received += len(chunk)
+        time.sleep(pause)
+    return received
+
+
+def get_file_when_free(http: httpx.Client, job_id: str, timeout: float = 10.0) -> httpx.Response:
+    """GET the file, retrying while an earlier delivery still holds it."""
+    deadline = time.monotonic() + timeout
+    while (r := http.get(f"/api/jobs/{job_id}/file")).status_code == 409:
+        assert time.monotonic() < deadline, r.text
+        time.sleep(0.05)
+    return r
+
+
+def test_second_download_during_a_delivery_409(settings, temp_dir):
+    size = 32 * MiB
+    app = make_app(settings, run_worker=StubWorker(file_bytes=size))
+    with live_server(app) as port, httpx.Client(base_url=f"http://127.0.0.1:{port}",
+                                               trust_env=False, timeout=10) as http:
+        job_id = live_ready_job(http)
+        with stalled_download(port, job_id):
+            r = http.get(f"/api/jobs/{job_id}/file")
+            assert r.status_code == 409
+            assert r.json() == error_body("delivery_in_progress")
+        # That client hung up, so the file is free for another try.
+        r = get_file_when_free(http, job_id)
+        assert r.status_code == 200 and len(r.content) == size
+        view = http.get(f"/api/jobs/{job_id}").json()
+        assert (view["status"], view["reason"]) == ("expired", "delivered")
+        assert not (temp_dir / job_id).exists()
+
+
+def test_stalled_download_is_cut_off(settings):
+    size = 32 * MiB
+    app = make_app(settings, run_worker=StubWorker(file_bytes=size), delivery_idle_seconds=0.5)
+    with live_server(app) as port, httpx.Client(base_url=f"http://127.0.0.1:{port}",
+                                               trust_env=False, timeout=10) as http:
+        job_id = live_ready_job(http)
+        with stalled_download(port, job_id) as raw:
+            time.sleep(1.5)  # the server gives up on a client that takes nothing
+            assert read_to_eof(raw) < size
+        assert http.get(f"/api/jobs/{job_id}").json()["status"] == "ready"
+        r = get_file_when_free(http, job_id)
+        assert r.status_code == 200 and len(r.content) == size
+
+
+def test_slow_download_hits_the_delivery_deadline(settings):
+    size = 32 * MiB
+    app = make_app(settings, run_worker=StubWorker(file_bytes=size), delivery_max_seconds=1)
+    with live_server(app) as port, httpx.Client(base_url=f"http://127.0.0.1:{port}",
+                                               trust_env=False, timeout=10) as http:
+        job_id = live_ready_job(http)
+        with stalled_download(port, job_id) as raw:
+            # A trickle that is never idle for long: only the overall deadline stops it.
+            assert read_slowly(raw, seconds=2.5) + read_to_eof(raw) < size
+        assert http.get(f"/api/jobs/{job_id}").json()["status"] == "ready"
+        r = get_file_when_free(http, job_id)
+        assert r.status_code == 200 and len(r.content) == size
+
+
 # --- Host and origin checks -----------------------------------------------------
 
 @pytest.mark.parametrize("host", ["evil.example", "evil.example:8000",
@@ -608,25 +808,69 @@ async def test_ipv6_allowed_host(temp_dir, stub, allowed, host):
 
 
 @pytest.mark.parametrize("origin", ["http://evil.example", "null", "http://127.0.0.1.evil.example",
-                                    "https://evil.example:8000", "file://", "http://localhost/"])
+                                    "https://evil.example:8000", "file://", "http://localhost/",
+                                    # An allowed host on another port or scheme is another origin.
+                                    "http://127.0.0.1:9999", "http://127.0.0.1:8000",
+                                    "https://127.0.0.1", "https://127.0.0.1:80",
+                                    # So is another allowed host.
+                                    "http://localhost", "http://localhost:80"])
 async def test_cross_origin_post_403(client, stub, origin):
     for path, body in (("/api/inspect", {"url": URL}),
                        ("/api/jobs", {"url": URL, "output": "video"}),
                        ("/api/jobs/AAAAAAAAAAAAAAAAAAAAAA/cancel", {}),
                        ("/api/jobs/AAAAAAAAAAAAAAAAAAAAAA/resume", {})):
+        # The client's Host header is 127.0.0.1, so the page's own origin is http://127.0.0.1.
         r = await client.post(path, json=body, headers={"Origin": origin})
         assert r.status_code == 403, (origin, path)
         assert r.json() == error_body("forbidden_origin")
     assert stub.calls == []
 
 
-@pytest.mark.parametrize("origin", [None, "http://127.0.0.1:8000", "http://LOCALHOST:5173",
-                                    "https://localhost"])
-async def test_same_origin_or_no_origin_post_allowed(client, origin):
-    headers = {"Origin": origin} if origin else {}
+@pytest.mark.parametrize("host, origin", [
+    ("127.0.0.1", None),
+    ("127.0.0.1", "http://127.0.0.1"),
+    ("127.0.0.1", "http://127.0.0.1:80"),
+    ("127.0.0.1", "HTTP://127.0.0.1"),
+    ("127.0.0.1:80", "http://127.0.0.1"),
+    ("127.0.0.1:8000", "http://127.0.0.1:8000"),
+    ("LocalHost:8000", "http://localhost:8000"),
+    ("localhost:8000", None),
+])
+async def test_same_origin_or_no_origin_post_allowed(client, host, origin):
+    headers = {"Host": host} | ({"Origin": origin} if origin else {})
     r = await client.post("/api/inspect", json={"url": "not a url"}, headers=headers)
     assert r.status_code == 400  # past the origin check, rejected by URL validation
     assert r.json()["error"]["code"] == "invalid_url"
+
+
+@pytest.mark.parametrize("host, origin, allowed", [
+    ("localhost:8000", "http://localhost:8000", True),
+    ("localhost:8000", "http://127.0.0.1:8000", False),
+    ("localhost:8000", "http://localhost:8001", False),
+    ("localhost:8000", "http://localhost", False),
+    ("[::1]:8000", "http://[::1]:8000", True),
+    ("[::1]:8000", "http://[::1]", False),
+    ("[::1]", "http://[::1]:80", True),
+])
+async def test_origin_must_match_the_requested_origin(temp_dir, stub, host, origin, allowed):
+    settings = load_settings({"TEMP_DIR": str(temp_dir), "ALLOWED_HOSTS": "localhost,127.0.0.1,::1"})
+    async with running(make_app(settings, run_worker=stub)) as client:
+        r = await client.post("/api/inspect", json={"url": "not a url"},
+                              headers={"Host": host, "Origin": origin})
+    assert r.status_code == (400 if allowed else 403), r.text
+
+
+async def test_origin_scheme_follows_the_request_scheme(settings, stub):
+    app = make_app(settings, run_worker=stub)
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="https://127.0.0.1") as client:
+            r = await client.post("/api/inspect", json={"url": "not a url"},
+                                  headers={"Origin": "https://127.0.0.1"})
+            assert r.status_code == 400
+            r = await client.post("/api/inspect", json={"url": "not a url"},
+                                  headers={"Origin": "http://127.0.0.1"})
+            assert r.status_code == 403
 
 
 # --- Degraded mode ----------------------------------------------------------------

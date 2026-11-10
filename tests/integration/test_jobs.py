@@ -19,8 +19,8 @@ import pytest
 
 from app.config import ConfigError, Settings, load_settings
 from app.errors import AppError
-from app.jobs import (APP_DIR, JOB_ID_RE, MARKER_NAME, RESUME_WINDOW_SECONDS, JobManager,
-                      prepare_temp_dir)
+from app.jobs import (APP_DIR, JOB_ID_RE, MARKER_NAME, MAX_FINISHED_RECORDS,
+                      RESUME_WINDOW_SECONDS, JobManager, prepare_temp_dir)
 from app.runner import DEFAULT_WORKER_CMD
 
 URL = "https://example.com/watch?v=1"
@@ -307,27 +307,27 @@ async def test_delivery_states(make_manager, tmp_path):
     manager = await make_manager(run_worker=runner)
     job = manager.submit(URL, "video", "best")
     with pytest.raises(AppError) as ei:
-        manager.file_for_delivery(job.id)
+        manager.claim_delivery(job.id)
     assert (ei.value.code, ei.value.status) == ("not_ready", 409)
 
     await wait_until(lambda: runner.calls)
     with pytest.raises(AppError) as ei:
-        manager.file_for_delivery(job.id)
+        manager.claim_delivery(job.id)
     assert ei.value.code == "not_ready"
 
     runner.calls[0].finish()
     await wait_until(lambda: job.status == "ready")
-    assert manager.file_for_delivery(job.id) is job
+    assert manager.claim_delivery(job.id) is job
 
-    manager.mark_delivered(job.id)
+    manager.finish_delivery(job, complete=True)
     assert job.status == "expired" and job.reason == "delivered"
     assert not job.workdir.exists()
     with pytest.raises(AppError) as ei:
-        manager.file_for_delivery(job.id)
+        manager.claim_delivery(job.id)
     assert (ei.value.code, ei.value.status) == ("expired", 410)
 
     with pytest.raises(AppError) as ei:
-        manager.file_for_delivery("A" * 22)
+        manager.claim_delivery("A" * 22)
     assert (ei.value.code, ei.value.status) == ("job_not_found", 404)
 
     before = sorted(str(p) for p in tmp_path.rglob("*"))
@@ -336,9 +336,83 @@ async def test_delivery_states(make_manager, tmp_path):
             manager.get(bad)
         assert (ei.value.code, ei.value.status) == ("job_not_found", 404)
         with pytest.raises(AppError):
-            manager.file_for_delivery(bad)
-        manager.mark_delivered(bad)
+            manager.claim_delivery(bad)
     assert sorted(str(p) for p in tmp_path.rglob("*")) == before
+
+
+async def test_one_delivery_at_a_time(make_manager):
+    runner = StubRunner(auto_finish=True)
+    manager = await make_manager(run_worker=runner)
+    job = await ready_job(manager, runner)
+    assert manager.claim_delivery(job.id) is job
+    with pytest.raises(AppError) as ei:
+        manager.claim_delivery(job.id)
+    assert (ei.value.code, ei.value.status) == ("delivery_in_progress", 409)
+
+    manager.finish_delivery(job, complete=False)  # aborted: the file stays for another try
+    assert job.status == "ready" and job.file_path.is_file()
+    assert manager.claim_delivery(job.id) is job
+    manager.finish_delivery(job, complete=True)
+    assert (job.status, job.reason) == ("expired", "delivered") and not job.workdir.exists()
+
+
+async def test_file_being_delivered_outlives_its_ttl(make_manager, settings):
+    # The open file stays counted on disk until its delivery ends; then the TTL applies.
+    clock = FakeClock()
+    runner = StubRunner(auto_finish=True)
+    manager = await make_manager(run_worker=runner, clock=clock)
+    job = await ready_job(manager, runner)
+    manager.claim_delivery(job.id)
+    clock.advance(settings.job_ttl_seconds + 1)
+    await manager.sweep()
+    assert job.status == "ready" and job.file_path.is_file()
+
+    manager.finish_delivery(job, complete=False)
+    await manager.sweep()
+    assert (job.status, job.reason) == ("expired", "ttl") and not job.workdir.exists()
+
+
+async def test_ready_cap_skips_a_file_being_delivered(make_manager, settings):
+    clock = FakeClock()
+    runner = StubRunner(auto_finish=True)
+    manager = await make_manager(dataclasses.replace(settings, max_ready_files=1),
+                                 run_worker=runner, clock=clock)
+    sending = await ready_job(manager, runner)
+    manager.claim_delivery(sending.id)
+    clock.advance(1)
+    waiting = await ready_job(manager, runner)
+    assert sending.status == "ready" and waiting.status == "ready"
+    clock.advance(1)
+    newest = await ready_job(manager, runner)
+    assert (waiting.status, waiting.reason) == ("expired", "evicted")
+    assert sending.status == "ready" and sending.file_path.is_file()
+    assert newest.status == "ready"
+
+
+async def test_disk_pressure_never_evicts_a_file_being_delivered(make_manager, temp_dir):
+    runner = StubRunner(auto_finish=True)
+    disk = FakeDisk(temp_dir)
+    manager = await make_manager(run_worker=runner, disk_usage=disk)
+    job = await ready_job(manager, runner)
+    disk.sizes[job.workdir] = 7000 * MiB  # 7000 + 4096 > 10240: only evicting it would help
+    manager.claim_delivery(job.id)
+    with pytest.raises(AppError) as ei:
+        manager.submit(URL, "video", "best")
+    assert ei.value.code == "disk_full"
+    assert job.status == "ready" and job.file_path.is_file()
+
+
+async def test_cancel_during_delivery_removes_the_file_when_it_ends(make_manager):
+    runner = StubRunner(auto_finish=True)
+    manager = await make_manager(run_worker=runner)
+    job = await ready_job(manager, runner)
+    manager.claim_delivery(job.id)
+    manager.cancel(job.id)
+    assert job.status == "cancelled"
+    await manager.sweep()  # not an orphan while it is being sent
+    assert job.workdir.is_dir()
+    manager.finish_delivery(job, complete=True)
+    assert job.status == "cancelled" and not job.workdir.exists()
 
 
 # --- Cancel and resume -------------------------------------------------------
@@ -386,7 +460,7 @@ async def test_cancel_running_job_keeps_partial_files(make_manager, settings, te
     call.emit({"event": "progress", "detail": "late", "percent": 50.0})
     assert job.status == "cancelled" and job.detail is None
     with pytest.raises(AppError) as ei:
-        manager.file_for_delivery(job.id)
+        manager.claim_delivery(job.id)
     assert (ei.value.code, ei.value.status) == ("cancelled", 410)
 
     await manager.sweep()  # inside the window: not an orphan
@@ -528,7 +602,8 @@ async def test_cancel_or_resume_after_the_end_changes_nothing(make_manager):
     runner.calls[0].fail(AppError("unavailable"))
     await wait_until(lambda: failed.status == "failed")
     delivered = await ready_job(manager, runner)
-    manager.mark_delivered(delivered.id)
+    manager.claim_delivery(delivered.id)
+    manager.finish_delivery(delivered, complete=True)
 
     for job, status in ((failed, "failed"), (delivered, "expired")):
         before = manager.public_view(job)
@@ -561,6 +636,48 @@ async def test_cancelled_record_is_purged(make_manager):
     await manager.sweep()
     with pytest.raises(AppError):
         manager.get(job.id)
+
+
+async def test_resumable_jobs_capped_by_queue_size(make_manager, settings):
+    # Cancelling more jobs than the queue holds ends the oldest resume windows first.
+    clock = FakeClock()
+    manager = await make_manager(run_worker=StubRunner(), clock=clock)
+    limit = settings.max_active_jobs + settings.max_queued_jobs
+    jobs = []
+    for _ in range(limit + 2):
+        job = manager.submit(URL, "video", "best")
+        manager.cancel(job.id)
+        jobs.append(job)
+        clock.advance(1)
+    for job in jobs[:2]:
+        assert manager.public_view(job)["resume_seconds"] is None
+        with pytest.raises(AppError) as ei:
+            manager.resume(job.id)
+        assert ei.value.code == "not_resumable"
+    assert all(manager.public_view(job)["resume_seconds"] for job in jobs[2:])
+
+
+async def test_finished_records_capped_by_count(make_manager):
+    # Create-and-cancel can't grow the record table: the oldest finished records go first.
+    clock = FakeClock()
+    manager = await make_manager(run_worker=StubRunner(), clock=clock)
+    jobs = []
+    for _ in range(MAX_FINISHED_RECORDS + 50):
+        job = manager.submit(URL, "video", "best")
+        manager.cancel(job.id)
+        jobs.append(job)
+        clock.advance(1)
+    gone = 0
+    for job in jobs:
+        try:
+            manager.get(job.id)
+        except AppError as exc:
+            assert exc.code == "job_not_found"
+            gone += 1
+    assert gone >= 40  # all but the newest MAX_FINISHED_RECORDS (+ the resumable ones)
+    assert manager.get(jobs[-1].id) is jobs[-1]
+    with pytest.raises(AppError):
+        manager.get(jobs[0].id)
 
 
 # --- Disk budget -------------------------------------------------------------

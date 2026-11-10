@@ -4,9 +4,12 @@ Every HTTP request first passes _Guard, a pure ASGI middleware (so streamed
 downloads and client disconnects go straight through it). It:
 - adds the security headers to every response, error responses included;
 - answers 400 when the Host header's host (port and case ignored) isn't in ALLOWED_HOSTS;
-- answers 403 forbidden_origin when a POST carries an Origin whose host isn't allowed
+- answers 403 forbidden_origin when a POST carries an Origin other than the origin the
+  request itself was sent to: its scheme, the Host header's host, and the effective port
   (no Origin header is fine: curl and scripts don't send one);
 - answers 503 config_error for /api/* while the app is degraded;
+- reads a POST body itself, before any JSON parsing, and answers 413 request_too_large
+  once it passes MAX_BODY_BYTES (Content-Length or not);
 - turns an unexpected exception into a 500 `internal` body; the traceback goes to the log only.
 
 Degraded mode: when the settings don't load (or TEMP_DIR is refused at startup) the
@@ -25,7 +28,7 @@ from typing import get_args
 import anyio.to_thread
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -33,9 +36,10 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.config import ConfigError, Settings, load_settings
 from app.errors import CATALOG, AppError
-from app.filenames import content_disposition, media_type_for
+from app.filenames import content_disposition
 from app.jobs import APP_DIR, JobManager
-from app.netguard import IpPolicy, Resolver, is_public_ip, system_resolver, validate_source_url
+from app.netguard import (IpPolicy, Resolver, check_source_address, check_url_syntax, is_public_ip,
+                          system_resolver)
 from app.runner import DEFAULT_WORKER_CMD, RunWorker, run_worker
 from app.schemas import InspectRequest, JobRequest, Output, Quality
 
@@ -43,6 +47,12 @@ logger = logging.getLogger(__name__)
 
 STATIC_DIR = APP_DIR / "static"
 CHUNK_SIZE = 1024 * 1024
+# A download that takes nothing for this long, or runs longer than the second limit,
+# is cut off (the file stays for another try), so a slow client can't hold a file.
+DELIVERY_IDLE_SECONDS = 60.0
+DELIVERY_MAX_SECONDS = 3600.0
+# The API's bodies are a link and two choices; this leaves room for pasted share text.
+MAX_BODY_BYTES = 64 * 1024
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
@@ -56,7 +66,8 @@ SECURITY_HEADERS = {
 # Degraded by a settings error: the configured hosts are unknown, so use the defaults.
 _DEFAULT_ALLOWED_HOSTS = load_settings({}).allowed_hosts
 # `host`, `host:port`, `[v6]` or `[v6]:port`.
-_AUTHORITY = re.compile(r"(?:\[(?P<v6>[^\[\]]+)\]|(?P<name>[^:\[\]]+))(?::\d{1,5})?")
+_AUTHORITY = re.compile(r"(?:\[(?P<v6>[^\[\]]+)\]|(?P<name>[^:\[\]]+))(?::(?P<port>\d{1,5}))?")
+_DEFAULT_PORTS = {"http": 80, "https": 443}
 _HTTP_MESSAGES = {404: "Not found.", 405: "Method not allowed."}
 _CHOICES = {"output": get_args(Output), "quality": get_args(Quality)}
 _FIELD_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
@@ -129,20 +140,35 @@ def _normalize_host(host: str) -> str:
     return host
 
 
-def _host_of(authority: str) -> str | None:
-    """The lowercased host of a Host-header style `host[:port]`, without IPv6 brackets."""
+def _host_and_port(authority: str) -> tuple[str, int | None] | None:
+    """The lowercased host (without IPv6 brackets) and port of a `host[:port]`."""
     match = _AUTHORITY.fullmatch(authority.strip())
     if match is None:
         return None
-    return (match["v6"] or match["name"]).lower()
+    port = match["port"]
+    return (match["v6"] or match["name"]).lower(), None if port is None else int(port)
 
 
-def _origin_host(origin: str) -> str | None:
-    """The host of an `http(s)://host[:port]` Origin; None for `null` or anything else."""
-    scheme, sep, authority = origin.partition("://")
-    if not sep or scheme.lower() not in ("http", "https"):
+def _host_of(authority: str) -> str | None:
+    """The lowercased host of a Host-header style `host[:port]`, without IPv6 brackets."""
+    parsed = _host_and_port(authority)
+    return None if parsed is None else parsed[0]
+
+
+def _origin(scheme: str, authority: str) -> tuple[str, str, int] | None:
+    """(scheme, host, effective port) for an http(s) scheme and a `host[:port]`."""
+    scheme = scheme.lower()
+    parsed = _host_and_port(authority)
+    if scheme not in _DEFAULT_PORTS or parsed is None:
         return None
-    return _host_of(authority)
+    host, port = parsed
+    return scheme, host, _DEFAULT_PORTS[scheme] if port is None else port
+
+
+def _origin_of_header(origin: str) -> tuple[str, str, int] | None:
+    """The parts of an `http(s)://host[:port]` Origin; None for `null` or anything else."""
+    scheme, sep, authority = origin.partition("://")
+    return _origin(scheme, authority) if sep else None
 
 
 class _Guard:
@@ -168,6 +194,8 @@ class _Guard:
             await send(message)
 
         refusal = self._refusal(scope)
+        if refusal is None and scope["method"] == "POST":
+            refusal, receive = await self._read_body(scope, receive)
         if refusal is not None:
             await refusal(scope, receive, send_with_headers)
             return
@@ -179,6 +207,30 @@ class _Guard:
             logger.exception("unexpected error handling %s %s", scope["method"], scope["path"])
             await _app_error_response(AppError("internal"))(scope, receive, send_with_headers)
 
+    @staticmethod
+    async def _read_body(scope: Scope, receive: Receive) -> tuple[Response | None, Receive]:
+        """Read the whole body up to MAX_BODY_BYTES; a refusal past that, else a receive
+        that replays it. Chunked bodies are counted as they arrive, so no Content-Length
+        is needed for the limit to hold."""
+        too_large = _app_error_response(AppError("request_too_large"))
+        length = Headers(scope=scope).get("content-length", "")
+        if length.isdigit() and int(length) > MAX_BODY_BYTES:
+            return too_large, receive
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":  # the client left: let the app see it
+                return None, _replay([message], receive)
+            chunk = message.get("body", b"")
+            size += len(chunk)
+            if size > MAX_BODY_BYTES:
+                return too_large, receive
+            chunks.append(chunk)
+            if not message.get("more_body", False):
+                body = {"type": "http.request", "body": b"".join(chunks), "more_body": False}
+                return None, _replay([body], receive)
+
     def _refusal(self, scope: Scope) -> Response | None:
         headers = Headers(scope=scope)
         # GET /health skips the host check: the container healthcheck sends Host
@@ -187,15 +239,28 @@ class _Guard:
         is_health_check = scope["method"] == "GET" and scope["path"] == "/health"
         if not is_health_check and _host_of(headers.get("host", "")) not in self.allowed:
             return _error_response(400, "invalid_request", "Invalid host header.")
+        # The Origin must be the page's own origin, not just an allowed host: another
+        # service on the same host but another port or scheme is a different origin.
         origin = headers.get("origin")
-        if (scope["method"] == "POST" and origin is not None
-                and _origin_host(origin) not in self.allowed):
-            return _app_error_response(AppError("forbidden_origin"))
+        if scope["method"] == "POST" and origin is not None:
+            own = _origin(scope.get("scheme", "http"), headers.get("host", ""))
+            if own is None or _origin_of_header(origin) != own:
+                return _app_error_response(AppError("forbidden_origin"))
         if scope["path"].startswith("/api/"):
             error = self.unavailable()
             if error is not None:
                 return _app_error_response(error)
         return None
+
+
+def _replay(messages: list[Message], receive: Receive) -> Receive:
+    """A receive that hands out `messages` first, then defers to `receive`."""
+    pending = list(messages)
+
+    async def replay() -> Message:
+        return pending.pop(0) if pending else await receive()
+
+    return replay
 
 
 # --- Runtime state and delivery ---------------------------------------------------
@@ -219,65 +284,117 @@ class _Runtime:
         return self.manager
 
 
-def _deliver(jobs: JobManager, job_id: str) -> StreamingResponse:
-    """Stream a ready file; the job expires as delivered once the last byte is handed over.
+class _FileDelivery(Response):
+    """Sends a ready file to one client, then ends its delivery claim.
 
-    The file is opened right after file_for_delivery, with no await in between, so a
-    TTL sweep or eviction can't remove it first; once it is open, a later unlink can't
-    break the stream. A Range header is ignored: the reply is always the whole file
-    with 200 and no Accept-Ranges, so a response that runs to the end is a complete
-    delivery. If the client hangs up, the loop never finishes and the file stays until
-    its TTL.
+    Claiming, opening, sending and releasing all happen in __call__, inside one
+    try/finally, so no claim outlives its request. While the claim is held, a second
+    download gets 409 delivery_in_progress and the file stays on disk and counted (see
+    JobManager). The job expires as delivered once the last byte is handed over. A client
+    that hangs up, takes nothing for `idle` seconds, or is still downloading after
+    `limit` seconds is cut off, and the file stays ready for another try until its TTL.
+    A Range header is ignored: the reply is always the whole file with 200 and no
+    Accept-Ranges, so a response that runs to the end is a complete delivery.
     """
-    job = jobs.file_for_delivery(job_id)
-    path, filename = job.file_path, job.filename
-    if path is None or filename is None:
-        raise AppError("expired")
-    media_type = media_type_for(path.suffix.removeprefix("."))
-    try:
-        file = open(path, "rb")
-    except FileNotFoundError:
-        raise AppError("expired") from None
-    size = os.fstat(file.fileno()).st_size
 
-    async def body():
-        remaining = size
+    def __init__(self, jobs: JobManager, job_id: str, *, idle: float, limit: float) -> None:
+        self.jobs, self.job_id, self.idle, self.limit = jobs, job_id, idle, limit
+        self.background = None
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         try:
-            while remaining > 0:
+            job = self.jobs.claim_delivery(self.job_id)
+        except AppError as exc:
+            await _app_error_response(exc)(scope, receive, send)
+            return
+        complete = False
+        try:
+            path, filename = job.file_path, job.filename
+            try:
+                if path is None or filename is None:
+                    raise FileNotFoundError
+                file = open(path, "rb")
+            except FileNotFoundError:
+                await _app_error_response(AppError("expired"))(scope, receive, send)
+                return
+            with file:
+                async with anyio.create_task_group() as tasks:
+                    async def until_disconnect() -> None:
+                        while (await receive())["type"] != "http.disconnect":
+                            pass
+                        tasks.cancel_scope.cancel()  # the client hung up: stop sending
+
+                    tasks.start_soon(until_disconnect)
+                    complete = await self._send_file(job, file, filename, send)
+                    tasks.cancel_scope.cancel()
+        finally:
+            self.jobs.finish_delivery(job, complete=complete)
+
+    async def _send_file(self, job, file, filename: str, send: Send) -> bool:
+        """True once every byte is handed over; False if the client was too slow or the
+        file shrank."""
+        size = os.fstat(file.fileno()).st_size
+        self.status_code, self.media_type = 200, job.media_type
+        self.init_headers({"Content-Length": str(size),
+                           "Content-Disposition": content_disposition(filename)})
+        deadline = anyio.current_time() + self.limit
+        await send({"type": "http.response.start", "status": 200, "headers": self.raw_headers})
+        remaining = size
+        while True:
+            chunk = b""
+            if remaining > 0:
                 chunk = await anyio.to_thread.run_sync(file.read, min(CHUNK_SIZE, remaining))
                 if not chunk:  # the file shrank: not a complete delivery
-                    return
+                    return False
                 remaining -= len(chunk)
-                yield chunk
-        finally:
-            file.close()
-        jobs.mark_delivered(job_id)
-
-    return StreamingResponse(body(), media_type=media_type, headers={
-        "Content-Length": str(size),
-        "Content-Disposition": content_disposition(filename),
-    })
+            sent = False
+            left = deadline - anyio.current_time()
+            if left > 0:
+                with anyio.move_on_after(min(self.idle, left)):
+                    await send({"type": "http.response.body", "body": chunk,
+                                "more_body": remaining > 0})
+                    sent = True
+            if not sent:
+                late = anyio.current_time() >= deadline
+                logger.warning("job %s: stopped sending the file to a client that %s",
+                               job.id, "took too long" if late else "stopped reading")
+                return False
+            if remaining == 0:
+                return True
 
 
 def _api_router(settings: Settings, runtime: _Runtime, *, worker_cmd: tuple[str, ...],
-                ip_policy: IpPolicy, resolver: Resolver, run_worker: RunWorker) -> APIRouter:
+                ip_policy: IpPolicy, resolver: Resolver, run_worker: RunWorker,
+                delivery_idle_seconds: float, delivery_max_seconds: float) -> APIRouter:
     router = APIRouter(prefix="/api")
     inspections = asyncio.Semaphore(settings.max_active_inspections)
+    checking_jobs = 0  # job requests whose links are being resolved
+
+    # The cheap syntax check comes first, so a malformed link never takes a slot. The DNS
+    # lookup runs inside the slot (or queue place), so the caps bound lookups too.
 
     @router.post("/inspect")
     async def inspect(body: InspectRequest):
-        # Validate first, so a bad or blocked link never takes an inspection slot.
-        url = await validate_source_url(body.url, policy=ip_policy, resolver=resolver)
+        url = check_url_syntax(body.url)
         if inspections.locked():
             raise AppError("busy")
         async with inspections:  # not locked, so this acquires without waiting
+            await check_source_address(url, policy=ip_policy, resolver=resolver)
             return await run_worker({"mode": "inspect", "url": url}, cmd=worker_cmd,
                                     timeout=settings.inspect_timeout_seconds)
 
     @router.post("/jobs", status_code=202)
     async def create_job(body: JobRequest):
-        url = await validate_source_url(body.url, policy=ip_policy, resolver=resolver)
-        job = runtime.jobs().submit(url, body.output, body.quality)
+        nonlocal checking_jobs
+        url = check_url_syntax(body.url)
+        jobs = runtime.jobs()
+        jobs.ensure_queue_room(reserved=checking_jobs)
+        checking_jobs += 1
+        try:
+            await check_source_address(url, policy=ip_policy, resolver=resolver)
+        finally:
+            checking_jobs -= 1
+        job = jobs.submit(url, body.output, body.quality)
         return {"job_id": job.id, "status": job.status}
 
     @router.get("/jobs/{job_id}")
@@ -297,7 +414,8 @@ def _api_router(settings: Settings, runtime: _Runtime, *, worker_cmd: tuple[str,
 
     @router.get("/jobs/{job_id}/file")
     async def job_file(job_id: str):
-        return _deliver(runtime.jobs(), job_id)
+        return _FileDelivery(runtime.jobs(), job_id, idle=delivery_idle_seconds,
+                             limit=delivery_max_seconds)
 
     return router
 
@@ -313,6 +431,8 @@ def create_app(
     run_worker: RunWorker = run_worker,
     static_dir: Path = STATIC_DIR,
     sweep_interval: float = 60.0,
+    delivery_idle_seconds: float = DELIVERY_IDLE_SECONDS,
+    delivery_max_seconds: float = DELIVERY_MAX_SECONDS,
 ) -> FastAPI:
     worker_cmd = tuple(worker_cmd)
     healthy_settings = settings if isinstance(settings, Settings) else None
@@ -371,7 +491,9 @@ def create_app(
     if healthy_settings is not None:
         app.include_router(_api_router(healthy_settings, runtime, worker_cmd=worker_cmd,
                                        ip_policy=ip_policy, resolver=resolver,
-                                       run_worker=run_worker))
+                                       run_worker=run_worker,
+                                       delivery_idle_seconds=delivery_idle_seconds,
+                                       delivery_max_seconds=delivery_max_seconds))
     return app
 
 

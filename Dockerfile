@@ -119,4 +119,6 @@ EXPOSE 8000
 # GET /health skips the ALLOWED_HOSTS check; the empty ProxyHandler ignores *_proxy vars.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --start-interval=2s --retries=3 \
     CMD ["python", "-c", "import urllib.request as u; u.build_opener(u.ProxyHandler({})).open('http://127.0.0.1:8000/health', timeout=4)"]
-CMD ["python", "-m", "app"]
+# `python -m app` alone listens on loopback; the container needs every interface so the
+# compose port mapping (127.0.0.1 on the host) can reach it.
+CMD ["python", "-m", "app", "--host", "0.0.0.0"]
