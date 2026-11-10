@@ -127,6 +127,38 @@ def test_readme_hedges_the_reddit_cause():
     assert "This is why some Reddit links fail" not in text
 
 
+def _ffmpeg_configure() -> str:
+    text = _read("Dockerfile")
+    stage = text.split("\nFROM debian:trixie-slim AS ffmpeg\n", 1)[1].split("\nFROM ", 1)[0]
+    run = re.search(r"^RUN \./configure((?:.*\\\n)+.*)$", stage, re.M)
+    assert run, "the ffmpeg stage runs ./configure"
+    return run.group(1)
+
+
+def test_ffmpeg_source_pinned_by_checksum():
+    text = _read("Dockerfile")
+    assert re.search(r"^ARG FFMPEG_VERSION=\d+\.\d+(\.\d+)?$", text, re.M)
+    assert re.search(r"^ARG FFMPEG_SHA256=[0-9a-f]{64}$", text, re.M)
+    assert '"https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz"' in text
+    assert re.search(r'echo "\$\{FFMPEG_SHA256\}  ffmpeg\.tar\.xz" \| sha256sum -c -', text)
+    # The runtime stage checks the copied binary is the version named.
+    runtime = text.rsplit("\nFROM ", 1)[1]
+    assert 'grep -q "^ffmpeg version ${FFMPEG_VERSION} "' in runtime
+
+
+def test_ffmpeg_build_reads_local_files_only():
+    flags = _ffmpeg_configure()
+    for flag in ("--disable-everything", "--disable-autodetect", "--disable-network",
+                 "--enable-protocol=file,pipe "):
+        assert flag in flags, flag
+    demuxers = re.search(r"--enable-demuxer=(\S+)", flags).group(1).split(",")
+    # These open other files or URLs named inside the media.
+    assert not {"hls", "dash", "concat", "image2", "tee"} & set(demuxers)
+    # Debian's ffmpeg package must not come back in the runtime stage.
+    runtime = _read("Dockerfile").rsplit("\nFROM ", 1)[1]
+    assert not re.search(r"apt-get install[^\n]*\bffmpeg\b", runtime)
+
+
 def test_runtime_stage_disables_deno_update_check():
     # Deno must not phone home: everything after the last FROM is the runtime stage.
     runtime = _read("Dockerfile").rsplit("\nFROM ", 1)[1]
