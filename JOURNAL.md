@@ -2,6 +2,52 @@
 
 ---
 
+## 2026-11-10 14:53 IST — Session: Cancel and Resume
+
+### Summary
+
+The owner reported a download that looked stuck on "Downloading video track (1 of 2)" and asked for a Cancel button, since there was no way to stop a job. They then asked that a cancelled download stay on the server for 5 minutes so it can be resumed. The download wasn't stuck: it was a 312 MB 1080p video track moving at about 0.5 MB/s, and it finished and saved itself at 09:01 UTC. Built on `feature/cancel-download`, merged into `main` (local, not pushed), and the container was recreated from `main`:
+- **Server:** `POST /api/jobs/{id}/cancel` kills the worker and keeps the partial files for 5 minutes. `POST /api/jobs/{id}/resume` runs the job again in the same folder, where yt-dlp continues the `.part` file. The job view gains `resume_seconds`, and the sweep deletes the partial files when the window ends.
+- **Page:** a Cancel button while a job is queued or running. After a cancel, a Resume download button and a "Kept on the server for 4:59" countdown, which still work after a reload. When the window ends, the page says the partial download was removed.
+- **README:** Cancel and Resume, plus a troubleshooting note explaining "video track (1 of 2)".
+
+**Verified:**
+- 372 offline tests pass, on the branch and again on the merged `main`. New tests cover cancel, resume, the window ending, queue limits on resume, a resumed run waiting for the cancelled worker to die, shutdown during a cancel, and a real worker resuming a partial file with a `Range` request.
+- In Chromium against the branch app and the local media server: Cancel, Cancelled with countdown, reload, Resume, then automatic save. The saved file was byte-identical to the source. The window running out (shortened to 6 s) was checked too, on phone width in dark mode. No console errors.
+- On the recreated container: a real YouTube job (`C0DPdy98e4c`) was cancelled at 63 KB, resumed from 64 KB rather than 0, and saved as an MP4 with AV1 video and Opus audio.
+
+### Changes Made
+
+| Commit    | Type | Description |
+| --------- | ---- | ----------- |
+| `82b2bd7` | feat | Cancel a job and resume it within 5 minutes (API, job manager, runner and worker fixes) |
+| `311f107` | feat | Add Cancel and Resume buttons to the download panel |
+| `c325e04` | docs | Describe Cancel and Resume, and the two-track download step |
+| `2e9acd7` | merge | Merge `feature/cancel-download` into `main` |
+
+### Key Decisions
+
+- **POST `/cancel` and `/resume`, not DELETE.** The Guard's Origin check only covers POST, and the tests already pin `DELETE /api/jobs/{id}` as 405.
+- **A new terminal status, `cancelled`.** "failed" would show an error, and "expired" means the file is gone. `resume_seconds` tells the page whether Resume is still possible.
+- **Resume reuses the job folder instead of starting a new job.** yt-dlp's `continuedl` (on by default) continues a `.part` file with a `Range` request and reuses tracks that already finished. The worker has no SIGTERM handler, so the kill leaves those files in place. A resume costs one re-extract, not a full re-download.
+- **A resumed run waits for the cancelled run to finish.** Otherwise two workers could write the same `.part` file during the 5 s SIGTERM grace. It waits with `asyncio.wait`, not `gather`, so cancelling the new run never cancels the old one a second time.
+- **Shutdown skips runs a user cancel already stopped (`Task.cancelling()`).** A second `cancel()` cut run_worker's kill short before its SIGKILL. A test with a worker that ignores SIGTERM failed without this.
+- **The window is a constant (`RESUME_WINDOW_SECONDS = 300`), not an environment variable.** The owner asked for 5 minutes; a setting can come later if they want one.
+- **Resume goes through the same busy and disk checks as a new job.** A resumed download takes a queue slot like any other.
+- **Cancelling a ready job discards the file and can't be resumed.** The page only offers Cancel while a job is queued or running, so this happens only when the job finishes just as Cancel is clicked.
+
+### Issues Encountered
+
+- **The original "stuck" report** was a large video track on a slow source, not a hang. The UI showed the MB count moving, but nothing explained why there were two tracks, so the README now does.
+- **`docker compose up -d --build` rebuilt the image but left the old container running.** It needed `--force-recreate`.
+- **A killed worker's `.part` file is smaller than its last progress event**, because buffered writes are lost. This is harmless: the resume asks for the file's actual size.
+- **The previous session's deferred minor is fixed:** "A cancel during the runner's 1 s stderr drain skips task cleanup." User cancels made it reachable.
+- **A track kept from a cancelled run was invisible to the size cap.** yt-dlp reports it only as `total_bytes`, so the progress hook now counts that.
+- **Known limitation:** a cancel during post-processing of a single-file download (not two tracks) re-downloads that file on resume. yt-dlp runs with `overwrites: True` and deletes the finished file. Two-track downloads keep their finished tracks.
+- **Resumable partial files are not evicted under disk pressure.** They count toward `MAX_TOTAL_DISK_MB` until their window ends (at most about 6 minutes, with the 60 s sweep).
+
+---
+
 ## 2026-11-10 14:08 IST — Session: SaveMe Brand Redesign
 
 ### Summary
