@@ -125,3 +125,14 @@ def test_app_js_never_injects_html():
     for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function",
                 "setAttribute(\"style\"", "setAttribute('style'", "cssText"):
         assert bad not in js, bad
+
+
+def test_job_panel_has_cancel_and_resume_buttons():
+    buttons = {a.get("id"): a for t, a in _parsed().tags if t == "button"}
+    for name in ("cancel", "resume", "again"):
+        assert name in buttons and buttons[name].get("type") == "button", name
+        assert "hidden" in buttons[name], name  # app.js shows the ones that apply
+    js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "/cancel`" in js and "/resume`" in js
+    assert "resume_seconds" in js
+    assert "The partial download was removed from the server." in js
