@@ -83,6 +83,36 @@ def test_no_inline_script_style_or_handlers():
     assert "style=\"" not in _html()
 
 
+def test_page_uses_brand_icon_and_logo():
+    tags = _parsed().tags
+    icons = [a for t, a in tags if t == "link" and a.get("rel") == "icon"]
+    assert icons == [{"rel": "icon", "href": "/static/brand/icon.svg", "type": "image/svg+xml"}]
+    logos = [a for t, a in tags if t == "img" and a.get("alt") == "SaveMe"]
+    assert [a.get("src") for a in logos] == ["/static/brand/lockup-white.svg"]
+    for name in ("icon.svg", "lockup-white.svg"):
+        assert (STATIC / "brand" / name).is_file(), name
+
+
+def test_brand_svgs_are_plain_drawings():
+    # Shown as <img> under the page CSP: no scripts, embedded styles, HTML or remote references.
+    svgs = sorted((STATIC / "brand").glob("*.svg"))
+    assert svgs
+    for svg in svgs:
+        text = svg.read_text(encoding="utf-8").lower()
+        for bad in ("<script", "<style", "<foreignobject", "href=\"http", "url(http", " on"):
+            assert bad not in text, (svg.name, bad)
+
+
+def test_format_choice_is_one_radio_group_with_one_download_button():
+    tags = _parsed().tags
+    radios = [a for t, a in tags if t == "input" and a.get("type") == "radio"]
+    assert radios and all(a.get("name") == "format" for a in radios)
+    buttons = [a.get("id") for t, a in tags if t == "button"]
+    assert "download" in buttons
+    assert not {"dl-video", "dl-audio"} & set(buttons)
+    assert any(t == "fieldset" for t, _ in tags)
+
+
 def test_app_js_carries_pinned_copy():
     js = (STATIC / "app.js").read_text(encoding="utf-8")
     for text in (LOST, SAVED, NO_AUDIO):

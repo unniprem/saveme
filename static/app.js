@@ -1,9 +1,11 @@
-// saveme page logic: plain browser JavaScript, no dependencies.
+// SaveMe page logic: plain browser JavaScript, no dependencies.
 // The CSP allows only same-origin scripts and styles, so all behaviour lives here and all
 // styling is Tailwind classes in index.html. Text is set with textContent, never parsed as HTML.
 //
 // States: idle → inspecting → inspected → job (queued | downloading | converting) → ready
 //         → saved | failed; a vanished job ("lost") resets to idle with a message.
+// A job that turns ready is saved to the device straight away, once per job; the
+// "Save file" link is the fallback when the browser holds the download back.
 "use strict";
 
 (() => {
@@ -15,21 +17,23 @@
   const JOB_ID_RE = /^[A-Za-z0-9_-]{22}$/;
   const ACTIVE = ["queued", "downloading", "converting"];
   const MB = 1024 * 1024;
+  const AUDIO = "audio"; // the MP3 format choice; video choices are "video:<quality id>"
+  const VIDEO_PREFIX = "video:";
 
   const MSG = {
     lost: "This download was lost (the server may have restarted). Please start again.",
     saved: "Saved — file removed from server.",
+    removed: "File removed from server.",
     noAudio: "This media has no audio track.",
     noVideo: "This media has no video track.",
     emptyUrl: "Paste a link first.",
-    offline: "Can't reach saveme. Check that it's running, then try again.",
-    retrying: "Waiting for saveme to respond. Retrying…",
-    gaveUp: "Can't reach saveme. Check that it's running, then reload this page to pick the download back up.",
-    badReply: "saveme sent an unexpected reply. Please try again.",
+    offline: "Can't reach SaveMe. Check that it's running, then try again.",
+    retrying: "Waiting for SaveMe to respond. Retrying…",
+    gaveUp: "Can't reach SaveMe. Check that it's running, then reload this page to pick the download back up.",
+    badReply: "SaveMe sent an unexpected reply. Please try again.",
     jobFailed: "The download failed. Please try again.",
     expiredTtl: "This file expired before it was saved. Please start again.",
     expiredEvicted: "This file expired early to free up server space. Please start again.",
-    saveAgain: "If the download didn't start, select Save File again.",
   };
   const HEADLINE = {
     starting: "Starting…",
@@ -39,6 +43,7 @@
     converting: "Converting",
     ready: "Ready to save",
     saving: "Saving to your device…",
+    saved: "Saved",
     failed: "Download failed",
     expired: "File expired",
     offline: "Connection lost",
@@ -47,10 +52,11 @@
   const el = {};
   for (const id of [
     "inspect-form", "url", "inspect", "status", "spinner", "status-text", "banner", "banner-text",
-    "result", "thumb", "result-title", "duration", "duration-text", "source", "notices", "quality-row",
-    "quality", "dl-video", "dl-audio", "video-reason", "audio-reason", "action-msg",
-    "job", "job-kind", "job-name", "job-status", "job-percent", "bar", "bar-fill", "job-detail",
-    "job-meta", "job-notice", "job-error", "job-actions", "save", "again", "announcer",
+    "result", "media", "thumb", "duration", "duration-text", "duration-line", "duration-line-text",
+    "result-title", "source", "notices", "formats", "format-note", "download", "action-msg", "chip-tpl",
+    "job", "job-kind", "job-name", "job-spin", "job-done", "job-fail", "job-status", "job-percent", "bar",
+    "bar-fill", "job-detail", "job-meta", "save-row", "save", "job-notice", "job-error", "job-actions",
+    "again", "announcer",
   ]) {
     el[id.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = document.getElementById(id);
   }
@@ -58,11 +64,12 @@
   let state = "idle"; // idle | inspecting | inspected | job | ready | saved | failed
   let degraded = false; // server reported a config error on /health
   let inspected = null; // { url, info } from the last successful inspect
-  let job = null; // { id, url, title, output, filename }
+  let job = null; // { id, url, title, output, filename, autoSaved }
   let pollGen = 0; // bumped to cancel any in-flight poll
   let pollTimer = 0;
   let failures = 0;
-  let deliverBy = 0; // after Save File: keep polling until this time for "delivered"
+  let deliverBy = 0; // while saving: keep polling until this time for "delivered"
+  let readyNotice = ""; // the ready job's notice, kept across repaints
 
   // ---- small helpers ------------------------------------------------------------------
 
@@ -118,6 +125,8 @@
     setText(el.announcer, text);
   }
 
+  const fileUrl = () => `/api/jobs/${encodeURIComponent(job.id)}/file`;
+
   // ---- session storage (resume after reload) ------------------------------------------
 
   function storeJob() {
@@ -146,6 +155,7 @@
           title: str(saved.title),
           output: saved.output === "audio" ? "audio" : "video",
           filename: str(saved.filename),
+          autoSaved: saved.autoSaved === true,
         };
       }
     } catch {
@@ -205,9 +215,15 @@
     el.inspect.disabled = busy || degraded;
     el.url.readOnly = busy;
     const canDownload = Boolean(inspected) && !degraded && ["inspected", "saved", "failed"].includes(next);
-    el.dlVideo.disabled = !(canDownload && inspected.info.video.available);
-    el.dlAudio.disabled = !(canDownload && inspected.info.audio.available);
-    el.quality.disabled = el.dlVideo.disabled;
+    el.download.disabled = !(canDownload && chosenFormat());
+  }
+
+  // The checked format choice as { output, quality }, or null when none is usable.
+  function chosenFormat() {
+    const input = el.formats.querySelector("input:checked");
+    if (!input || input.disabled) return null;
+    if (input.value === AUDIO) return { output: "audio", quality: "best" };
+    return { output: "video", quality: input.value.slice(VIDEO_PREFIX.length) };
   }
 
   function stopPolling() {
@@ -227,6 +243,7 @@
     clearJob();
     job = null;
     deliverBy = 0;
+    readyNotice = "";
     show(el.job, false);
   }
 
@@ -259,15 +276,13 @@
 
   function renderResult(info) {
     setText(el.resultTitle, info.title);
-    setText(el.durationText, info.duration === null ? "" : fmtDuration(info.duration));
-    show(el.duration, info.duration !== null);
+    const duration = info.duration === null ? "" : fmtDuration(info.duration);
+    setText(el.durationText, duration);
+    setText(el.durationLineText, duration);
 
-    show(el.thumb, false);
     el.thumb.removeAttribute("src");
-    if (info.thumbnail) {
-      el.thumb.src = info.thumbnail;
-      show(el.thumb, true);
-    }
+    if (info.thumbnail) el.thumb.src = info.thumbnail;
+    placeMedia(Boolean(info.thumbnail));
 
     setText(el.source, info.source || (info.page ? new URL(info.page).hostname : ""));
     if (info.page) el.source.href = info.page;
@@ -283,15 +298,46 @@
     );
     show(el.notices, info.notices.length > 0);
 
-    el.quality.replaceChildren(...info.video.qualities.map((q) => new Option(q.label, q.id)));
-    const preferred = info.video.qualities.find((q) => q.id === info.video.preferred) || info.video.qualities[0];
-    if (preferred) el.quality.value = preferred.id;
-    show(el.qualityRow, info.video.available);
-
-    setLine(el.videoReason, info.video.available ? "" : MSG.noVideo);
-    setLine(el.audioReason, info.audio.available ? "" : MSG.noAudio);
+    renderFormats(info);
     setLine(el.actionMsg, "");
     show(el.result, true);
+  }
+
+  // The thumbnail carries the duration badge; without one, the duration joins the source line.
+  function placeMedia(hasThumb) {
+    const hasDuration = Boolean(el.durationText.textContent);
+    show(el.media, hasThumb);
+    show(el.duration, hasThumb && hasDuration);
+    show(el.durationLine, !hasThumb && hasDuration);
+  }
+
+  // One radio "chip" per video quality, then MP3. The server's preferred quality starts checked.
+  function renderFormats(info) {
+    const chips = info.video.available
+      ? info.video.qualities.map((q) => formatChip(VIDEO_PREFIX + q.id, q.label, false))
+      : [];
+    const mp3 = formatChip(AUDIO, "MP3 audio", true);
+    const mp3Input = mp3.querySelector("input");
+    mp3Input.disabled = !info.audio.available;
+    if (mp3Input.disabled) mp3Input.setAttribute("aria-describedby", "format-note");
+    el.formats.replaceChildren(...chips, mp3);
+
+    const preferred = info.video.qualities.find((q) => q.id === info.video.preferred) || info.video.qualities[0];
+    let pick = "";
+    if (info.video.available && preferred) pick = VIDEO_PREFIX + preferred.id;
+    else if (info.audio.available) pick = AUDIO;
+    for (const input of el.formats.querySelectorAll("input")) input.checked = input.value === pick;
+
+    const notes = [info.video.available ? "" : MSG.noVideo, info.audio.available ? "" : MSG.noAudio];
+    setLine(el.formatNote, notes.filter(Boolean).join(" "));
+  }
+
+  function formatChip(value, label, audio) {
+    const chip = el.chipTpl.content.firstElementChild.cloneNode(true);
+    chip.querySelector("input").value = value;
+    chip.querySelector("[data-label]").textContent = label;
+    if (audio) chip.querySelector("[data-icon]").classList.remove("hidden");
+    return chip;
   }
 
   async function inspect(event) {
@@ -306,14 +352,14 @@
     dropJob();
     clearResult();
     setState("inspecting");
-    say("Inspecting…", "busy");
+    say("Fetching…", "busy");
     try {
       const info = normalize(await api("/api/inspect", { url }));
       inspected = { url, info };
       renderResult(info);
       setState("inspected");
       say("");
-      announce(`Found “${info.title}”. Choose a download below.`);
+      announce(`Found “${info.title}”. Choose a format below.`);
     } catch (err) {
       if (err.code === "config_error") enterDegraded(err.message);
       setState("idle");
@@ -323,18 +369,19 @@
 
   // ---- jobs -----------------------------------------------------------------------------
 
-  async function startJob(output) {
-    const button = output === "video" ? el.dlVideo : el.dlAudio;
-    if (!inspected || button.disabled) return;
-    const quality = output === "video" ? el.quality.value : "best";
+  async function startJob() {
+    const choice = chosenFormat();
+    if (!inspected || el.download.disabled || !choice) return;
+    const { output, quality } = choice;
     if (output === "video" && !inspected.info.video.qualities.some((q) => q.id === quality)) return;
+    if (output === "audio" && !inspected.info.audio.available) return;
 
     const previous = state;
     const { url, info } = inspected;
     dropJob();
     setLine(el.actionMsg, "");
-    job = { id: "", url, title: info.title, output, filename: "" };
-    // Lock both buttons before the request goes out, so a double-click can't start two jobs.
+    job = { id: "", url, title: info.title, output, filename: "", autoSaved: false };
+    // Lock the button before the request goes out, so a double-click can't start two jobs.
     setState("job");
     paintJob({ headline: HEADLINE.starting, bar: null });
     el.job.focus();
@@ -354,7 +401,7 @@
       setState(previous);
       setLine(el.actionMsg, err.message, "error");
       announce(err.message);
-      button.focus();
+      el.download.focus();
     }
   }
 
@@ -429,22 +476,36 @@
     announce(HEADLINE[status]);
   }
 
+  // The file is waiting on the server. The first time a job gets here it is saved without
+  // asking (a reload after that shows the Save file link instead of saving it twice).
   function showReady(v) {
     job.filename = str(v.filename) || job.filename;
+    readyNotice = str(v.notice);
+    const autoSave = !job.autoSaved;
+    job.autoSaved = true;
     storeJob();
-    const saving = deliverBy > Date.now();
     setState("ready");
+    paintReady();
+    if (autoSave) {
+      el.save.click(); // the browser downloads the file; onSave starts watching for delivery
+    } else if (deliverBy > Date.now()) {
+      pollSoon(POLL_MS);
+    } else {
+      announce("Ready to save. Select Save file.");
+    }
+  }
+
+  function paintReady() {
+    const saving = deliverBy > Date.now();
     paintJob({
       headline: saving ? HEADLINE.saving : HEADLINE.ready,
+      icon: saving ? "spin" : "",
       bar: 100,
       detail: job.filename,
-      meta: deliverBy && !saving ? MSG.saveAgain : "",
-      notice: str(v.notice),
+      notice: readyNotice,
       save: true,
-      again: true,
+      again: !saving,
     });
-    announce("Ready to save. Select Save File.");
-    if (saving) pollSoon(POLL_MS);
   }
 
   // Terminal outcomes that keep the panel up: saved, failed or expired.
@@ -454,13 +515,14 @@
     deliverBy = 0;
     if (kind === "saved") {
       setState("saved");
-      paintJob({ headline: MSG.saved, detail: job ? job.filename : "", again: true });
+      paintJob({ headline: HEADLINE.saved, icon: "done", detail: job ? job.filename : "",
+                meta: MSG.removed, again: true });
       announce(MSG.saved);
       return;
     }
     setState("failed");
     const headline = kind === "expired" ? HEADLINE.expired : HEADLINE.failed;
-    paintJob({ headline, error: message, again: true });
+    paintJob({ headline, icon: "fail", error: message, again: true });
     announce(`${headline}. ${message}`);
   }
 
@@ -478,7 +540,7 @@
   function giveUp() {
     stopPolling();
     setState("failed");
-    paintJob({ headline: HEADLINE.offline, error: MSG.gaveUp, again: true });
+    paintJob({ headline: HEADLINE.offline, icon: "fail", error: MSG.gaveUp, again: true });
     announce(MSG.gaveUp);
   }
 
@@ -488,6 +550,9 @@
     setText(el.jobName, job ? job.title : "");
     setText(el.jobStatus, p.headline);
     setText(el.jobPercent, p.percent || "");
+    show(el.jobSpin, p.icon === "spin");
+    show(el.jobDone, p.icon === "done");
+    show(el.jobFail, p.icon === "fail");
 
     const hasBar = p.bar !== undefined;
     show(el.bar, hasBar);
@@ -498,10 +563,9 @@
     setLine(el.jobNotice, p.notice || "");
     setLine(el.jobError, p.error || "");
 
-    show(el.save, Boolean(p.save));
-    if (p.save && job) el.save.href = `/api/jobs/${encodeURIComponent(job.id)}/file`;
-    show(el.again, Boolean(p.again));
-    show(el.jobActions, Boolean(p.save || p.again));
+    show(el.saveRow, Boolean(p.save));
+    if (p.save && job) el.save.href = fileUrl();
+    show(el.jobActions, Boolean(p.again));
     show(el.job, true);
   }
 
@@ -540,12 +604,13 @@
     }
   }
 
+  // Runs for the automatic save and for a click on Save file. The browser downloads the
+  // file; the server deletes it once fully sent, so watch for that.
   function onSave() {
     if (!job || state !== "ready") return;
-    // The browser downloads the file; the server deletes it once fully sent. Watch for that.
     deliverBy = Date.now() + DELIVERY_WAIT_MS;
-    setText(el.jobStatus, HEADLINE.saving);
-    setLine(el.jobMeta, "");
+    paintReady();
+    announce(HEADLINE.saving);
     pollSoon(POLL_MS);
   }
 
@@ -571,11 +636,11 @@
   async function init() {
     el.inspectForm.addEventListener("submit", inspect);
     el.url.addEventListener("input", onUrlInput);
-    el.dlVideo.addEventListener("click", () => startJob("video"));
-    el.dlAudio.addEventListener("click", () => startJob("audio"));
+    el.formats.addEventListener("change", () => setState(state));
+    el.download.addEventListener("click", startJob);
     el.save.addEventListener("click", onSave);
     el.again.addEventListener("click", onAgain);
-    el.thumb.addEventListener("error", () => show(el.thumb, false));
+    el.thumb.addEventListener("error", () => placeMedia(false));
     setState("idle");
 
     const saved = loadJob();

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
+  <defs>
+    <linearGradient id="bg" x1="1" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6a1bc9"/><stop offset="1" stop-color="#1e0a8a"/></linearGradient>
+    <mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="400" height="400">
+      <rect width="400" height="400" fill="#fff"/>
+      <path d="M200 206v66M163 238l37 33 37-33" fill="none" stroke="#000" stroke-width="48" stroke-linecap="round" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+  <rect width="400" height="400" rx="96" fill="url(#bg)"/>
+  <g mask="url(#cut)">
+    <rect x="72" y="70" width="256" height="164" rx="52" fill="#fff"/>
+    <path d="M112 262v20a28 28 0 0 0 28 28h120a28 28 0 0 0 28-28v-20" fill="none" stroke="#fff" stroke-width="26" stroke-linecap="round"/>
+  </g>
+  <path d="M138 110v66a7 7 0 0 0 10.7 5.9l52-33a7 7 0 0 0 0-11.8l-52-33A7 7 0 0 0 138 110z" fill="#3a14a0"/>
+  <rect x="234" y="144" width="14" height="26" rx="7" fill="#ff6450"/>
+  <rect x="259" y="129" width="14" height="42" rx="7" fill="#ff6450"/>
+  <rect x="284" y="108" width="14" height="64" rx="7" fill="#ff6450"/>
+  <path d="M200 206v66M163 238l37 33 37-33" fill="none" stroke="#fe5d3b" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

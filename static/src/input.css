@@ -2,3 +2,43 @@
 @import "tailwindcss" source(none);
 @source "../index.html";
 @source "../app.js";
+
+/* SaveMe brand: indigo and coral from the logo, on a lightly purple-tinted neutral ("ink"). */
+@theme {
+  --color-brand-50: #f3f0fe;
+  --color-brand-100: #ece8fb;
+  --color-brand-200: #cfc4f2;
+  --color-brand-300: #c9bcff;
+  --color-brand-400: #9d85ff;
+  --color-brand-500: #6d4aff;
+  --color-brand-600: #5a2fe0;
+  --color-brand-700: #3a12a0;
+  --color-brand-800: #2d0f92;
+  --color-brand-900: #1e0a7e;
+  --color-brand-950: #1a0850;
+
+  --color-coral-200: #ffcdc2;
+  --color-coral-400: #ff7a5c;
+  --color-coral-500: #fe5d3b;
+  --color-tangerine-500: #fd941c;
+
+  --color-ink-50: #f6f5fa;
+  --color-ink-100: #efedf6;
+  --color-ink-200: #e6e3ef;
+  --color-ink-300: #d9d5e6;
+  --color-ink-400: #a5a0ba;
+  --color-ink-500: #75708d;
+  --color-ink-600: #6b6880;
+  --color-ink-700: #4a4562;
+  --color-ink-800: #2c2843;
+  --color-ink-900: #1a1728;
+  --color-ink-950: #0e0c19;
+
+  --shadow-card: 0 1px 2px rgb(27 21 48 / 0.06), 0 4px 16px rgb(27 21 48 / 0.07);
+  --shadow-field: 0 6px 20px rgb(10 0 50 / 0.35);
+}
+
+/* "How it works" is for a fresh page: it steps aside once a result or a download is showing. */
+main:has(> #result:not([hidden]), > #job:not([hidden])) > #how {
+  display: none;
+}

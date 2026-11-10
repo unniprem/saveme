@@ -16,9 +16,9 @@ Settings are optional. To change any, copy `.env.example` to `.env`, edit it and
 
 ## Use it
 
-1. Paste a link and choose **Inspect**. You see the title, length, thumbnail and which outputs are available.
-2. Pick **Video (MP4)** with a quality, or **Audio (MP3)**, and start the download.
-3. When the file is ready, save it. Each file can be fetched once; it is deleted after you save it, or after `JOB_TTL_MINUTES` if you never do.
+1. Paste a link and choose **Fetch**. You see the title, length, thumbnail and which formats are available.
+2. Pick a format (a video quality, or **MP3 audio**) and choose **Download**.
+3. When the file is ready, your browser saves it straight away. If the browser holds it back, use the **Save file** link. Each file can be fetched once; it is deleted after it is saved, or after `JOB_TTL_MINUTES` if it never is.
 
 Video qualities are Best, 1080, 720 and 480. The default is the highest H.264 tier, so the file plays almost everywhere.
 
