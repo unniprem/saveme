@@ -653,6 +653,98 @@ def test_aborted_download_keeps_file(settings, temp_dir):
         assert not path.exists()
 
 
+def live_ready_job(http: httpx.Client) -> str:
+    r = http.post("/api/jobs", json={"url": URL, "output": "video"})
+    assert r.status_code == 202, r.text
+    job_id = r.json()["job_id"]
+    deadline = time.monotonic() + 10
+    while http.get(f"/api/jobs/{job_id}").json()["status"] != "ready":
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+    return job_id
+
+
+@contextmanager
+def stalled_download(port: int, job_id: str) -> Iterator[socket.socket]:
+    """A raw client that requests the file, takes the first bytes, then stops reading."""
+    raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    raw.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    raw.settimeout(10)
+    try:
+        raw.connect(("127.0.0.1", port))
+        raw.sendall(f"GET /api/jobs/{job_id}/file HTTP/1.1\r\n"
+                    f"Host: 127.0.0.1:{port}\r\n\r\n".encode())
+        assert raw.recv(4096).startswith(b"HTTP/1.1 200")
+        yield raw
+    finally:
+        raw.close()
+
+
+def read_to_eof(raw: socket.socket, pause: float = 0.0, timeout: float = 15.0) -> int:
+    """Bytes read until the server closes the connection."""
+    received, deadline = 0, time.monotonic() + timeout
+    while chunk := raw.recv(64 * 1024):
+        received += len(chunk)
+        assert time.monotonic() < deadline, "the server never closed the connection"
+        time.sleep(pause)
+    return received
+
+
+def get_file_when_free(http: httpx.Client, job_id: str, timeout: float = 10.0) -> httpx.Response:
+    """GET the file, retrying while an earlier delivery still holds it."""
+    deadline = time.monotonic() + timeout
+    while (r := http.get(f"/api/jobs/{job_id}/file")).status_code == 409:
+        assert time.monotonic() < deadline, r.text
+        time.sleep(0.05)
+    return r
+
+
+def test_second_download_during_a_delivery_409(settings, temp_dir):
+    size = 32 * MiB
+    app = make_app(settings, run_worker=StubWorker(file_bytes=size))
+    with live_server(app) as port, httpx.Client(base_url=f"http://127.0.0.1:{port}",
+                                               trust_env=False, timeout=10) as http:
+        job_id = live_ready_job(http)
+        with stalled_download(port, job_id):
+            r = http.get(f"/api/jobs/{job_id}/file")
+            assert r.status_code == 409
+            assert r.json() == error_body("delivery_in_progress")
+        # That client hung up, so the file is free for another try.
+        r = get_file_when_free(http, job_id)
+        assert r.status_code == 200 and len(r.content) == size
+        view = http.get(f"/api/jobs/{job_id}").json()
+        assert (view["status"], view["reason"]) == ("expired", "delivered")
+        assert not (temp_dir / job_id).exists()
+
+
+def test_stalled_download_is_cut_off(settings):
+    size = 32 * MiB
+    app = make_app(settings, run_worker=StubWorker(file_bytes=size), delivery_idle_seconds=0.5)
+    with live_server(app) as port, httpx.Client(base_url=f"http://127.0.0.1:{port}",
+                                               trust_env=False, timeout=10) as http:
+        job_id = live_ready_job(http)
+        with stalled_download(port, job_id) as raw:
+            time.sleep(1.5)  # the server gives up on a client that takes nothing
+            assert read_to_eof(raw) < size
+        assert http.get(f"/api/jobs/{job_id}").json()["status"] == "ready"
+        r = get_file_when_free(http, job_id)
+        assert r.status_code == 200 and len(r.content) == size
+
+
+def test_slow_download_hits_the_delivery_deadline(settings):
+    size = 32 * MiB
+    app = make_app(settings, run_worker=StubWorker(file_bytes=size), delivery_max_seconds=1)
+    with live_server(app) as port, httpx.Client(base_url=f"http://127.0.0.1:{port}",
+                                               trust_env=False, timeout=10) as http:
+        job_id = live_ready_job(http)
+        with stalled_download(port, job_id) as raw:
+            # About 1 MiB/s, never idle for long: only the overall deadline stops it.
+            assert read_to_eof(raw, pause=0.05) < size
+        assert http.get(f"/api/jobs/{job_id}").json()["status"] == "ready"
+        r = get_file_when_free(http, job_id)
+        assert r.status_code == 200 and len(r.content) == size
+
+
 # --- Host and origin checks -----------------------------------------------------
 
 @pytest.mark.parametrize("host", ["evil.example", "evil.example:8000",

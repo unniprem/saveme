@@ -18,7 +18,7 @@ Settings are optional. To change any, copy `.env.example` to `.env`, edit it and
 
 1. Paste a link and choose **Fetch**. You see the title, length, thumbnail and which formats are available.
 2. Pick a format (a video quality, or **MP3 audio**) and choose **Download**.
-3. When the file is ready, your browser saves it straight away. If the browser holds it back, use the **Save file** link. Each file can be fetched once; it is deleted after it is saved, or after `JOB_TTL_MINUTES` if it never is.
+3. When the file is ready, your browser saves it straight away. If the browser holds it back, use the **Save file** link. Each file can be saved once, by one download at a time; it is deleted after it is saved, or after `JOB_TTL_MINUTES` if it never is. If a save is interrupted, or the browser takes nothing for a minute, the server stops sending and the file stays, so **Save file** works again.
 
 To stop a download, choose **Cancel**. The partial download stays on the server for 5 minutes, and **Resume download** continues where it stopped (it still works after a page reload). After 5 minutes the partial download is deleted. The server keeps one partial download per place in the queue (`MAX_ACTIVE_JOBS` + `MAX_QUEUED_JOBS`); cancelling more than that deletes the oldest one first.
 

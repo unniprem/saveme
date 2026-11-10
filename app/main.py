@@ -28,7 +28,7 @@ from typing import get_args
 import anyio.to_thread
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -36,7 +36,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.config import ConfigError, Settings, load_settings
 from app.errors import CATALOG, AppError
-from app.filenames import content_disposition, media_type_for
+from app.filenames import content_disposition
 from app.jobs import APP_DIR, JobManager
 from app.netguard import (IpPolicy, Resolver, check_source_address, check_url_syntax, is_public_ip,
                           system_resolver)
@@ -47,6 +47,10 @@ logger = logging.getLogger(__name__)
 
 STATIC_DIR = APP_DIR / "static"
 CHUNK_SIZE = 1024 * 1024
+# A download that takes nothing for this long, or runs longer than the second limit,
+# is cut off (the file stays for another try), so a slow client can't hold a file.
+DELIVERY_IDLE_SECONDS = 60.0
+DELIVERY_MAX_SECONDS = 3600.0
 # The API's bodies are a link and two choices; this leaves room for pasted share text.
 MAX_BODY_BYTES = 64 * 1024
 
@@ -280,48 +284,88 @@ class _Runtime:
         return self.manager
 
 
-def _deliver(jobs: JobManager, job_id: str) -> StreamingResponse:
-    """Stream a ready file; the job expires as delivered once the last byte is handed over.
+class _FileDelivery(Response):
+    """Sends a ready file to one client, then ends its delivery claim.
 
-    The file is opened right after file_for_delivery, with no await in between, so a
-    TTL sweep or eviction can't remove it first; once it is open, a later unlink can't
-    break the stream. A Range header is ignored: the reply is always the whole file
-    with 200 and no Accept-Ranges, so a response that runs to the end is a complete
-    delivery. If the client hangs up, the loop never finishes and the file stays until
-    its TTL.
+    Claiming, opening, sending and releasing all happen in __call__, inside one
+    try/finally, so no claim outlives its request. While the claim is held, a second
+    download gets 409 delivery_in_progress and the file stays on disk and counted (see
+    JobManager). The job expires as delivered once the last byte is handed over. A client
+    that hangs up, takes nothing for `idle` seconds, or is still downloading after
+    `limit` seconds is cut off, and the file stays ready for another try until its TTL.
+    A Range header is ignored: the reply is always the whole file with 200 and no
+    Accept-Ranges, so a response that runs to the end is a complete delivery.
     """
-    job = jobs.file_for_delivery(job_id)
-    path, filename = job.file_path, job.filename
-    if path is None or filename is None:
-        raise AppError("expired")
-    media_type = media_type_for(path.suffix.removeprefix("."))
-    try:
-        file = open(path, "rb")
-    except FileNotFoundError:
-        raise AppError("expired") from None
-    size = os.fstat(file.fileno()).st_size
 
-    async def body():
-        remaining = size
+    def __init__(self, jobs: JobManager, job_id: str, *, idle: float, limit: float) -> None:
+        self.jobs, self.job_id, self.idle, self.limit = jobs, job_id, idle, limit
+        self.background = None
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         try:
-            while remaining > 0:
+            job = self.jobs.claim_delivery(self.job_id)
+        except AppError as exc:
+            await _app_error_response(exc)(scope, receive, send)
+            return
+        complete = False
+        try:
+            path, filename = job.file_path, job.filename
+            try:
+                if path is None or filename is None:
+                    raise FileNotFoundError
+                file = open(path, "rb")
+            except FileNotFoundError:
+                await _app_error_response(AppError("expired"))(scope, receive, send)
+                return
+            with file:
+                async with anyio.create_task_group() as tasks:
+                    async def until_disconnect() -> None:
+                        while (await receive())["type"] != "http.disconnect":
+                            pass
+                        tasks.cancel_scope.cancel()  # the client hung up: stop sending
+
+                    tasks.start_soon(until_disconnect)
+                    complete = await self._send_file(job, file, filename, send)
+                    tasks.cancel_scope.cancel()
+        finally:
+            self.jobs.finish_delivery(job, complete=complete)
+
+    async def _send_file(self, job, file, filename: str, send: Send) -> bool:
+        """True once every byte is handed over; False if the client was too slow or the
+        file shrank."""
+        size = os.fstat(file.fileno()).st_size
+        self.status_code, self.media_type = 200, job.media_type
+        self.init_headers({"Content-Length": str(size),
+                           "Content-Disposition": content_disposition(filename)})
+        deadline = anyio.current_time() + self.limit
+        await send({"type": "http.response.start", "status": 200, "headers": self.raw_headers})
+        remaining = size
+        while True:
+            chunk = b""
+            if remaining > 0:
                 chunk = await anyio.to_thread.run_sync(file.read, min(CHUNK_SIZE, remaining))
                 if not chunk:  # the file shrank: not a complete delivery
-                    return
+                    return False
                 remaining -= len(chunk)
-                yield chunk
-        finally:
-            file.close()
-        jobs.mark_delivered(job_id)
-
-    return StreamingResponse(body(), media_type=media_type, headers={
-        "Content-Length": str(size),
-        "Content-Disposition": content_disposition(filename),
-    })
+            sent = False
+            left = deadline - anyio.current_time()
+            if left > 0:
+                with anyio.move_on_after(min(self.idle, left)):
+                    await send({"type": "http.response.body", "body": chunk,
+                                "more_body": remaining > 0})
+                    sent = True
+            if not sent:
+                late = anyio.current_time() >= deadline
+                logger.warning("job %s: stopped sending the file to a client that %s",
+                               job.id, "took too long" if late else "stopped reading")
+                return False
+            if remaining == 0:
+                return True
 
 
 def _api_router(settings: Settings, runtime: _Runtime, *, worker_cmd: tuple[str, ...],
-                ip_policy: IpPolicy, resolver: Resolver, run_worker: RunWorker) -> APIRouter:
+                ip_policy: IpPolicy, resolver: Resolver, run_worker: RunWorker,
+                delivery_idle_seconds: float, delivery_max_seconds: float) -> APIRouter:
     router = APIRouter(prefix="/api")
     inspections = asyncio.Semaphore(settings.max_active_inspections)
     checking_jobs = 0  # job requests whose links are being resolved
@@ -370,7 +414,8 @@ def _api_router(settings: Settings, runtime: _Runtime, *, worker_cmd: tuple[str,
 
     @router.get("/jobs/{job_id}/file")
     async def job_file(job_id: str):
-        return _deliver(runtime.jobs(), job_id)
+        return _FileDelivery(runtime.jobs(), job_id, idle=delivery_idle_seconds,
+                             limit=delivery_max_seconds)
 
     return router
 
@@ -386,6 +431,8 @@ def create_app(
     run_worker: RunWorker = run_worker,
     static_dir: Path = STATIC_DIR,
     sweep_interval: float = 60.0,
+    delivery_idle_seconds: float = DELIVERY_IDLE_SECONDS,
+    delivery_max_seconds: float = DELIVERY_MAX_SECONDS,
 ) -> FastAPI:
     worker_cmd = tuple(worker_cmd)
     healthy_settings = settings if isinstance(settings, Settings) else None
@@ -444,7 +491,9 @@ def create_app(
     if healthy_settings is not None:
         app.include_router(_api_router(healthy_settings, runtime, worker_cmd=worker_cmd,
                                        ip_policy=ip_policy, resolver=resolver,
-                                       run_worker=run_worker))
+                                       run_worker=run_worker,
+                                       delivery_idle_seconds=delivery_idle_seconds,
+                                       delivery_max_seconds=delivery_max_seconds))
     return app
 
 

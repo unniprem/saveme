@@ -11,6 +11,7 @@ CATALOG: dict[str, tuple[int, str]] = {
     "forbidden_origin": (403, "This request came from an origin that isn't allowed."),
     "job_not_found": (404, "That download couldn't be found. It may have expired or the server may have restarted."),
     "not_ready": (409, "The file isn't ready yet. Please wait for the download to finish."),
+    "delivery_in_progress": (409, "This file is already being saved. If that save stopped, try again in a moment."),
     "expired": (410, "This download has expired. Please start again."),
     "cancelled": (410, "This download was cancelled. Please start again."),
     "not_resumable": (410, "This download can no longer be resumed. Please start again."),
