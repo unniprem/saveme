@@ -327,11 +327,16 @@ class JobManager:
             projected -= size
         return True
 
+    def ensure_queue_room(self, reserved: int = 0) -> None:
+        """Raise busy unless one more job fits the queue beside `reserved` places
+        (requests whose links are still being checked)."""
+        pending = sum(j.status in _PENDING for j in self._jobs.values())
+        if pending + reserved >= self._settings.max_active_jobs + self._settings.max_queued_jobs:
+            raise AppError("busy")
+
     def _admit(self) -> None:
         """Raise busy when the queue is full, or disk_full when one more job can't fit."""
-        pending = sum(j.status in _PENDING for j in self._jobs.values())
-        if pending >= self._settings.max_active_jobs + self._settings.max_queued_jobs:
-            raise AppError("busy")
+        self.ensure_queue_room()
         if not self._make_room(count_active=False):
             raise AppError("disk_full")
 

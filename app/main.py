@@ -8,6 +8,8 @@ downloads and client disconnects go straight through it). It:
   request itself was sent to: its scheme, the Host header's host, and the effective port
   (no Origin header is fine: curl and scripts don't send one);
 - answers 503 config_error for /api/* while the app is degraded;
+- reads a POST body itself, before any JSON parsing, and answers 413 request_too_large
+  once it passes MAX_BODY_BYTES (Content-Length or not);
 - turns an unexpected exception into a 500 `internal` body; the traceback goes to the log only.
 
 Degraded mode: when the settings don't load (or TEMP_DIR is refused at startup) the
@@ -36,7 +38,8 @@ from app.config import ConfigError, Settings, load_settings
 from app.errors import CATALOG, AppError
 from app.filenames import content_disposition, media_type_for
 from app.jobs import APP_DIR, JobManager
-from app.netguard import IpPolicy, Resolver, is_public_ip, system_resolver, validate_source_url
+from app.netguard import (IpPolicy, Resolver, check_source_address, check_url_syntax, is_public_ip,
+                          system_resolver)
 from app.runner import DEFAULT_WORKER_CMD, RunWorker, run_worker
 from app.schemas import InspectRequest, JobRequest, Output, Quality
 
@@ -44,6 +47,8 @@ logger = logging.getLogger(__name__)
 
 STATIC_DIR = APP_DIR / "static"
 CHUNK_SIZE = 1024 * 1024
+# The API's bodies are a link and two choices; this leaves room for pasted share text.
+MAX_BODY_BYTES = 64 * 1024
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
@@ -185,6 +190,8 @@ class _Guard:
             await send(message)
 
         refusal = self._refusal(scope)
+        if refusal is None and scope["method"] == "POST":
+            refusal, receive = await self._read_body(scope, receive)
         if refusal is not None:
             await refusal(scope, receive, send_with_headers)
             return
@@ -195,6 +202,30 @@ class _Guard:
                 raise
             logger.exception("unexpected error handling %s %s", scope["method"], scope["path"])
             await _app_error_response(AppError("internal"))(scope, receive, send_with_headers)
+
+    @staticmethod
+    async def _read_body(scope: Scope, receive: Receive) -> tuple[Response | None, Receive]:
+        """Read the whole body up to MAX_BODY_BYTES; a refusal past that, else a receive
+        that replays it. Chunked bodies are counted as they arrive, so no Content-Length
+        is needed for the limit to hold."""
+        too_large = _app_error_response(AppError("request_too_large"))
+        length = Headers(scope=scope).get("content-length", "")
+        if length.isdigit() and int(length) > MAX_BODY_BYTES:
+            return too_large, receive
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":  # the client left: let the app see it
+                return None, _replay([message], receive)
+            chunk = message.get("body", b"")
+            size += len(chunk)
+            if size > MAX_BODY_BYTES:
+                return too_large, receive
+            chunks.append(chunk)
+            if not message.get("more_body", False):
+                body = {"type": "http.request", "body": b"".join(chunks), "more_body": False}
+                return None, _replay([body], receive)
 
     def _refusal(self, scope: Scope) -> Response | None:
         headers = Headers(scope=scope)
@@ -216,6 +247,16 @@ class _Guard:
             if error is not None:
                 return _app_error_response(error)
         return None
+
+
+def _replay(messages: list[Message], receive: Receive) -> Receive:
+    """A receive that hands out `messages` first, then defers to `receive`."""
+    pending = list(messages)
+
+    async def replay() -> Message:
+        return pending.pop(0) if pending else await receive()
+
+    return replay
 
 
 # --- Runtime state and delivery ---------------------------------------------------
@@ -283,21 +324,33 @@ def _api_router(settings: Settings, runtime: _Runtime, *, worker_cmd: tuple[str,
                 ip_policy: IpPolicy, resolver: Resolver, run_worker: RunWorker) -> APIRouter:
     router = APIRouter(prefix="/api")
     inspections = asyncio.Semaphore(settings.max_active_inspections)
+    checking_jobs = 0  # job requests whose links are being resolved
+
+    # The cheap syntax check comes first, so a malformed link never takes a slot. The DNS
+    # lookup runs inside the slot (or queue place), so the caps bound lookups too.
 
     @router.post("/inspect")
     async def inspect(body: InspectRequest):
-        # Validate first, so a bad or blocked link never takes an inspection slot.
-        url = await validate_source_url(body.url, policy=ip_policy, resolver=resolver)
+        url = check_url_syntax(body.url)
         if inspections.locked():
             raise AppError("busy")
         async with inspections:  # not locked, so this acquires without waiting
+            await check_source_address(url, policy=ip_policy, resolver=resolver)
             return await run_worker({"mode": "inspect", "url": url}, cmd=worker_cmd,
                                     timeout=settings.inspect_timeout_seconds)
 
     @router.post("/jobs", status_code=202)
     async def create_job(body: JobRequest):
-        url = await validate_source_url(body.url, policy=ip_policy, resolver=resolver)
-        job = runtime.jobs().submit(url, body.output, body.quality)
+        nonlocal checking_jobs
+        url = check_url_syntax(body.url)
+        jobs = runtime.jobs()
+        jobs.ensure_queue_room(reserved=checking_jobs)
+        checking_jobs += 1
+        try:
+            await check_source_address(url, policy=ip_policy, resolver=resolver)
+        finally:
+            checking_jobs -= 1
+        job = jobs.submit(url, body.output, body.quality)
         return {"job_id": job.id, "status": job.status}
 
     @router.get("/jobs/{job_id}")

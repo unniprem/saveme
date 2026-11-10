@@ -6,6 +6,7 @@ BLOCKED_MARKER = "[saveme-blocked]"
 CATALOG: dict[str, tuple[int, str]] = {
     "invalid_url": (400, "That doesn't look like a valid web link. Paste a single http or https URL."),
     "invalid_request": (400, "The request wasn't valid. Check the options and try again."),
+    "request_too_large": (413, "The request is too large."),
     "blocked_address": (403, "This link points to a private or local network address, which isn't allowed."),
     "forbidden_origin": (403, "This request came from an origin that isn't allowed."),
     "job_not_found": (404, "That download couldn't be found. It may have expired or the server may have restarted."),

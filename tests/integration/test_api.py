@@ -210,6 +210,42 @@ async def test_unknown_route_and_wrong_method_error_shape(client):
     assert r.json() == error_body("invalid_request", "Method not allowed.")
 
 
+# --- Request bodies -------------------------------------------------------------
+
+@pytest.mark.parametrize("path", ["/api/inspect", "/api/jobs"])
+async def test_oversized_body_413(client, stub, path):
+    padded = {"url": " " * (4 * MiB) + URL, "output": "video"}
+    r = await client.post(path, json=padded)
+    assert r.status_code == 413
+    assert r.json() == error_body("request_too_large")
+    assert stub.calls == []
+
+
+async def test_oversized_chunked_body_413(client, stub):
+    # No Content-Length: the limit counts the bytes as they arrive.
+    async def chunks():
+        yield b'{"url": "'
+        for _ in range(64):
+            yield b" " * (64 * 1024)
+        yield URL.encode() + b'"}'
+
+    r = await client.post("/api/inspect", content=chunks(),
+                          headers={"Content-Type": "application/json"})
+    assert "content-length" not in r.request.headers
+    assert r.status_code == 413
+    assert r.json() == error_body("request_too_large")
+    assert stub.calls == []
+
+
+async def test_body_just_under_the_limit_is_read(client, stub):
+    from app.main import MAX_BODY_BYTES
+    raw = b'{"url": "' + b" " * (MAX_BODY_BYTES - 64) + b'not a url"}'
+    assert len(raw) <= MAX_BODY_BYTES
+    r = await client.post("/api/inspect", content=raw, headers={"Content-Type": "application/json"})
+    assert r.status_code == 400  # read and parsed; rejected as an invalid link
+    assert r.json()["error"]["code"] == "invalid_url"
+
+
 # --- Inspect ------------------------------------------------------------------
 
 async def test_inspect_invalid_400_shape(client, stub):
@@ -320,7 +356,7 @@ async def test_inspect_busy_429(settings):
         r = await client.post("/api/inspect", json={"url": URL})
         assert r.status_code == 429
         assert r.json() == error_body("busy")
-        # URL validation comes first, so a bad link never waits for (or takes) a slot.
+        # The syntax check comes first, so a malformed link never waits for (or takes) a slot.
         r = await client.post("/api/inspect", json={"url": "not a url"})
         assert r.status_code == 400
         stub.gate.set()
@@ -328,6 +364,70 @@ async def test_inspect_busy_429(settings):
         r = await client.post("/api/inspect", json={"url": URL})  # the slot was released
         assert r.status_code == 200
     assert len(stub.calls) == 2
+
+
+class GatedResolver:
+    """A resolver that waits on `gate`, counting lookups in flight."""
+
+    def __init__(self) -> None:
+        self.gate = asyncio.Event()
+        self.inflight = self.max_inflight = self.calls = 0
+
+    async def __call__(self, host: str, port: int) -> list:
+        self.calls += 1
+        self.inflight += 1
+        self.max_inflight = max(self.max_inflight, self.inflight)
+        try:
+            await self.gate.wait()
+            return [ip_address(host)]
+        finally:
+            self.inflight -= 1
+
+
+async def test_inspect_busy_skips_dns(settings):
+    # With one inspection slot, twenty requests at once make one DNS lookup, not twenty.
+    resolver, stub = GatedResolver(), StubWorker()
+    app = make_app(dataclasses.replace(settings, max_active_inspections=1), run_worker=stub,
+                   resolver=resolver)
+    async with running(app) as client:
+        posts = [asyncio.create_task(client.post("/api/inspect", json={"url": URL}))
+                 for _ in range(20)]
+        await wait_until(lambda: sum(t.done() for t in posts) == 19)
+        assert resolver.max_inflight == 1 and resolver.calls == 1
+        resolver.gate.set()
+        codes = sorted(r.status_code for r in await asyncio.gather(*posts))
+    assert codes == [200] + [429] * 19
+    assert len(stub.calls) == 1
+
+
+async def test_job_queue_full_skips_dns(settings):
+    # A link being checked holds a queue place, so lookups never exceed the queue.
+    resolver, stub = GatedResolver(), StubWorker(block=True)
+    app = make_app(dataclasses.replace(settings, max_active_jobs=1, max_queued_jobs=1),
+                   run_worker=stub, resolver=resolver)
+    async with running(app) as client:
+        body = {"url": URL, "output": "video"}
+        posts = [asyncio.create_task(client.post("/api/jobs", json=body)) for _ in range(20)]
+        await wait_until(lambda: sum(t.done() for t in posts) == 18)
+        assert resolver.max_inflight == 2 and resolver.calls == 2
+        resolver.gate.set()
+        codes = sorted(r.status_code for r in await asyncio.gather(*posts))
+        assert codes == [202, 202] + [429] * 18
+        r = await client.post("/api/jobs", json=body)  # both places are now real jobs
+        assert r.status_code == 429 and resolver.calls == 2
+        stub.gate.set()
+
+
+async def test_failed_lookup_frees_its_queue_place(settings):
+    resolver = GatedResolver()
+    app = make_app(dataclasses.replace(settings, max_active_jobs=1, max_queued_jobs=0),
+                   run_worker=StubWorker(), resolver=resolver)
+    async with running(app) as client:
+        resolver.gate.set()
+        r = await client.post("/api/jobs", json={"url": "http://bad-host.invalid/", "output": "video"})
+        assert r.status_code == 502  # literal_resolver can't parse the name: unreachable
+        r = await client.post("/api/jobs", json={"url": URL, "output": "video"})
+        assert r.status_code == 202, r.text
 
 
 async def test_inspect_timeout_504(settings):
