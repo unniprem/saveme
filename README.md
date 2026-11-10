@@ -20,6 +20,8 @@ Settings are optional. To change any, copy `.env.example` to `.env`, edit it and
 2. Pick a format (a video quality, or **MP3 audio**) and choose **Download**.
 3. When the file is ready, your browser saves it straight away. If the browser holds it back, use the **Save file** link. Each file can be fetched once; it is deleted after it is saved, or after `JOB_TTL_MINUTES` if it never is.
 
+To stop a download, choose **Cancel**. The partial download stays on the server for 5 minutes, and **Resume download** continues where it stopped (it still works after a page reload). After 5 minutes the partial download is deleted.
+
 Video qualities are Best, 1080, 720 and 480. The default is the highest H.264 tier, so the file plays almost everywhere.
 
 ## What works and what doesn't
@@ -82,6 +84,7 @@ docker compose build --no-cache --build-arg YTDLP_VERSION=<new> && docker compos
 - **"This video requires login."** The site wants an account. Logins aren't supported.
 - **Rate limits or "try again later".** The site is throttling your IP. Wait and retry, or update yt-dlp.
 - **A site that used to work fails.** Update yt-dlp (above).
+- **A download seems stuck on "Downloading video track (1 of 2)".** Many sites (YouTube included) send the video and the audio as separate tracks: the video track first, then the audio, and then the two are joined. At 1080p or Best the video track alone can be several hundred MB, so this step can take a while. The MB count under the bar shows it moving; choose **Cancel** to stop it.
 - **Disk full / "busy".** Finished files take space until saved or expired. Lower `MAX_READY_FILES` or `JOB_TTL_MINUTES`, or raise `MAX_TOTAL_DISK_MB` if the disk allows.
 - **The page says the host is not allowed.** Open it at `localhost` or `127.0.0.1`, or add your host name to `ALLOWED_HOSTS`.
 
