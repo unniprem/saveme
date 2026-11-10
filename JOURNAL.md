@@ -2,6 +2,37 @@
 
 ---
 
+## 2026-11-10 17:21 IST — Session: README for the public release
+
+### Summary
+
+The owner plans to make the repository public and asked for a professional README that explains why the app is needed and covers installation and removal. The README was rewritten on `feature/security-hardening` (it describes behaviour from this branch, such as one download per file at a time). It adds a "Why SaveMe" section comparing online downloader sites and the yt-dlp CLI, a features list, step-by-step install, update and uninstall sections, a supported-sites table, a security section with a vulnerability-reporting route, a native development run, project layout, responsible-use guidance and contributing notes. The existing settings, troubleshooting and safety content was kept and reorganised.
+
+**Verified:**
+- A native run (`.venv/bin/python -m app`) answered `/health` with 200 and served the page on `127.0.0.1:8000`; `docker compose config` is valid.
+- Every in-page anchor and local link in the README resolves.
+- Claims were checked against the code: startup cleanup of leftover job folders, MP3 VBR quality 2, the default quality tier, and what the build verifies by checksum or digest. The draft said base images were pinned; they aren't (only FFmpeg, Deno and the Tailwind CLI are), so that line was corrected.
+
+### Changes Made
+
+| Commit    | Type | Description |
+| --------- | ---- | ----------- |
+| `01c7406` | docs | Rewrite README for the public release |
+
+### Key Decisions
+
+- **"Public" means the repository, not hosting.** The app still has no login (#2), so the README keeps a prominent warning never to expose it to a network.
+- **Uninstall uses `docker compose down --rmi all`.** The compose file sets `image: saveme:local`, a custom tag, so `--rmi local` would leave the image behind.
+- **Native run documented under Development only.** It skips the container hardening and uses the system FFmpeg, so Docker stays the recommended install.
+- **Windows marked as untested, with `core.autocrlf=false` on clone.** There is no `.gitattributes`, so a default Windows checkout would give `scripts/build-css.sh` and the `app/bin` wrappers CRLF line endings, which breaks their shebangs.
+
+### Issues Encountered
+
+- Other uncommitted work on this branch (`app/`, `tests/`) was left untouched; only `README.md` was committed.
+- Follow-ups before going public: enable private vulnerability reporting (the README points to it), add a `.gitattributes` forcing LF line endings, set a repository description, and consider merging or closing the security fixes, since issues #1–#8 become public with the repo.
+
+---
+
 ## 2026-11-10 16:50 IST — Session: Security review follow-up
 
 ### Summary
