@@ -93,6 +93,7 @@ docker compose build --no-cache --build-arg YTDLP_VERSION=<new> && docker compos
   - The API checks each URL first (scheme, no embedded credentials, length) and resolves its host; every address must be public.
   - Each download or inspection runs in its own worker subprocess. That worker checks every socket connection against the same public-IP policy, so redirects, DNS rebinding and sub-requests are covered.
   - ffmpeg and ffprobe are wrapped so they run with `-protocol_whitelist file,pipe` and can only read local files.
+  - ffmpeg is also built from source with only what the app uses, so there are no network protocols, no HLS/DASH/concat demuxers, and few decoders. The `Dockerfile` lists exactly what is included.
   - Proxies are disabled, and `curl_cffi` is not installed, because it does its networking in C and would bypass the guard. This appears to be why some Reddit links fail.
 - Deno (needed by yt-dlp for YouTube) runs without network permission.
 
@@ -104,6 +105,10 @@ docker compose build --no-cache --build-arg YTDLP_VERSION=<new> && docker compos
 
 # Docker smoke test: builds, waits for healthy, checks the API basics and image hardening
 scripts/docker-smoke.sh
+
+# The image's minimal ffmpeg: a codec/container matrix plus the integration tests, run
+# inside a copy of the built image. Run it after changing the ffmpeg configure flags.
+scripts/docker-ffmpeg-check.sh
 
 # Real-site checks: need the container running and internet access
 docker compose up -d --build
