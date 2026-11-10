@@ -6,13 +6,14 @@
 
 ### Summary
 
-The owner shared a SaveMe logo sheet and asked for the page to be redesigned around it, keeping it simple and effective: the old page "doesn't look professional". From browser mockups they chose a purple header band (direction B) and a single row of format buttons. They also asked for a better word than "Inspect", for video and MP3 to be one step, and for the file to save without asking. Built on `feature/brand-redesign` (not merged):
+The owner shared a SaveMe logo sheet and asked for the page to be redesigned around it, keeping it simple and effective: the old page "doesn't look professional". From browser mockups they chose a purple header band (direction B) and a single row of format buttons. They also asked for a better word than "Inspect", for video and MP3 to be one step, and for the file to save without asking. Built on `feature/brand-redesign`, merged into `main` (local, not pushed), and the container was rebuilt from `main`:
 - **Logo:** redrawn as vector SVGs: a white lockup for the header and the square app icon as the tab icon.
 - **Page:** restyled with a dark mode. The button is now "Fetch", and one Format radio group with a single Download button replaces the quality menu and two buttons.
 - **Saving:** a ready file is saved automatically. "Didn't start? Save file" is the fallback link.
 
 **Verified:**
-- 354 offline tests pass.
+- 354 offline tests pass, on the branch and again on the merged `main`.
+- On the rebuilt container at `http://127.0.0.1`: the YouTube test video saved itself as a real MP4, and the MDN CC0 clip saved itself as an MP3 (`file` confirmed both). No console errors.
 - Every state was checked in Chromium against a throwaway stub API that sends the real CSP: start, fetching, fetch error, inspected, no audio or thumbnail, downloading, converting, saving, saved, failed, and reload while ready. Checked on phone and desktop, in light and dark, with keyboard arrows on the format buttons. No console errors.
 
 ### Changes Made
@@ -23,6 +24,7 @@ The owner shared a SaveMe logo sheet and asked for the page to be redesigned aro
 | `2344eb8` | feat | Redesign the page around the SaveMe brand (Fetch, one format choice, automatic save) |
 | `4a418fa` | test | Cover the brand assets and the single format choice |
 | `e47e588` | docs | Describe the Fetch, Format and automatic-save flow in the README |
+| `640f2dd` | merge | Merge `feature/brand-redesign` into `main` |
 
 ### Key Decisions
 
@@ -38,6 +40,7 @@ The owner shared a SaveMe logo sheet and asked for the page to be redesigned aro
 - An `<svg>` has no `hidden` property, so `node.hidden = …` on one does nothing. The old status spinner never showed for that reason. Toggled icons are now wrapped in `<span>`s.
 - A browser test download overwrote `.playwright-mcp/Sunset-over-the-harbour.mp4` (a leftover from an earlier session; ignored by git) with 17 fake bytes.
 - `.superpowers/` (brainstorm mockups) shows as untracked; it is not in `.gitignore` yet.
+- `docker compose up -d --build` built the new image but left the old container running ("Running", not "Recreated"). `docker compose up -d --force-recreate` put the new image live.
 
 ---
 
