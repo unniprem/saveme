@@ -201,12 +201,15 @@ async def run_worker(
     finally:
         watch_task.cancel()
         main_task.cancel()
-        await _kill_group(proc)
-        if failure is not None:
-            # Logged only: worker stderr never reaches a client-facing message.
-            await asyncio.wait({stderr_task}, timeout=_STDERR_DRAIN)
-            tail = bytes(stderr_tail).decode(errors="replace")
-            logger.warning("worker failed: %s (rc=%s); stderr tail: %s",
-                           failure.code, proc.returncode, tail)
-        stderr_task.cancel()
-        await asyncio.gather(watch_task, main_task, stderr_task, return_exceptions=True)
+        try:
+            await _kill_group(proc)
+            if failure is not None:
+                # Logged only: worker stderr never reaches a client-facing message.
+                # A user cancel can land during this wait; the inner finally still runs.
+                await asyncio.wait({stderr_task}, timeout=_STDERR_DRAIN)
+                tail = bytes(stderr_tail).decode(errors="replace")
+                logger.warning("worker failed: %s (rc=%s); stderr tail: %s",
+                               failure.code, proc.returncode, tail)
+        finally:
+            stderr_task.cancel()
+            await asyncio.gather(watch_task, main_task, stderr_task, return_exceptions=True)

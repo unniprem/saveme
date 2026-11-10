@@ -191,7 +191,10 @@ class _Progress:
         if status not in ("downloading", "finished"):
             return
         part = str(d.get("filename"))
-        done = int(d.get("downloaded_bytes") or 0)
+        done = d.get("downloaded_bytes")
+        if done is None and status == "finished":  # a track kept from a cancelled run
+            done = d.get("total_bytes")
+        done = int(done or 0)
         self._done[part] = done
         if sum(self._done.values()) > self._max_bytes:
             raise _TooLarge

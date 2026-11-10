@@ -285,6 +285,16 @@ def _api_router(settings: Settings, runtime: _Runtime, *, worker_cmd: tuple[str,
         jobs = runtime.jobs()
         return jobs.public_view(jobs.get(job_id))
 
+    @router.post("/jobs/{job_id}/cancel")
+    async def cancel_job(job_id: str):
+        jobs = runtime.jobs()
+        return jobs.public_view(jobs.cancel(job_id))
+
+    @router.post("/jobs/{job_id}/resume")
+    async def resume_job(job_id: str):
+        jobs = runtime.jobs()
+        return jobs.public_view(jobs.resume(job_id))
+
     @router.get("/jobs/{job_id}/file")
     async def job_file(job_id: str):
         return _deliver(runtime.jobs(), job_id)

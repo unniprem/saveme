@@ -1,18 +1,22 @@
 """In-memory job manager: lifecycle, bounded queue, disk budget, TTL and cleanup.
 
-Job records live only in this process. Each job's files live in
-TEMP_DIR/<job_id>/ under fixed names; the job ID is the only name derived from
+A job ends ready (then expired), failed, or cancelled by the user. A cancel kills
+the worker but keeps its partial files for RESUME_WINDOW_SECONDS: a resume runs the
+job again in the same folder, where yt-dlp continues the partial files; after the
+window the sweep removes them. Job records live only in this process. Each job's
+files live in TEMP_DIR/<job_id>/ under fixed names; the job ID is the only name derived from
 anything, and it is validated before any filesystem use.
 """
 import asyncio
 import logging
+import math
 import os
 import re
 import secrets
 import shutil
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.config import ConfigError, Settings
@@ -28,10 +32,11 @@ APP_DIR = Path(__file__).resolve().parent.parent
 
 RECORD_RETENTION_SECONDS = 3600
 DISK_RETRY_SECONDS = 2.0
+RESUME_WINDOW_SECONDS = 300
 
 _ACTIVE = frozenset({"downloading", "converting"})
 _PENDING = frozenset({"queued", "downloading", "converting"})
-_TERMINAL = frozenset({"failed", "expired"})
+_TERMINAL = frozenset({"failed", "expired", "cancelled"})
 
 
 def _is_job_id(value: object) -> bool:
@@ -83,6 +88,7 @@ class Job:
     quality: str
     workdir: Path
     created_at: float
+    queued_at: float
     status: str = "queued"
     detail: str | None = None
     progress_percent: float | None = None
@@ -98,6 +104,9 @@ class Job:
     started_at: float | None = None
     ready_at: float | None = None
     finished_at: float | None = None
+    resume_until: float | None = None  # set while a cancelled job can be resumed
+    task: asyncio.Task | None = field(default=None, repr=False)  # the latest run
+    runs: set[asyncio.Task] = field(default_factory=set, repr=False)  # unfinished runs
 
 
 def _count(value: object) -> int | None:
@@ -148,8 +157,9 @@ class JobManager:
 
     async def shutdown(self) -> None:
         tasks = [t for t in (self._sweeper, *self._tasks) if t is not None and not t.done()]
-        for task in tasks:  # once only: run_worker's cleanup kills the process group
-            task.cancel()
+        for task in tasks:  # once only: run_worker's cleanup kills the process group,
+            if not task.cancelling():  # so a task a user cancel already stopped is left to finish
+                task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         for path in _job_dirs(self._temp_dir):
             _remove_dir(path)
@@ -157,20 +167,15 @@ class JobManager:
     # --- Public API -----------------------------------------------------------
 
     def submit(self, url: str, output: str, quality: str) -> Job:
-        pending = sum(j.status in _PENDING for j in self._jobs.values())
-        if pending >= self._settings.max_active_jobs + self._settings.max_queued_jobs:
-            raise AppError("busy")
-        if not self._make_room(count_active=False):
-            raise AppError("disk_full")
+        self._admit()
         job_id = secrets.token_urlsafe(16)
         while job_id in self._jobs:
             job_id = secrets.token_urlsafe(16)
+        now = self._clock()
         job = Job(id=job_id, url=url, output=output, quality=quality,
-                  workdir=self._temp_dir / job_id, created_at=self._clock())
+                  workdir=self._temp_dir / job_id, created_at=now, queued_at=now)
         self._jobs[job_id] = job
-        task = asyncio.create_task(self._run_job(job))
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        self._start(job)
         logger.info("job %s queued (%s, %s)", job_id, output, quality)
         return job
 
@@ -192,12 +197,64 @@ class JobManager:
             "error": job.error.to_dict() if job.error is not None else None,
             "filename": job.filename,
             "reason": job.reason,
+            "resume_seconds": self._resume_seconds(job),
         }
+
+    def cancel(self, job_id: str) -> Job:
+        """Stop a queued or running job, or discard a ready file; a job that already
+        ended is left as it is. The job is cancelled at once. A stopped job can be
+        resumed for RESUME_WINDOW_SECONDS. Its run is cancelled (once) and finishes in
+        the background: run_worker kills the worker's process group, the partial
+        files stay, and the slot is released.
+        """
+        job = self.get(job_id)
+        if job.status == "ready":
+            _remove_dir(job.workdir)  # its run has finished: nothing else will remove it
+        elif job.status in _PENDING:
+            job.resume_until = self._clock() + RESUME_WINDOW_SECONDS
+            if job.task is not None:
+                job.task.cancel()
+        else:
+            return job
+        job.status = "cancelled"
+        job.detail = None
+        job.progress_percent = None
+        job.file_path = None
+        job.finished_at = self._clock()
+        logger.info("job %s cancelled", job.id)
+        return job
+
+    def resume(self, job_id: str) -> Job:
+        """Queue a cancelled job again within its resume window; a job that is queued,
+        running or ready is left as it is (a repeated resume). The new run uses the
+        same workdir, where yt-dlp continues partial files and skips finished tracks,
+        and starts only once the cancelled run has finished killing its worker.
+        """
+        job = self.get(job_id)
+        if job.status in _PENDING or job.status == "ready":
+            return job
+        if job.status != "cancelled" or job.resume_until is None:
+            raise AppError("not_resumable")
+        if self._clock() >= job.resume_until:  # the sweep hasn't got to it yet
+            self._end_resume_window(job)
+            raise AppError("not_resumable")
+        self._admit()
+        job.status = "queued"
+        job.resume_until = None
+        job.finished_at = None
+        job.detail = None
+        job.downloaded_bytes = job.total_bytes = job.progress_percent = None
+        job.queued_at = self._clock()
+        self._start(job)
+        logger.info("job %s resumed", job.id)
+        return job
 
     def file_for_delivery(self, job_id: str) -> Job:
         job = self.get(job_id)
         if job.status == "expired":
             raise AppError("expired")
+        if job.status == "cancelled":
+            raise AppError("cancelled")
         if job.status != "ready":
             raise AppError("not_ready")
         return job
@@ -213,14 +270,29 @@ class JobManager:
         for job in list(self._jobs.values()):
             if job.status == "ready" and now - job.ready_at >= ttl:
                 self._expire(job, "ttl")
+            elif job.resume_until is not None and now >= job.resume_until:
+                self._end_resume_window(job)
             elif (job.status in _TERMINAL
                   and now - job.finished_at >= RECORD_RETENTION_SECONDS):
                 del self._jobs[job.id]
-        live = {j.id for j in self._jobs.values() if j.status not in _TERMINAL}
+        live = {j.id for j in self._jobs.values()
+                if j.status not in _TERMINAL or j.resume_until is not None}
         for path in _job_dirs(self._temp_dir):
             if path.name not in live:
                 logger.info("removing orphan job directory %s", path.name)
                 _remove_dir(path)
+
+    def _resume_seconds(self, job: Job) -> int | None:
+        """Whole seconds left to resume a cancelled job, or None if it can't be."""
+        if job.resume_until is None:
+            return None
+        left = job.resume_until - self._clock()
+        return max(1, math.ceil(left)) if left > 0 else None
+
+    def _end_resume_window(self, job: Job) -> None:
+        job.resume_until = None
+        _remove_dir(job.workdir)
+        logger.info("job %s: resume window over, partial files removed", job.id)
 
     # --- Disk budget ----------------------------------------------------------
 
@@ -255,9 +327,17 @@ class JobManager:
             projected -= size
         return True
 
+    def _admit(self) -> None:
+        """Raise busy when the queue is full, or disk_full when one more job can't fit."""
+        pending = sum(j.status in _PENDING for j in self._jobs.values())
+        if pending >= self._settings.max_active_jobs + self._settings.max_queued_jobs:
+            raise AppError("busy")
+        if not self._make_room(count_active=False):
+            raise AppError("disk_full")
+
     async def _acquire_slot(self, job: Job) -> None:
         """Hold a concurrency slot with room on disk, or raise disk_full at the deadline."""
-        deadline = job.created_at + self._settings.max_job_seconds
+        deadline = job.queued_at + self._settings.max_job_seconds
         while True:
             await self._slots.acquire()
             if self._make_room(count_active=True):
@@ -270,7 +350,16 @@ class JobManager:
 
     # --- Job task -------------------------------------------------------------
 
-    async def _run_job(self, job: Job) -> None:
+    def _start(self, job: Job) -> None:
+        earlier = set(job.runs)
+        task = job.task = asyncio.create_task(self._run_job(job, earlier))
+        for runs in (job.runs, self._tasks):
+            runs.add(task)
+            task.add_done_callback(runs.discard)
+
+    async def _run_job(self, job: Job, earlier: set[asyncio.Task]) -> None:
+        if earlier:  # a cancelled run of this job may still be killing its worker
+            await asyncio.wait(earlier)  # (wait, unlike gather, never cancels them)
         try:
             await self._acquire_slot(job)
         except AppError as exc:
@@ -283,11 +372,12 @@ class JobManager:
 
     async def _download(self, job: Job) -> None:
         settings = self._settings
+        keep = False  # keep the workdir: a ready file, or partial files after a cancel
         try:
             job.status = "downloading"
             job.detail = "Starting download"
             job.started_at = self._clock()
-            job.workdir.mkdir()
+            job.workdir.mkdir(exist_ok=True)  # a resumed job reuses its folder
             result = await self._run_worker(
                 {"mode": "download", "url": job.url, "output": job.output,
                  "quality": job.quality, "workdir": str(job.workdir),
@@ -299,13 +389,19 @@ class JobManager:
                 max_workdir_bytes=self._reserve,
             )
             self._make_ready(job, result)
+            keep = True
+        except asyncio.CancelledError:
+            # A user cancel keeps the partial files for a resume (the sweep removes them
+            # when the window ends); shutdown removes every job folder itself.
+            keep = True
+            raise
         except AppError as exc:
             self._fail(job, exc)
         except Exception:
             logger.exception("job %s failed unexpectedly", job.id)
             self._fail(job, AppError("internal"))
         finally:
-            if job.status != "ready":
+            if not keep:
                 _remove_dir(job.workdir)
 
     def _on_event(self, job: Job, event: dict) -> None:

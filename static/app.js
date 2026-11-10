@@ -4,6 +4,9 @@
 //
 // States: idle → inspecting → inspected → job (queued | downloading | converting) → ready
 //         → saved | failed; a vanished job ("lost") resets to idle with a message.
+// A running job can be cancelled. The server keeps its partial download for a few minutes
+// (resume_seconds), and Resume picks it up where it stopped; the job stays in session
+// storage meanwhile, so a reload still offers Resume.
 // A job that turns ready is saved to the device straight away, once per job; the
 // "Save file" link is the fallback when the browser holds the download back.
 "use strict";
@@ -34,7 +37,12 @@
     jobFailed: "The download failed. Please try again.",
     expiredTtl: "This file expired before it was saved. Please start again.",
     expiredEvicted: "This file expired early to free up server space. Please start again.",
+    partialRemoved: "The partial download was removed from the server.",
+    cancelFailed: "Couldn't cancel.",
+    resumed: "Download resumed.",
   };
+  const keptFor = (seconds) =>
+    `Kept on the server for ${fmtDuration(seconds)}. Resume to continue where it stopped.`;
   const HEADLINE = {
     starting: "Starting…",
     resuming: "Checking on your download…",
@@ -47,6 +55,9 @@
     failed: "Download failed",
     expired: "File expired",
     offline: "Connection lost",
+    cancelling: "Cancelling…",
+    cancelled: "Cancelled",
+    restarting: "Resuming…",
   };
 
   const el = {};
@@ -56,12 +67,12 @@
     "result-title", "source", "notices", "formats", "format-note", "download", "action-msg", "chip-tpl",
     "job", "job-kind", "job-name", "job-spin", "job-done", "job-fail", "job-status", "job-percent", "bar",
     "bar-fill", "job-detail", "job-meta", "save-row", "save", "job-notice", "job-error", "job-actions",
-    "again", "announcer",
+    "resume", "cancel", "again", "announcer",
   ]) {
     el[id.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = document.getElementById(id);
   }
 
-  let state = "idle"; // idle | inspecting | inspected | job | ready | saved | failed
+  let state = "idle"; // idle | inspecting | inspected | job | ready | saved | failed | cancelled
   let degraded = false; // server reported a config error on /health
   let inspected = null; // { url, info } from the last successful inspect
   let job = null; // { id, url, title, output, filename, autoSaved }
@@ -70,6 +81,9 @@
   let failures = 0;
   let deliverBy = 0; // while saving: keep polling until this time for "delivered"
   let readyNotice = ""; // the ready job's notice, kept across repaints
+  let resumeBy = 0; // while cancelled: Resume works until this time
+  let resumeTimer = 0; // ticks the "Kept on the server for …" countdown
+  let jobError = ""; // a failed Cancel or Resume, shown on the panel until the next try
 
   // ---- small helpers ------------------------------------------------------------------
 
@@ -214,7 +228,7 @@
     const busy = next === "inspecting" || next === "job";
     el.inspect.disabled = busy || degraded;
     el.url.readOnly = busy;
-    const canDownload = Boolean(inspected) && !degraded && ["inspected", "saved", "failed"].includes(next);
+    const canDownload = Boolean(inspected) && !degraded && ["inspected", "saved", "failed", "cancelled"].includes(next);
     el.download.disabled = !(canDownload && chosenFormat());
   }
 
@@ -240,10 +254,13 @@
 
   function dropJob() {
     stopPolling();
+    clearTimeout(resumeTimer);
     clearJob();
     job = null;
     deliverBy = 0;
     readyNotice = "";
+    resumeBy = 0;
+    jobError = "";
     show(el.job, false);
   }
 
@@ -452,6 +469,8 @@
     } else if (status === "expired") {
       if (v.reason === "delivered") finish("saved");
       else finish("expired", v.reason === "evicted" ? MSG.expiredEvicted : MSG.expiredTtl);
+    } else if (status === "cancelled") {
+      showCancelled(v);
     } else {
       pollSoon(POLL_MS); // unknown status: keep asking
     }
@@ -472,8 +491,103 @@
       detail,
       meta,
       notice: str(v.notice),
+      error: jobError,
+      cancel: true,
     });
     announce(HEADLINE[status]);
+  }
+
+  // ---- cancel and resume ----------------------------------------------------------------
+
+  async function onCancel() {
+    if (!job || !job.id || state !== "job" || el.cancel.disabled) return;
+    const id = job.id;
+    stopPolling();
+    jobError = "";
+    paintJob({ headline: HEADLINE.cancelling, icon: "spin", bar: null, cancel: true, cancelling: true });
+    announce(HEADLINE.cancelling);
+    let view;
+    try {
+      view = await api(`/api/jobs/${encodeURIComponent(id)}/cancel`, {});
+    } catch (err) {
+      if (!job || job.id !== id) return;
+      if (lostWith(err)) return;
+      jobError = `${MSG.cancelFailed} ${err.message}`;
+      announce(jobError);
+      pollSoon(0); // back to the progress, with the message and the Cancel button
+      return;
+    }
+    if (!job || job.id !== id) return;
+    applyView(view);
+    (el.resume.hidden ? el.job : el.resume).focus();
+  }
+
+  // The server stopped the job. While it keeps the partial download, offer Resume.
+  function showCancelled(v) {
+    stopPolling();
+    deliverBy = 0;
+    const left = isNum(v.resume_seconds) && v.resume_seconds > 0 ? v.resume_seconds : 0;
+    resumeBy = left ? Date.now() + left * 1000 : 0;
+    if (resumeBy) storeJob();
+    else clearJob();
+    setState("cancelled");
+    paintCancelled();
+    announce(`${HEADLINE.cancelled}. ${resumeBy ? keptFor(left) : MSG.partialRemoved}`);
+  }
+
+  function paintCancelled() {
+    clearTimeout(resumeTimer);
+    const ms = resumeBy - Date.now();
+    if (resumeBy && ms <= 0) {
+      resumeBy = 0;
+      clearJob(); // nothing left to resume after a reload
+    }
+    paintJob({
+      headline: HEADLINE.cancelled,
+      meta: resumeBy ? keptFor(Math.ceil(ms / 1000)) : MSG.partialRemoved,
+      error: jobError,
+      resume: Boolean(resumeBy),
+      again: true,
+    });
+    if (resumeBy) resumeTimer = setTimeout(paintCancelled, ms % 1000 || 1000);
+  }
+
+  async function onResume() {
+    if (!job || !job.id || state !== "cancelled" || resumeBy <= Date.now()) return;
+    const id = job.id;
+    clearTimeout(resumeTimer);
+    jobError = "";
+    setState("job");
+    paintJob({ headline: HEADLINE.restarting, icon: "spin", bar: null });
+    announce(HEADLINE.restarting);
+    let view;
+    try {
+      view = await api(`/api/jobs/${encodeURIComponent(id)}/resume`, {});
+    } catch (err) {
+      if (!job || job.id !== id) return;
+      if (lostWith(err)) return;
+      if (err.code === "not_resumable") resumeBy = 0;
+      jobError = err.message;
+      setState("cancelled");
+      paintCancelled();
+      announce(err.message);
+      (el.resume.hidden ? el.job : el.resume).focus();
+      return;
+    }
+    if (!job || job.id !== id) return;
+    resumeBy = 0;
+    storeJob();
+    announce(MSG.resumed);
+    applyView(view);
+    el.job.focus();
+  }
+
+  // The server no longer has the job, or can't run jobs at all: reset with a message.
+  function lostWith(err) {
+    if (err.code === "config_error") enterDegraded(err.message);
+    else if (err.code !== "job_not_found") return false;
+    lose();
+    return true;
   }
 
   // The file is waiting on the server. The first time a job gets here it is saved without
@@ -565,7 +679,11 @@
 
     show(el.saveRow, Boolean(p.save));
     if (p.save && job) el.save.href = fileUrl();
-    show(el.jobActions, Boolean(p.again));
+    show(el.resume, Boolean(p.resume));
+    show(el.cancel, Boolean(p.cancel));
+    el.cancel.disabled = Boolean(p.cancelling);
+    show(el.again, Boolean(p.again));
+    show(el.jobActions, Boolean(p.resume || p.cancel || p.again));
     show(el.job, true);
   }
 
@@ -639,6 +757,8 @@
     el.formats.addEventListener("change", () => setState(state));
     el.download.addEventListener("click", startJob);
     el.save.addEventListener("click", onSave);
+    el.cancel.addEventListener("click", onCancel);
+    el.resume.addEventListener("click", onResume);
     el.again.addEventListener("click", onAgain);
     el.thumb.addEventListener("error", () => placeMedia(false));
     setState("idle");
@@ -648,7 +768,7 @@
       job = saved;
       if (saved.url) el.url.value = saved.url;
       setState("job");
-      paintJob({ headline: HEADLINE.resuming, bar: null });
+      paintJob({ headline: HEADLINE.resuming, bar: null, cancel: true });
     }
     const healthy = await checkHealth();
     if (!job) return;
