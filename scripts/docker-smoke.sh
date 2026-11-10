@@ -11,7 +11,6 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 SERVICE=saveme
-BASE=http://127.0.0.1:8000
 NL=$'\n'
 
 fail() {
@@ -61,6 +60,15 @@ while :; do
   sleep 2
 done
 echo "    healthy"
+
+# The host port comes from SAVEME_PORT in .env, so ask compose where it published the app.
+published="$(docker compose port "$SERVICE" 8000)" || fail "docker compose port failed"
+case "$published" in
+  127.0.0.1:[0-9]*) ;;
+  *) fail "expected the app published on 127.0.0.1, got: ${published:-nothing}" ;;
+esac
+BASE="http://$published"
+echo "    published on $BASE"
 
 echo "==> GET /health"
 health="$(curl -sS --noproxy '*' --max-time 10 "$BASE/health")" || fail "GET /health: request failed"

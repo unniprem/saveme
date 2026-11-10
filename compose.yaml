@@ -3,7 +3,8 @@ services:
     build: .
     image: saveme:local
     # Loopback only: the app has no login, so it must never be reachable from the network.
-    ports: ["127.0.0.1:8000:8000"]
+    # SAVEME_PORT (from .env) picks the host port; the address stays 127.0.0.1.
+    ports: ["127.0.0.1:${SAVEME_PORT:-8000}:8000"]
     env_file:
       - path: .env
         required: false
