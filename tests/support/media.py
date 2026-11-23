@@ -36,6 +36,10 @@ def _ffmpeg(args: list[str], cwd: Path) -> None:
         raise RuntimeError(f"ffmpeg {' '.join(args)} failed:\n{proc.stderr}")
 
 
+def _master(playlist: str, codecs: str) -> str:
+    return f'#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=70000,CODECS="{codecs}"\n{playlist}\n'
+
+
 def make_media(dir: Path) -> dict[str, Path]:
     """Write the test media into `dir`; return {relative name: path}."""
     _ffmpeg([*_VIDEO_SRC, *_AUDIO_SRC, "-t", "2", "-map", "0:v", "-map", "1:a",
@@ -52,8 +56,17 @@ def make_media(dir: Path) -> dict[str, Path]:
     hls = dir / "hls"
     hls.mkdir()
     _ffmpeg(_HLS, hls)
+    aac = hls / "aac"
+    aac.mkdir()
+    _ffmpeg([*_AUDIO_SRC, "-t", "4", "-c:a", "aac", "-b:a", "64k", "-f", "hls", "-hls_time", "2",
+             "-hls_playlist_type", "vod", "-hls_segment_filename", "a_%03d.ts", "a.m3u8"], aac)
+    (aac / "master.m3u8").write_text(_master("a.m3u8", "mp4a.40.2"))
+    opus = hls / "opus"
+    opus.mkdir()
+    (opus / "master.m3u8").write_text(_master("../aac/a.m3u8", "opus"))
     names = ["sample.mp4", "tagged.mp4", "video_only.mp4", "sample.mp3",
-             "cover.jpg", "cover.png", "junk.jpg", "big.mp4", "hls/master.m3u8"]
+             "cover.jpg", "cover.png", "junk.jpg", "big.mp4", "hls/master.m3u8",
+             "hls/aac/master.m3u8", "hls/opus/master.m3u8"]
     out = {name: dir / name for name in names}
     missing = [name for name, path in out.items() if not path.is_file()]
     if missing:

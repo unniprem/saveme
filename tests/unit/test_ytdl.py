@@ -8,7 +8,7 @@ from app.errors import AppError
 from app.ytdl import (
     FFMPEG_WRAPPER_DIR, NATIVE_PROTOCOLS, base_opts, chosen_formats, downgrade_notice,
     inspect_payload, keep_safe_formats, unwrap_first_entry, video_opts, audio_opts,
-    TAGS_PP, output_opts, without_source_link,
+    TAGS_PP, output_opts, without_source_link, track_available,
 )
 
 
@@ -229,3 +229,21 @@ def test_output_opts_add_tags_last():
 def test_without_source_link_blanks_purl_and_comment():
     out = without_source_link({"title": "t", "webpage_url": "https://x/y"})
     assert out["meta_purl"] == "" and out["meta_comment"] == "" and out["webpage_url"] == "https://x/y"
+
+
+def test_m4a_flag_needs_known_aac():
+    f = lambda **k: {"url": "https://x/f", "protocol": "https", **k}
+    assert inspect_payload({"formats": [f(vcodec="none", acodec="mp4a.40.2")]})["audio"]["m4a"] is True
+    assert inspect_payload({"formats": [f(vcodec="none", acodec="opus")]})["audio"]["m4a"] is False
+    assert inspect_payload({"formats": [f(vcodec=None, acodec=None)]})["audio"]["m4a"] is False
+
+
+def test_m4a_opts_copy_aac():
+    o = output_opts("m4a", "best")
+    assert o["format"] == "ba[acodec^=mp4a]/b[acodec^=mp4a]"
+    assert o["postprocessors"] == [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}, TAGS_PP]
+
+
+def test_track_available():
+    p = {"video": {"available": False}, "audio": {"available": True, "m4a": False}}
+    assert [track_available(p, o) for o in ("video", "audio", "m4a")] == [False, True, False]

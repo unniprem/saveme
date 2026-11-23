@@ -6,6 +6,7 @@ from urllib.parse import quote
 _MEDIA_TYPES = {
     "mp4": "video/mp4",
     "mp3": "audio/mpeg",
+    "m4a": "audio/mp4",
     "mkv": "video/x-matroska",
     "webm": "video/webm",
 }

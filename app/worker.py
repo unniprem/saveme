@@ -47,7 +47,7 @@ _READ_BLOCK = 1024 * 1024
 # ffmpeg). Measured on a YouTube job (10 Nov 2026): deno peaks near 570 MiB, the worker
 # near 85 MiB, ffmpeg near 2 MiB.
 WORKER_MEMORY_BYTES = 1024 * 1024 * 1024
-_MISSING_TRACK = {"video": "no_video", "audio": "no_audio"}
+_MISSING_TRACK = {"video": "no_video", "audio": "no_audio", "m4a": "no_audio"}
 
 
 class _StderrLogger:
@@ -312,7 +312,7 @@ class _Phases:
         elif key == "Metadata":
             self.phase("Adding tags")
         else:
-            self.phase("Converting to MP3" if self._output == "audio" else "Converting to MP4")
+            self.phase({"audio": "Converting to MP3", "m4a": "Preparing M4A"}.get(self._output, "Converting to MP4"))
 
     def phase(self, detail: str) -> None:
         if detail != self._last:
@@ -456,7 +456,8 @@ def _download(url: str, output: str, quality: str, workdir: Path, max_bytes: int
 
     from app.runner import _replace_lone_surrogates
     from app.ytdl import (
-        base_opts, chosen_formats, downgrade_notice, inspect_payload, output_opts, without_source_link,
+        base_opts, chosen_formats, downgrade_notice, inspect_payload, output_opts, track_available,
+        without_source_link,
     )
 
     progress, phases, logger = _Progress(emit, max_bytes), _Phases(emit, output), _DownloadLogger()
@@ -471,7 +472,7 @@ def _download(url: str, output: str, quality: str, workdir: Path, max_bytes: int
             # Tag values travel as ffmpeg arguments, which can't hold lone surrogates.
             info = _replace_lone_surrogates(without_source_link(info))
             # Same availability rule as inspect: an unknown codec may hold the track.
-            if not inspect_payload(info)[output]["available"]:
+            if not track_available(inspect_payload(info), output):
                 raise AppError(_MISSING_TRACK[output])
             processed = ydl.process_ie_result(info, download=True)
             cover = fetch_cover(ydl.urlopen, processed)
@@ -482,7 +483,7 @@ def _download(url: str, output: str, quality: str, workdir: Path, max_bytes: int
             raise  # a guard block anywhere in the text wins (classified as blocked_address)
         if _is_missing_format(exc):
             raise AppError(_MISSING_TRACK[output]) from exc
-        if output == "audio" and _lacks_audio(workdir):
+        if output in ("audio", "m4a") and _lacks_audio(workdir):
             raise AppError("no_audio") from exc
         raise
     if logger.oversize:

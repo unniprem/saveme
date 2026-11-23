@@ -64,6 +64,13 @@ def tags(path: Path) -> dict[str, str]:
     return {k.lower(): v for k, v in found.items()}
 
 
+def probe_streams_with_bitrate(path: Path) -> list[dict]:
+    proc = subprocess.run([shutil.which("ffprobe"), "-v", "error", "-show_entries",
+                           "stream=codec_name,bit_rate", "-of", "json", str(path)],
+                          capture_output=True, text=True, timeout=30, check=True)
+    return json.loads(proc.stdout)["streams"]
+
+
 def progress_of(events: list[dict]) -> list[dict]:
     return [e for e in events if e["event"] == "progress"]
 
@@ -108,6 +115,27 @@ def test_hls_merge_to_mp4(media_server, job):
 def test_quality_downgrade_notice(media_server, job):
     data = result_of(*download(media_server, "/hls/master.m3u8", job, quality="720"))
     assert data["notice"] == "720p wasn't available; downloaded 360p."
+
+
+def test_m4a_is_a_stream_copy_of_aac(media_server, job):
+    events, rc = download(media_server, "/hls/aac/master.m3u8", job, output="m4a")
+    data = result_of(events, rc)
+    assert data["file"] == "media.m4a" and data["ext"] == "m4a"
+    s = probe_streams_with_bitrate(job / "media.m4a")  # 64k source; a re-encode would be ~128k
+    assert [x["codec_name"] for x in s] == ["aac"] and int(s[0]["bit_rate"]) < 80_000
+    assert "Preparing M4A" in phases_of(events) and "Converting to MP3" not in phases_of(events)
+    assert "Converting to MP4" not in phases_of(events)
+    assert listing(job) == ["media.m4a"]
+
+
+def test_m4a_without_aac_fails_before_download(media_server, job):
+    before = media_server.hits["/hls/aac/a_000.ts"]
+    assert error_of(*download(media_server, "/hls/opus/master.m3u8", job, output="m4a"))["code"] == "no_audio"
+    assert media_server.hits["/hls/aac/a_000.ts"] == before and listing(job) == []
+
+
+def test_m4a_from_unknown_codec_direct_link_is_refused(media_server, job):
+    assert error_of(*download(media_server, "/media/sample.mp4", job, output="m4a"))["code"] == "no_audio"
 
 
 def test_audio_from_video_only_fails(media_server, job):

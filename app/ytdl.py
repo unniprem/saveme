@@ -58,6 +58,14 @@ def audio_opts() -> dict:
     }
 
 
+def m4a_opts() -> dict:
+    """AAC only, stream-copied into an M4A container (no re-encode)."""
+    return {
+        "format": "ba[acodec^=mp4a]/b[acodec^=mp4a]",
+        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}],
+    }
+
+
 # FFmpegMetadata writes title, artist, date, description and chapters. The two meta_ fields
 # below are copied verbatim into `-metadata purl=` / `comment=`, blanking the source link
 # (and any `comment` tag the source file already carries).
@@ -68,12 +76,24 @@ NO_SOURCE_LINK = {"meta_purl": "", "meta_comment": ""}
 def output_opts(output: str, quality: Quality) -> dict:
     """The yt-dlp options for `output`, with the tag postprocessor last so it runs
     after any audio extraction."""
-    opts = video_opts(quality) if output == "video" else audio_opts()
+    opts = {"video": lambda: video_opts(quality), "audio": audio_opts, "m4a": m4a_opts}[output]()
     return {**opts, "postprocessors": [*opts.get("postprocessors", []), TAGS_PP]}
 
 
 def without_source_link(info: dict) -> dict:
     return {**info, **NO_SOURCE_LINK}
+
+
+def track_available(payload: dict, output: str) -> bool:
+    """Whether the inspected `payload` offers the track `output` needs."""
+    if output == "m4a":
+        return payload["audio"]["m4a"]
+    return payload[output]["available"]
+
+
+def _is_aac(fmt: dict) -> bool:
+    acodec = fmt.get("acodec")
+    return isinstance(acodec, str) and acodec.lower().startswith("mp4a")
 
 
 def short_side(fmt: dict) -> int | None:
@@ -181,7 +201,8 @@ def inspect_payload(info: dict) -> dict:
             "qualities": qualities if video_fmts else [],
             "default": str(tiers[0]) if tiers else "best",
         },
-        "audio": {"available": any(_has_audio(x) for x in formats)},
+        "audio": {"available": any(_has_audio(x) for x in formats),
+                  "m4a": any(_is_aac(x) for x in formats)},
         "notices": notices,
     }
 
