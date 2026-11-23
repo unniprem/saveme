@@ -62,7 +62,7 @@ SaveMe sits in between: yt-dlp's reach, behind a one-page interface, running on 
 - Inspect a link before downloading: title, length, thumbnail and the qualities that exist
 - Video as MP4: **Best**, **1080p**, **720p** or **480p**
 - Audio as **MP3** (LAME VBR, about 190 kbps), or as **M4A** that keeps the source's original AAC audio with no re-encoding, when the source has it
-- Files are tagged with the title, artist, date, description and chapters, and carry the video's thumbnail as cover art
+- Files are tagged with the title, artist, date, description and chapters, and get the source's thumbnail as cover art when it's a JPEG or PNG
 - Live progress, including the separate video and audio tracks many sites send
 - **Cancel** a download and **resume** it within 5 minutes, even after a page reload
 - A bounded queue, with limits on file size, job time and disk use
@@ -183,9 +183,9 @@ If you ran SaveMe without Docker (see [Development](#development)), deleting the
 
 **Best label.** The **Best** option shows what you'd get, for example `Best (2160p60 · AV1/VP9)`. That is the short side of the picture (2160p), the frame rate when it's above 30 (60), and the codec families available at that size and frame rate (AV1 or VP9). If the source doesn't say what a codec is, the codec part is left out, as in `Best (1080p)`.
 
-**M4A audio (original).** Shown after **MP3 audio**, and only when the source has AAC audio. SaveMe copies that audio into an `.m4a` file as it is, so it's quick and loses no quality. If the source has no AAC audio, the choice doesn't appear; use **MP3 audio** instead.
+**M4A audio (original).** Shown after **MP3 audio**, and only when the source says its audio is AAC. SaveMe copies that audio into an `.m4a` file as it is, so it's quick and loses no quality. If the source has no AAC audio, or doesn't say what its audio is, the choice doesn't appear; use **MP3 audio** instead.
 
-**Tags and cover art.** Every download is tagged with the title, artist, date, description and chapters when the source provides them. The thumbnail is embedded as cover art in MP3 and M4A files (MP4 video gets it too). If the thumbnail can't be fetched or isn't a usable image, the file is saved without a cover. The link a file came from is never written into it.
+**Tags and cover art.** Every download is tagged with the title, artist, date, description and chapters when the source provides them. Cover art is best effort: when the source has a JPEG or PNG thumbnail, it's embedded in MP3, M4A and MP4 files. The file is saved without a cover if there's no such thumbnail, if it can't be fetched within 15 seconds, or if it isn't a usable image. A video delivered as MKV or WebM (because it couldn't be converted to MP4) never gets a cover. The link a file came from is never written into it.
 
 **Saving.** Each file can be saved once, by one download at a time. It's deleted after it's saved, or after `JOB_TTL_MINUTES` (30 by default) if it never is. If a save is interrupted, or the browser takes nothing for a minute, the server stops sending and keeps the file, so **Save file** works again.
 
@@ -264,7 +264,7 @@ SaveMe fetches whatever URL it's given, so it's designed so that a link can't be
 - Proxies are disabled, and `curl_cffi` isn't installed, because its networking runs in C and would bypass the guard.
 - Deno, which yt-dlp needs for YouTube, runs without network permission.
 
-**Cover art is handled outside FFmpeg.** The worker fetches the thumbnail through the same guard as every other request. It accepts JPEG or PNG only (judged by the file's first bytes), at most 5 MB, and tries at most three addresses. The image is then written into the file by mutagen, a Python tag library, so FFmpeg never reads it and the FFmpeg build has no image decoders. A failed cover never fails a download.
+**Cover art is handled outside FFmpeg.** The worker fetches the thumbnail through the same guard as every other request. It accepts JPEG or PNG only (judged by the file's first bytes), at most 5 MB, and tries at most three addresses, each request with a 5-second network timeout and the whole fetch within 15 seconds. The image is then written into the file by mutagen, a Python tag library, so FFmpeg never reads it and the FFmpeg build has no image decoders. A failed cover never fails a download.
 
 **Files never carry their source link.** The page address and any `comment` tag the source file arrived with are blanked before tagging. The only addition to the FFmpeg build for tags is the `ffmetadata` demuxer, which reads the chapter list.
 
