@@ -54,10 +54,11 @@ Idea source: Ghost-Downloader-3's yt-dlp module (embed metadata, embed chapters,
 - The MP4 remux fallback (`_to_mp4`) must keep tags and chapters. FFmpeg copies them by default; a test proves it.
 
 ### Cover art
-- Ask yt-dlp to download the thumbnail (`writethumbnail`) into the job folder. It goes through the worker's guarded `YoutubeDL` and its 16 MB read cap.
-- Before download, keep only thumbnails whose URL path ends in `.jpg`, `.jpeg` or `.png`. If none are left, don't download a thumbnail.
+- After the download, fetch the thumbnail with the worker's guarded `ydl.urlopen` and keep it in memory. Read at most 5 MB, and try at most 3 URLs, best first.
+  - *Changed while planning:* yt-dlp's `writethumbnail` streams to disk with no size cap, so an oversized "thumbnail" could push the job over its disk limit.
+- Only thumbnails whose URL **path** ends in `.jpg`, `.jpeg` or `.png` are tried. YouTube's thumbnail URLs carry query strings. If none qualify, nothing is fetched.
 - After the final file is known (after `_to_mp4`), a new step embeds the image with mutagen: ID3 `APIC` (front cover) for MP3, and `covr` for MP4 and M4A. Before embedding, check the bytes really are JPEG (`FF D8 FF`) or PNG (`89 50 4E 47`); otherwise skip.
-- The thumbnail file is deleted before delivery, whether or not it was embedded.
+- Nothing is written to the job folder for the cover.
 - Any failure (no thumbnail, fetch blocked or failed, wrong type, mutagen error) is logged at debug level and skipped. A blocked thumbnail fetch must not turn a later, unrelated job error into `blocked_address`.
 - A phase message, e.g. "Adding cover art", is optional and the builder's call.
 
