@@ -1,5 +1,6 @@
 """yt-dlp option building, format safety, inspect mapping and selection (pure, no network)."""
 import itertools
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -16,6 +17,12 @@ TIERS = (1080, 720, 480)
 TIER_TOLERANCE = 16
 # Playlist entries examined for a first item; entries can be lazy pages from the source.
 MAX_PLAYLIST_SCAN = 50
+# An acodec that is AAC, which M4A stream-copies: "aac", a bare "mp4a", MPEG-4 audio
+# "mp4a.40.<n>" except MP3 in MP4 (n = 32, 33, 34), and MPEG-2 AAC "mp4a.66" to "mp4a.68".
+# Other "mp4a.*" (MP3, AC-3, E-AC-3, Opus) are not. Case-insensitive. Inspect's m4a flag
+# and the M4A format filter both use it; no backslashes, so it fits yt-dlp's quoted filter.
+AAC_CODEC = "(?i)^(?:aac|mp4a|mp4a[.]40[.](?!3[234]$)[0-9]+|mp4a[.]6[678])$"
+_AAC = re.compile(AAC_CODEC)
 
 
 def base_opts(workdir: Path | None) -> dict:
@@ -61,7 +68,7 @@ def audio_opts() -> dict:
 def m4a_opts() -> dict:
     """AAC only, stream-copied into an M4A container (no re-encode)."""
     return {
-        "format": "ba[acodec^=mp4a]/b[acodec^=mp4a]",
+        "format": f"ba[acodec~='{AAC_CODEC}']/b[acodec~='{AAC_CODEC}']",
         "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}],
     }
 
@@ -122,8 +129,9 @@ def track_available(payload: dict, output: str) -> bool:
 
 
 def _is_aac(fmt: dict) -> bool:
+    """The same test as yt-dlp's `acodec~=` filter in m4a_opts (re.search)."""
     acodec = fmt.get("acodec")
-    return isinstance(acodec, str) and acodec.lower().startswith("mp4a")
+    return isinstance(acodec, str) and _AAC.search(acodec) is not None
 
 
 def short_side(fmt: dict) -> int | None:

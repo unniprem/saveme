@@ -264,16 +264,38 @@ def test_ffmpeg_metadata_writes_the_capped_description():
     assert args["purl"] == args["comment"] == ""
 
 
+# acodec -> is it AAC. Not AAC: MP3 in MP4 (mp4a.40.32-34, mp4a.69, mp4a.6B), AC-3 and
+# E-AC-3 (mp4a.a5, mp4a.a6), Opus (mp4a.ad), and an unknown codec (None).
+AAC_CASES = {
+    "mp4a.40.2": True, "MP4A.40.2": True, "mp4a.40.5": True, "mp4a.40.29": True, "aac": True, "AAC": True,
+    "mp4a": True, "mp4a.66": True, "mp4a.67": True, "mp4a.68": True,
+    "mp4a.40.32": False, "mp4a.40.33": False, "mp4a.40.34": False, "mp4a.69": False, "mp4a.6B": False,
+    "mp4a.a5": False, "mp4a.a6": False, "mp4a.ad": False, "mp4a.40": False, "opus": False, "mp3": False,
+    None: False,
+}
+
+
 def test_m4a_flag_needs_known_aac():
     f = lambda **k: {"url": "https://x/f", "protocol": "https", **k}
-    assert inspect_payload({"formats": [f(vcodec="none", acodec="mp4a.40.2")]})["audio"]["m4a"] is True
-    assert inspect_payload({"formats": [f(vcodec="none", acodec="opus")]})["audio"]["m4a"] is False
+    for acodec, aac in AAC_CASES.items():
+        assert inspect_payload({"formats": [f(vcodec="none", acodec=acodec)]})["audio"]["m4a"] is aac, acodec
     assert inspect_payload({"formats": [f(vcodec=None, acodec=None)]})["audio"]["m4a"] is False
 
 
+def test_m4a_selector_takes_exactly_what_inspect_calls_aac():
+    select = yt_dlp.YoutubeDL({"quiet": True}).build_format_selector(output_opts("m4a", "best")["format"])
+    pick = lambda formats: [x["format_id"] for x in select(
+        {"formats": formats, "incomplete_formats": False, "has_merged_format": False})]
+    for acodec, aac in AAC_CASES.items():
+        assert pick([f("a", None, None, "none", acodec, "m4a")]) == (["a"] if aac else []), acodec
+    # No AAC-only audio: the b[...] half takes a combined format with AAC.
+    assert pick([f("o", None, None, "none", "opus", "webm"), f("c", 640, 360, "avc1", "aac", "mp4")]) == ["c"]
+
+
 def test_m4a_opts_copy_aac():
+    aac = "(?i)^(?:aac|mp4a|mp4a[.]40[.](?!3[234]$)[0-9]+|mp4a[.]6[678])$"
     o = output_opts("m4a", "best")
-    assert o["format"] == "ba[acodec^=mp4a]/b[acodec^=mp4a]"
+    assert o["format"] == f"ba[acodec~='{aac}']/b[acodec~='{aac}']"
     assert o["postprocessors"] == [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}, TAGS_PP]
 
 
