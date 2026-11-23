@@ -45,11 +45,15 @@ def make_media(dir: Path) -> dict[str, Path]:
              "-metadata", "comment=http://leak.example/x", "tagged.mp4"], dir)
     _ffmpeg([*_VIDEO_SRC, "-t", "2", *_H264, "-movflags", "+faststart", "video_only.mp4"], dir)
     _ffmpeg([*_AUDIO_SRC, "-t", "2", "-c:a", "libmp3lame", "-q:a", "4", "sample.mp3"], dir)
+    for image in ("cover.jpg", "cover.png"):
+        _ffmpeg(["-f", "lavfi", "-i", "color=c=red:size=64x64", "-frames:v", "1", image], dir)
+    (dir / "junk.jpg").write_bytes(b"not an image")
     (dir / "big.mp4").write_bytes(os.urandom(3 * 1024 * 1024))
     hls = dir / "hls"
     hls.mkdir()
     _ffmpeg(_HLS, hls)
-    names = ["sample.mp4", "tagged.mp4", "video_only.mp4", "sample.mp3", "big.mp4", "hls/master.m3u8"]
+    names = ["sample.mp4", "tagged.mp4", "video_only.mp4", "sample.mp3",
+             "cover.jpg", "cover.png", "junk.jpg", "big.mp4", "hls/master.m3u8"]
     out = {name: dir / name for name in names}
     missing = [name for name, path in out.items() if not path.is_file()]
     if missing:

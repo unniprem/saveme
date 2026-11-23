@@ -30,6 +30,8 @@ from urllib.parse import parse_qs, urlsplit
 CONTENT_TYPES = {
     ".mp4": "video/mp4",
     ".mp3": "audio/mpeg",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
     ".m3u8": "application/vnd.apple.mpegurl",
     ".ts": "video/mp2t",
 }

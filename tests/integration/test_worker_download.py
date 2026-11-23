@@ -7,8 +7,11 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
+from mutagen.id3 import ID3
+from mutagen.mp4 import MP4
 
 from app.errors import CATALOG, AppError, too_large_message
 from tests.support.media import real_ffmpeg
@@ -194,6 +197,42 @@ def test_mp3_and_mp4_carry_title_and_no_source_link(media_server, job, tmp_path)
 def test_source_comment_link_is_removed(media_server, job):
     result_of(*download(media_server, "/media/tagged.mp4", job))
     assert not any("leak.example" in v for v in tags(job / "media.mp4").values())
+
+
+def cover_page(media_server, thumb: str) -> str:
+    return f"/page?title=T&video=/media/sample.mp4&thumb={quote(thumb, safe='')}"
+
+
+def test_mp3_gets_jpeg_cover(media_server, media, job):
+    result_of(*download(media_server, cover_page(media_server, media_server.url("/media/cover.jpg")),
+                        job, output="audio"))
+    assert [f.data for f in ID3(job / "media.mp3").getall("APIC")] == [media["cover.jpg"].read_bytes()]
+    assert listing(job) == ["media.mp3"]
+
+
+def test_mp4_gets_png_cover(media_server, media, job):
+    result_of(*download(media_server, cover_page(media_server, media_server.url("/media/cover.png")), job))
+    assert [bytes(c) for c in MP4(job / "media.mp4").tags["covr"]] == [media["cover.png"].read_bytes()]
+
+
+def test_webp_thumbnail_is_never_fetched(media_server, job):
+    result_of(*download(media_server, cover_page(media_server, media_server.url("/media/cover.webp")), job))
+    assert "covr" not in (MP4(job / "media.mp4").tags or {})
+    assert media_server.hits["/media/cover.webp"] == 0
+
+
+@pytest.mark.parametrize("thumb", ["/media/junk.jpg", "/missing.jpg"])
+def test_junk_and_missing_thumbnails_still_deliver(media_server, job, thumb):
+    result_of(*download(media_server, cover_page(media_server, media_server.url(thumb)), job))
+    assert "covr" not in (MP4(job / "media.mp4").tags or {})
+    assert listing(job) == ["media.mp4"]
+
+
+def test_blocked_thumbnail_still_delivers(media_server, job):
+    events, rc = download(media_server, cover_page(media_server, "http://169.254.169.254/x.jpg"), job)
+    result_of(events, rc)
+    assert not any(e["event"] == "error" for e in events)
+    assert "covr" not in (MP4(job / "media.mp4").tags or {})
 
 
 def test_percent_only_with_exact_total(media_server, tmp_path):

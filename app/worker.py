@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
 from urllib.parse import urlsplit
 
+from app.cover import embed_cover, fetch_cover
 from app.errors import BLOCKED_MARKER, AppError, classify_ytdlp_error, too_large_message
 from app.filenames import media_type_for
 from app.netguard import BlockedAddressError, check_url_syntax, install_connect_guard
@@ -473,6 +474,7 @@ def _download(url: str, output: str, quality: str, workdir: Path, max_bytes: int
             if not inspect_payload(info)[output]["available"]:
                 raise AppError(_MISSING_TRACK[output])
             processed = ydl.process_ie_result(info, download=True)
+            cover = fetch_cover(ydl.urlopen, processed)
     except _TooLarge:
         raise AppError("too_large", too_large_message(max_bytes)) from None
     except (DownloadError, ExtractorError) as exc:
@@ -496,6 +498,8 @@ def _download(url: str, output: str, quality: str, workdir: Path, max_bytes: int
             phases.phase("Converting to MP4")
             final, notice = _to_mp4(final)
             notices.append(notice)
+    if cover:
+        embed_cover(final, *cover)
     title = processed.get("title")
     return {"file": final.name, "ext": final.suffix[1:], "title": title if isinstance(title, str) else None,
             "notice": " ".join(n for n in notices if n) or None}
