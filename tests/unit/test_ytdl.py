@@ -9,6 +9,7 @@ from app.ytdl import (
     FFMPEG_WRAPPER_DIR, NATIVE_PROTOCOLS, base_opts, chosen_formats, downgrade_notice,
     inspect_payload, keep_safe_formats, unwrap_first_entry, video_opts, audio_opts,
     TAGS_PP, output_opts, without_source_link, track_available, best_label, codec_family,
+    MAX_DESCRIPTION_TAG_BYTES, with_capped_description,
 )
 
 
@@ -229,6 +230,38 @@ def test_output_opts_add_tags_last():
 def test_without_source_link_blanks_purl_and_comment():
     out = without_source_link({"title": "t", "webpage_url": "https://x/y"})
     assert out["meta_purl"] == "" and out["meta_comment"] == "" and out["webpage_url"] == "https://x/y"
+
+
+def test_long_description_tags_are_cut_on_a_character_boundary():
+    description = "\u20ac" * 70_000  # 205 KiB of 3-byte characters; byte 16384 is mid-character
+    info = {"title": "t", "description": description}
+    out = with_capped_description(info)
+    tag = out["meta_description"]
+    assert MAX_DESCRIPTION_TAG_BYTES == 16 * 1024
+    assert len(tag.encode("utf-8")) == 16383 and description.startswith(tag)
+    assert out["meta_synopsis"] == tag and out["description"] == description
+    assert info == {"title": "t", "description": description}  # the input is untouched
+
+
+def test_description_cut_survives_lone_surrogates():
+    # The worker replaces lone surrogates after this step, so it must not trip on them.
+    assert with_capped_description({"description": "\ud800" * 10_000})["meta_description"] == "\ud800" * 5461
+
+
+def test_short_or_missing_description_adds_no_tags():
+    for info in ({"description": "x" * MAX_DESCRIPTION_TAG_BYTES}, {"description": None}, {}):
+        assert with_capped_description(info) == info
+
+
+def test_ffmpeg_metadata_writes_the_capped_description():
+    from yt_dlp.postprocessor import FFmpegMetadataPP
+
+    info = with_capped_description(without_source_link(
+        {"title": "t", "description": "a" * 200_000, "webpage_url": "https://x/y"}))
+    pp = FFmpegMetadataPP(yt_dlp.YoutubeDL({"quiet": True}), add_chapters=False)
+    args = dict(v.split("=", 1) for k, v in pp._get_metadata_opts(info) if k == "-metadata")
+    assert args["description"] == args["synopsis"] == "a" * MAX_DESCRIPTION_TAG_BYTES
+    assert args["purl"] == args["comment"] == ""
 
 
 def test_m4a_flag_needs_known_aac():

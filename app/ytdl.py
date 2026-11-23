@@ -84,6 +84,36 @@ def without_source_link(info: dict) -> dict:
     return {**info, **NO_SOURCE_LINK}
 
 
+# FFmpegMetadata passes the description as single `-metadata description=…` and
+# `synopsis=…` arguments. Linux refuses to start a program with any one argument over
+# 128 KiB (MAX_ARG_STRLEN), so the tags get at most this much of it.
+MAX_DESCRIPTION_TAG_BYTES = 16 * 1024
+
+
+def _cut_utf8(text: str, limit: int) -> str:
+    """`text` cut to at most `limit` bytes of UTF-8, never inside a character."""
+    data = text.encode("utf-8", "surrogatepass")
+    if len(data) <= limit:
+        return text
+    end = limit
+    while end and (data[end] & 0xC0) == 0x80:  # a continuation byte: back up to the character's start
+        end -= 1
+    return data[:end].decode("utf-8", "surrogatepass")
+
+
+def with_capped_description(info: dict) -> dict:
+    """`info` whose description tags (meta_description, meta_synopsis, which FFmpegMetadata
+    uses in place of the description) are cut to MAX_DESCRIPTION_TAG_BYTES when the
+    description is longer. info["description"] itself is unchanged."""
+    description = info.get("description")
+    if not isinstance(description, str):
+        return info
+    cut = _cut_utf8(description, MAX_DESCRIPTION_TAG_BYTES)
+    if cut is description:
+        return info
+    return {**info, "meta_description": cut, "meta_synopsis": cut}
+
+
 def track_available(payload: dict, output: str) -> bool:
     """Whether the inspected `payload` offers the track `output` needs."""
     if output == "m4a":

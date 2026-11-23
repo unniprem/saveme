@@ -223,6 +223,15 @@ def test_mp3_and_mp4_carry_title_and_no_source_link(media_server, job, tmp_path)
     assert t["title"] == "Tagged Song" and not any(media_server.url("") in v for v in t.values())
 
 
+def test_huge_description_is_cut_in_the_tags(media_server, job):
+    # 205 KiB in one ffmpeg argument is over Linux's 128 KiB limit (E2BIG). macOS has no
+    # such limit, so this checks the cut rather than the failure.
+    page = "/page?title=T&video=/media/sample.mp4&desc=%E2%82%AC&desc_times=70000"
+    result_of(*download(media_server, page, job))
+    t = tags(job / "media.mp4")
+    assert t["description"] == t["synopsis"] == "\u20ac" * 5461  # 16383 bytes of UTF-8
+
+
 def test_source_comment_link_is_removed(media_server, job):
     result_of(*download(media_server, "/media/tagged.mp4", job))
     assert not any("leak.example" in v for v in tags(job / "media.mp4").values())

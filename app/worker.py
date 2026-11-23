@@ -457,7 +457,7 @@ def _download(url: str, output: str, quality: str, workdir: Path, max_bytes: int
     from app.runner import _replace_lone_surrogates
     from app.ytdl import (
         base_opts, chosen_formats, downgrade_notice, inspect_payload, output_opts, track_available,
-        without_source_link,
+        with_capped_description, without_source_link,
     )
 
     progress, phases, logger = _Progress(emit, max_bytes), _Phases(emit, output), _DownloadLogger()
@@ -470,7 +470,7 @@ def _download(url: str, output: str, quality: str, workdir: Path, max_bytes: int
             ydl.add_post_processor(_parts_recorder(progress), when="before_dl")
             info, playlist_notice = resolve(ydl, url)
             # Tag values travel as ffmpeg arguments, which can't hold lone surrogates.
-            info = _replace_lone_surrogates(without_source_link(info))
+            info = _replace_lone_surrogates(with_capped_description(without_source_link(info)))
             # Same availability rule as inspect: an unknown codec may hold the track.
             if not track_available(inspect_payload(info), output):
                 raise AppError(_MISSING_TRACK[output])
