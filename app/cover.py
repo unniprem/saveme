@@ -2,11 +2,14 @@
 
 FFmpeg never sees an image. The fetch goes through the worker's guarded, size-capped
 `ydl.urlopen`; only JPEG and PNG (by magic bytes) are accepted, at most COVER_MAX_BYTES
-each and MAX_COVER_TRIES URLs. Any problem means no cover, never a failed job.
+each and MAX_COVER_TRIES URLs, all within COVER_BUDGET_SECONDS. Any problem means no
+cover, never a failed job.
 """
 from __future__ import annotations
 
 import sys
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
@@ -14,6 +17,12 @@ from urllib.parse import urlsplit
 
 COVER_MAX_BYTES = 5 * 1024 * 1024
 MAX_COVER_TRIES = 3
+# The whole fetch, every try included. A host that sends a few bytes at a time never
+# trips a socket timeout, so after this long the file goes out without a cover.
+COVER_BUDGET_SECONDS = 15
+# Socket timeout (connect, and each read) of one cover request, in place of the
+# download's socket_timeout.
+COVER_REQUEST_TIMEOUT = 5
 _READ_BLOCK = 64 * 1024
 _SUFFIXES = (".jpg", ".jpeg", ".png")
 _MIME = {"jpeg": "image/jpeg", "png": "image/png"}
@@ -73,30 +82,67 @@ def _read_capped(response: Any) -> bytes | None:
     return b"".join(chunks)
 
 
-def fetch_cover(urlopen: Callable[[str], Any], info: dict) -> tuple[bytes, str] | None:
-    """The first acceptable (image bytes, kind) among cover_urls(info), else None. Never raises."""
-    try:
-        urls = cover_urls(info)
-    except Exception as exc:
-        print(f"worker: cover: no usable thumbnail list: {exc!r}", file=sys.stderr)
-        return None
+def cover_opener(urlopen: Callable[[Any], Any]) -> Callable[[str], Any]:
+    """`urlopen` (the worker's ydl.urlopen) for one cover URL: a yt-dlp Request whose
+    `timeout` extension gives it COVER_REQUEST_TIMEOUT."""
+    from yt_dlp.networking import Request
+
+    return lambda url: urlopen(Request(url, extensions={"timeout": COVER_REQUEST_TIMEOUT}))
+
+
+def _first_image(urlopen: Callable[[str], Any], urls: list[str], deadline: float,
+                 found: list[tuple[bytes, str]], notes: list[str]) -> None:
+    """Try `urls` in order and put the first JPEG or PNG in `found`. It runs on
+    fetch_cover's thread, which may be abandoned, so it never raises, prints nothing
+    (log lines go to `notes`) and starts no request after `deadline`."""
     for url in urls:
+        if time.monotonic() >= deadline:
+            return
         response = None
         try:
             response = urlopen(url)
             data = _read_capped(response)
             kind = image_kind(data) if data is not None else None
             if kind:
-                return data, kind
-            print("worker: cover: thumbnail skipped (too large or not JPEG/PNG)", file=sys.stderr)
+                found.append((data, kind))
+                return
+            notes.append("thumbnail skipped (too large or not JPEG/PNG)")
         except Exception as exc:
-            print(f"worker: cover: thumbnail fetch failed: {type(exc).__name__}", file=sys.stderr)
+            notes.append(f"thumbnail fetch failed: {type(exc).__name__}")
         finally:
             if response is not None:
                 try:
                     response.close()
                 except Exception:
                     pass
+
+
+def fetch_cover(urlopen: Callable[[str], Any], info: dict) -> tuple[bytes, str] | None:
+    """The first acceptable (image bytes, kind) among cover_urls(info), else None. Never
+    raises, and returns within COVER_BUDGET_SECONDS: the tries run on a daemon thread,
+    abandoned when the budget runs out. That thread keeps the image in memory (about
+    COVER_MAX_BYTES at most), starts no new request, prints nothing and dies with the
+    worker."""
+    try:
+        urls = cover_urls(info)
+    except Exception as exc:
+        print(f"worker: cover: no usable thumbnail list: {exc!r}", file=sys.stderr)
+        return None
+    if not urls:
+        return None
+    budget = COVER_BUDGET_SECONDS
+    found: list[tuple[bytes, str]] = []
+    notes: list[str] = []
+    thread = threading.Thread(target=_first_image, name="cover", daemon=True,
+                              args=(urlopen, urls, time.monotonic() + budget, found, notes))
+    thread.start()
+    thread.join(budget)
+    for note in list(notes):
+        print(f"worker: cover: {note}", file=sys.stderr)
+    if found:
+        return found[0]
+    if thread.is_alive():
+        print(f"worker: cover: gave up after {budget:g} s", file=sys.stderr)
     return None
 
 

@@ -1,5 +1,13 @@
 """Cover-art selection and fetching, with a fake urlopen (no network)."""
-from app.cover import COVER_MAX_BYTES, MAX_COVER_TRIES, cover_urls, fetch_cover, image_kind
+import time
+
+from yt_dlp.networking import Request
+
+from app import cover
+from app.cover import (
+    COVER_BUDGET_SECONDS, COVER_MAX_BYTES, COVER_REQUEST_TIMEOUT, MAX_COVER_TRIES, cover_opener, cover_urls,
+    fetch_cover, image_kind,
+)
 
 JPEG = b"\xff\xd8\xff\xe0" + b"x" * 100
 PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 100
@@ -96,6 +104,48 @@ def test_fetch_cover_never_raises():
         raise RuntimeError("boom")
 
     assert fetch_cover(opener, info_of("https://c.test/a.jpg")) is None
+
+
+def test_cover_budget_and_request_timeout():
+    assert COVER_BUDGET_SECONDS == 15 and COVER_REQUEST_TIMEOUT == 5
+
+
+def test_fetch_cover_gives_up_on_a_trickling_host(monkeypatch, capsys):
+    # A per-read timeout can't stop a host that keeps sending a little; the budget does.
+    class Trickle(_Response):
+        def read(self, n: int = -1) -> bytes:
+            time.sleep(2)
+            return super().read(n)
+
+    monkeypatch.setattr(cover, "COVER_BUDGET_SECONDS", 0.2)
+    start = time.monotonic()
+    assert fetch_cover(lambda url: Trickle(JPEG), info_of("https://c.test/a.jpg")) is None
+    assert time.monotonic() - start < 1
+    assert capsys.readouterr().err == "worker: cover: gave up after 0.2 s\n"
+
+
+def test_abandoned_fetch_starts_nothing_and_stays_quiet(monkeypatch, capsys):
+    a, b = "https://c.test/a.jpg", "https://c.test/b.jpg"
+    calls = []
+
+    def opener(url: str):
+        calls.append(url)
+        time.sleep(0.5)
+        raise OSError("timed out")
+
+    monkeypatch.setattr(cover, "COVER_BUDGET_SECONDS", 0.2)
+    assert fetch_cover(opener, info_of(a, b)) is None
+    time.sleep(0.8)  # the first try fails after the budget; the second is never started
+    assert calls == [b]
+    assert capsys.readouterr().err == "worker: cover: gave up after 0.2 s\n"
+
+
+def test_cover_opener_sends_a_request_with_its_own_timeout():
+    sent = []
+    assert cover_opener(lambda req: sent.append(req) or "response")("https://c.test/a.jpg") == "response"
+    (req,) = sent
+    assert isinstance(req, Request) and req.url == "https://c.test/a.jpg"
+    assert req.extensions == {"timeout": COVER_REQUEST_TIMEOUT}
 
 
 def _listed(n: int, **extra) -> dict:

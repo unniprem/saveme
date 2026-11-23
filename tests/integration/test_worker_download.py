@@ -6,6 +6,7 @@ import io
 import json
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -261,6 +262,18 @@ def test_blocked_thumbnail_still_delivers(media_server, job):
     result_of(events, rc)
     assert not any(e["event"] == "error" for e in events)
     assert "covr" not in (MP4(job / "media.mp4").tags or {})
+
+
+def test_trickling_thumbnail_still_delivers_on_time(media_server, job, monkeypatch):
+    # /slow/ sends 1 KiB every 0.5 s, so no read ever times out and the 64 KiB image would
+    # take 32 s. The worker gives up after its cover budget (1 s here) instead.
+    monkeypatch.setenv("SAVEME_TEST_COVER_BUDGET", "1")
+    start = time.monotonic()
+    result_of(*download(media_server, cover_page(media_server, media_server.url("/slow/big.jpg")), job))
+    assert time.monotonic() - start < 20
+    assert media_server.hits["/slow/big.jpg"] == 1
+    assert "covr" not in (MP4(job / "media.mp4").tags or {})
+    assert listing(job) == ["media.mp4"]
 
 
 def test_percent_only_with_exact_total(media_server, tmp_path):
