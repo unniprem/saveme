@@ -19,17 +19,11 @@ _SUFFIXES = (".jpg", ".jpeg", ".png")
 _MIME = {"jpeg": "image/jpeg", "png": "image/png"}
 
 
-def cover_urls(info: dict) -> list[str]:
-    """Candidate image URLs, best first: http(s) URLs whose path ends in .jpg/.jpeg/.png."""
+def _qualifying(candidates: list) -> list[str]:
     from yt_dlp.utils import sanitize_url
 
-    thumbnails = info.get("thumbnails")
-    raw = [t.get("url") for t in thumbnails if isinstance(t, dict)] if isinstance(thumbnails, list) else []
-    raw = raw[::-1]  # yt-dlp sorts worst to best
-    if not raw:
-        raw = [info.get("thumbnail")]
     urls: list[str] = []
-    for candidate in raw:
+    for candidate in candidates:
         if not isinstance(candidate, str):
             continue
         url = sanitize_url(candidate, scheme="https")
@@ -40,7 +34,24 @@ def cover_urls(info: dict) -> list[str]:
         if (parts.scheme in ("http", "https") and parts.path.lower().endswith(_SUFFIXES)
                 and url not in urls):
             urls.append(url)
-    return urls[:MAX_COVER_TRIES]
+    return urls
+
+
+def cover_urls(info: dict) -> list[str]:
+    """Candidate image URLs, best first, at most MAX_COVER_TRIES: http(s) URLs whose path
+    ends in .jpg/.jpeg/.png. yt-dlp guesses some thumbnail names that 404, so the
+    extractor's own info["thumbnail"], when it qualifies, is always among the tries: if
+    it isn't already in the top candidates it replaces the last of them."""
+    thumbnails = info.get("thumbnails")
+    raw = [t.get("url") for t in thumbnails if isinstance(t, dict)] if isinstance(thumbnails, list) else []
+    candidates = _qualifying(raw[::-1])  # yt-dlp sorts worst to best
+    own = _qualifying([info.get("thumbnail")])
+    if not candidates:
+        return own
+    top = candidates[:MAX_COVER_TRIES]
+    if own and own[0] not in top:
+        top = top[:MAX_COVER_TRIES - 1] + own
+    return top
 
 
 def image_kind(data: bytes) -> Literal["jpeg", "png"] | None:

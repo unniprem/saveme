@@ -96,3 +96,22 @@ def test_fetch_cover_never_raises():
         raise RuntimeError("boom")
 
     assert fetch_cover(opener, info_of("https://c.test/a.jpg")) is None
+
+
+def _listed(n: int, **extra) -> dict:
+    return {"thumbnails": [{"url": f"https://c.test/{i}.jpg"} for i in range(n)], **extra}
+
+
+def test_cover_urls_always_tries_the_sources_own_thumbnail():
+    own = "https://i.ytimg.com/vi/a/hqdefault.jpg?sqp=abc"
+    assert cover_urls(_listed(5, thumbnail=own)) == ["https://c.test/4.jpg", "https://c.test/3.jpg", own]
+
+
+def test_cover_urls_own_thumbnail_already_in_top_three():
+    assert cover_urls(_listed(5, thumbnail="https://c.test/3.jpg")) == [
+        f"https://c.test/{i}.jpg" for i in (4, 3, 2)]
+
+
+def test_cover_urls_unqualified_own_thumbnail_is_ignored():
+    assert cover_urls(_listed(5, thumbnail="https://c.test/x.webp")) == [
+        f"https://c.test/{i}.jpg" for i in (4, 3, 2)]
