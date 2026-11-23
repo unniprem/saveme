@@ -308,6 +308,8 @@ class _Phases:
             return
         if key == "Merger":
             self.phase("Merging video and audio")
+        elif key == "Metadata":
+            self.phase("Adding tags")
         else:
             self.phase("Converting to MP3" if self._output == "audio" else "Converting to MP4")
 
@@ -451,10 +453,13 @@ def _download(url: str, output: str, quality: str, workdir: Path, max_bytes: int
               emit: Callable[[dict], None]) -> dict:
     from yt_dlp.utils import DownloadError, ExtractorError
 
-    from app.ytdl import audio_opts, base_opts, chosen_formats, downgrade_notice, inspect_payload, video_opts
+    from app.runner import _replace_lone_surrogates
+    from app.ytdl import (
+        base_opts, chosen_formats, downgrade_notice, inspect_payload, output_opts, without_source_link,
+    )
 
     progress, phases, logger = _Progress(emit, max_bytes), _Phases(emit, output), _DownloadLogger()
-    params = _ydl_params(base_opts(workdir), video_opts(quality) if output == "video" else audio_opts(),
+    params = _ydl_params(base_opts(workdir), output_opts(output, quality),
                          {"max_filesize": max_bytes, "progress_hooks": [progress],
                           "postprocessor_hooks": [phases]})
     params["logger"] = logger
@@ -462,6 +467,8 @@ def _download(url: str, output: str, quality: str, workdir: Path, max_bytes: int
         with _youtube_dl(params) as ydl:
             ydl.add_post_processor(_parts_recorder(progress), when="before_dl")
             info, playlist_notice = resolve(ydl, url)
+            # Tag values travel as ffmpeg arguments, which can't hold lone surrogates.
+            info = _replace_lone_surrogates(without_source_link(info))
             # Same availability rule as inspect: an unknown codec may hold the track.
             if not inspect_payload(info)[output]["available"]:
                 raise AppError(_MISSING_TRACK[output])

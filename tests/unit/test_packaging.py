@@ -172,6 +172,10 @@ def test_ffmpeg_build_reads_local_files_only():
     demuxers = re.search(r"--enable-demuxer=(\S+)", flags).group(1).split(",")
     # These open other files or URLs named inside the media.
     assert not {"hls", "dash", "concat", "image2", "tee"} & set(demuxers)
+    assert "ffmetadata" in demuxers
+    decoders = re.search(r"--enable-decoder=(\S+)", flags).group(1).split(",")
+    images = {"mjpeg", "png", "webp", "image2", "jpeg_pipe", "png_pipe", "webp_pipe", "bmp", "gif"}
+    assert not images & (set(demuxers) | set(decoders))
     # Debian's ffmpeg package must not come back in the runtime stage.
     runtime = _read("Dockerfile").rsplit("\nFROM ", 1)[1]
     assert not re.search(r"apt-get install[^\n]*\bffmpeg\b", runtime)

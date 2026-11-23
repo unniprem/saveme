@@ -53,6 +53,14 @@ def probe(path: Path) -> dict:
     return json.loads(proc.stdout)
 
 
+def tags(path: Path) -> dict[str, str]:
+    """Container tags by the real ffprobe, keys lower-cased; {} when there are none."""
+    proc = subprocess.run([shutil.which("ffprobe"), "-v", "error", "-show_entries", "format_tags",
+                           "-of", "json", str(path)], capture_output=True, text=True, timeout=30, check=True)
+    found = json.loads(proc.stdout).get("format", {}).get("tags", {})
+    return {k.lower(): v for k, v in found.items()}
+
+
 def progress_of(events: list[dict]) -> list[dict]:
     return [e for e in events if e["event"] == "progress"]
 
@@ -162,8 +170,30 @@ def test_hostile_title_stays_in_workdir(media_server, job, tmp_path):
     data = result_of(*download(media_server, path, job))
     assert data["file"] == "media.mp4" and data["title"] == HOSTILE_TITLE
     assert listing(job) == ["media.mp4"]
+    assert tags(job / "media.mp4")["title"] == HOSTILE_TITLE
     assert listing(tmp_path) == ["job"]
     assert {d: listing(d) for d in outside} == outside
+
+
+def test_mp3_and_mp4_carry_title_and_no_source_link(media_server, job, tmp_path):
+    page = "/page?title=Tagged%20Song&video=/media/sample.mp4"
+    events, rc = download(media_server, page, job, output="audio")
+    result_of(events, rc)
+    t = tags(job / "media.mp3")
+    assert t["title"] == "Tagged Song"
+    assert not any(media_server.url("") in v for v in t.values())
+    assert "Adding tags" in phases_of(events)
+    assert listing(job) == ["media.mp3"]          # no .meta / .temp files left
+    other = tmp_path / "v"
+    other.mkdir()
+    result_of(*download(media_server, page, other))
+    t = tags(other / "media.mp4")
+    assert t["title"] == "Tagged Song" and not any(media_server.url("") in v for v in t.values())
+
+
+def test_source_comment_link_is_removed(media_server, job):
+    result_of(*download(media_server, "/media/tagged.mp4", job))
+    assert not any("leak.example" in v for v in tags(job / "media.mp4").values())
 
 
 def test_percent_only_with_exact_total(media_server, tmp_path):
@@ -280,6 +310,27 @@ def test_failed_mp4_remux(tmp_path, name, outcome):
     else:
         assert _to_mp4(src) == (src, outcome)
     assert listing(tmp_path) == [name]  # no half-written media.mp4
+
+
+def test_remux_to_mp4_keeps_chapters_and_title(tmp_path):
+    from app.worker import _to_mp4
+
+    meta = tmp_path / "ch.meta"
+    meta.write_text(";FFMETADATA1\ntitle=Kept\n"
+                    "[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=1000\ntitle=One\n"
+                    "[CHAPTER]\nTIMEBASE=1/1000\nSTART=1000\nEND=2000\ntitle=Two\n")
+    src = tmp_path / "media.mkv"
+    subprocess.run([real_ffmpeg(), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                    "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25", "-i", str(meta),
+                    "-map_metadata", "1", "-map_chapters", "1", "-t", "2",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src)],
+                   check=True, capture_output=True, timeout=60)
+    dst, notice = _to_mp4(src)
+    assert dst.name == "media.mp4" and notice is None
+    proc = subprocess.run([shutil.which("ffprobe"), "-v", "error", "-show_chapters", "-of", "json", str(dst)],
+                          capture_output=True, text=True, timeout=30, check=True)
+    assert len(json.loads(proc.stdout)["chapters"]) == 2
+    assert tags(dst)["title"] == "Kept"
 
 
 @pytest.mark.parametrize("change", [

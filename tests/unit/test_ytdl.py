@@ -8,6 +8,7 @@ from app.errors import AppError
 from app.ytdl import (
     FFMPEG_WRAPPER_DIR, NATIVE_PROTOCOLS, base_opts, chosen_formats, downgrade_notice,
     inspect_payload, keep_safe_formats, unwrap_first_entry, video_opts, audio_opts,
+    TAGS_PP, output_opts, without_source_link,
 )
 
 
@@ -215,3 +216,16 @@ def test_unwrap_stops_scanning_empty_entries():
     with pytest.raises(AppError) as e:
         unwrap_first_entry({"_type": "playlist", "entries": holes()})
     assert e.value.code == "playlist_unsupported"
+
+
+def test_output_opts_add_tags_last():
+    for opts in (output_opts("video", "best"), output_opts("audio", "best")):
+        assert opts["postprocessors"][-1] == TAGS_PP
+    assert output_opts("audio", "best")["postprocessors"][0]["key"] == "FFmpegExtractAudio"
+    assert output_opts("video", "720")["format_sort"] == video_opts("720")["format_sort"]
+    assert TAGS_PP["add_chapters"] is True and TAGS_PP["add_infojson"] is False
+
+
+def test_without_source_link_blanks_purl_and_comment():
+    out = without_source_link({"title": "t", "webpage_url": "https://x/y"})
+    assert out["meta_purl"] == "" and out["meta_comment"] == "" and out["webpage_url"] == "https://x/y"

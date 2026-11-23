@@ -58,6 +58,24 @@ def audio_opts() -> dict:
     }
 
 
+# FFmpegMetadata writes title, artist, date, description and chapters. The two meta_ fields
+# below are copied verbatim into `-metadata purl=` / `comment=`, blanking the source link
+# (and any `comment` tag the source file already carries).
+TAGS_PP = {"key": "FFmpegMetadata", "add_metadata": True, "add_chapters": True, "add_infojson": False}
+NO_SOURCE_LINK = {"meta_purl": "", "meta_comment": ""}
+
+
+def output_opts(output: str, quality: Quality) -> dict:
+    """The yt-dlp options for `output`, with the tag postprocessor last so it runs
+    after any audio extraction."""
+    opts = video_opts(quality) if output == "video" else audio_opts()
+    return {**opts, "postprocessors": [*opts.get("postprocessors", []), TAGS_PP]}
+
+
+def without_source_link(info: dict) -> dict:
+    return {**info, **NO_SOURCE_LINK}
+
+
 def short_side(fmt: dict) -> int | None:
     w, h = fmt.get("width"), fmt.get("height")
     if w and h:

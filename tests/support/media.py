@@ -40,13 +40,16 @@ def make_media(dir: Path) -> dict[str, Path]:
     """Write the test media into `dir`; return {relative name: path}."""
     _ffmpeg([*_VIDEO_SRC, *_AUDIO_SRC, "-t", "2", "-map", "0:v", "-map", "1:a",
              *_H264, "-c:a", "aac", "-movflags", "+faststart", "sample.mp4"], dir)
+    _ffmpeg([*_VIDEO_SRC, *_AUDIO_SRC, "-t", "2", "-map", "0:v", "-map", "1:a",
+             *_H264, "-c:a", "aac", "-movflags", "+faststart",
+             "-metadata", "comment=http://leak.example/x", "tagged.mp4"], dir)
     _ffmpeg([*_VIDEO_SRC, "-t", "2", *_H264, "-movflags", "+faststart", "video_only.mp4"], dir)
     _ffmpeg([*_AUDIO_SRC, "-t", "2", "-c:a", "libmp3lame", "-q:a", "4", "sample.mp3"], dir)
     (dir / "big.mp4").write_bytes(os.urandom(3 * 1024 * 1024))
     hls = dir / "hls"
     hls.mkdir()
     _ffmpeg(_HLS, hls)
-    names = ["sample.mp4", "video_only.mp4", "sample.mp3", "big.mp4", "hls/master.m3u8"]
+    names = ["sample.mp4", "tagged.mp4", "video_only.mp4", "sample.mp3", "big.mp4", "hls/master.m3u8"]
     out = {name: dir / name for name in names}
     missing = [name for name, path in out.items() if not path.is_file()]
     if missing:
