@@ -279,6 +279,7 @@ git commit -m "feat: embed the source thumbnail as cover art with mutagen, best 
 - Consumes: `output_opts`, `TAGS_PP` (Task 1).
 - Produces:
   - `Output = Literal["video", "audio", "m4a"]`
+  - *Superseded after the final review (commit `1cd50f9`):* the `^=mp4a` selector and the "starts with `mp4a`" flag below also matched MP3, AC-3, E-AC-3 and Opus inside MP4, and missed AAC labelled `aac`. Both now use one case-insensitive pattern, `AAC_CODEC` in `app/ytdl.py`: `aac`, a bare `mp4a`, `mp4a.40.<n>` except 32–34, or `mp4a.66` to `mp4a.68`. The selector is `ba[acodec~='<AAC_CODEC>']/b[acodec~='<AAC_CODEC>']`. The text and tests below are the plan as executed before that fix.
   - `m4a_opts() -> dict`: `{"format": "ba[acodec^=mp4a]/b[acodec^=mp4a]", "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}]}`
   - `output_opts("m4a", q)` is `m4a_opts()` with `TAGS_PP` appended.
   - `track_available(payload: dict, output: str) -> bool`: `video` → `payload["video"]["available"]`, `audio` → `payload["audio"]["available"]`, `m4a` → `payload["audio"]["m4a"]`.

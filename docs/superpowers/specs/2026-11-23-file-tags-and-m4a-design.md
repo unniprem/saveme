@@ -63,9 +63,10 @@ Idea source: Ghost-Downloader-3's yt-dlp module (embed metadata, embed chapters,
 - A phase message, e.g. "Adding cover art", is optional and the builder's call.
 
 ### M4A (original)
-- **Inspect:** the payload's `audio` object gains a flag (e.g. `m4a: true`) when any kept format has audio whose `acodec` starts with `mp4a`. When the codec is unknown, it's false.
+- **Inspect:** the payload's `audio` object gains a flag (`m4a: true`) when any kept format's `acodec` is AAC. When the codec is unknown, it's false.
+  - *Changed after the final review:* "starts with `mp4a`" was too loose. It also matched MP3, AC-3, E-AC-3 and Opus inside MP4 (`mp4a.69`, `mp4a.40.34`, `mp4a.a5`, `mp4a.ad`), which the build can't copy into M4A and has no AAC encoder for, so such a job would fail after the whole download. It also missed AAC labelled `aac`. AAC now means, case-insensitively: `aac`, a bare `mp4a`, `mp4a.40.<n>` except 32–34, or `mp4a.66` to `mp4a.68`. This is `AAC_CODEC` in `app/ytdl.py`.
 - **Request:** the builder picks the API shape. The obvious one is a third `output` value, `"m4a"`. `output: "audio"` keeps meaning MP3.
-- **Download:** select AAC audio only (e.g. `ba[acodec^=mp4a]/b[acodec^=mp4a]`), then `FFmpegExtractAudio` with `preferredcodec: "m4a"`, which stream-copies AAC into the `ipod` muxer, already in the build. If no AAC format can be selected, the job fails with `no_audio`.
+- **Download:** select AAC audio only, by the same AAC rule as inspect (`ba[acodec~='<AAC_CODEC>']/b[acodec~='<AAC_CODEC>']`), then `FFmpegExtractAudio` with `preferredcodec: "m4a"`, which stream-copies AAC into the `ipod` muxer, already in the build. If no AAC format can be selected, the job fails with `no_audio`.
 - **Delivery:** `app/filenames.py` gains `m4a` → `audio/mp4`. The worker's `media.<ext>` rule already allows it.
 - **Page:** a "M4A audio (original)" format choice after "MP3 audio", disabled or hidden when the flag is false, using the same chip template. The job kind label shows "M4A". `loadJob` accepts the new output value. The phase text is something like "Preparing M4A" instead of "Converting to MP3".
 
@@ -94,7 +95,7 @@ Idea source: Ghost-Downloader-3's yt-dlp module (embed metadata, embed chapters,
 ## 9. How to check it works
 
 - **Unit tests:**
-  - inspect flags M4A only for `mp4a` audio
+  - inspect flags M4A only for AAC audio (not MP3, AC-3 or Opus inside MP4)
   - the "Best" label cases above
   - `m4a` filename and media type
   - the cover step embeds JPEG and PNG, skips WebP and junk bytes, and never raises

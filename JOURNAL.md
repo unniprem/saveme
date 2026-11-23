@@ -52,9 +52,10 @@ The owner asked me to execute the latest plan (`docs/superpowers/plans/2026-11-2
   - Only the description is capped, so a huge title or tag list could still exceed the argument limit.
   - The AAC pattern still admits rare non-AAC `mp4a.40.<n>` values such as ALS (36).
   - An abandoned cover thread could still print a log line.
-- **Not done:**
-  - `saveme:local` now points at this branch's build, while the live `saveme-saveme-1` container still runs the old image.
-  - Nothing is pushed or merged.
+- **Wrap-up:**
+  - Merged into `main` as `9b04e99`. The full suite passed on the merged result (471 passed), and `main` was pushed to GitHub.
+  - The live `saveme-saveme-1` container was rebuilt from `main` with `docker compose up -d --build`. It came back healthy, `/health` answers 200 on port 80, and the served `app.js` has the M4A chip.
+  - The spec and plan now record the stricter AAC rule that replaced the `^=mp4a` selector.
 
 ---
 
