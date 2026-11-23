@@ -178,7 +178,7 @@ def test_inspect_direct_mp4(media_server):
 def test_inspect_hls_master(media_server):
     data = result_of(*inspect(media_server.url("/hls/master.m3u8")))
     assert [q["id"] for q in data["video"]["qualities"]] == ["best"]
-    assert data["video"]["qualities"][0]["label"] == "Best (360p)"
+    assert data["video"]["qualities"][0]["label"] == "Best (360p · H.264)"
 
 
 def test_redirect_to_media_is_followed(media_server):

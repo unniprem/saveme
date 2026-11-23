@@ -8,7 +8,7 @@ from app.errors import AppError
 from app.ytdl import (
     FFMPEG_WRAPPER_DIR, NATIVE_PROTOCOLS, base_opts, chosen_formats, downgrade_notice,
     inspect_payload, keep_safe_formats, unwrap_first_entry, video_opts, audio_opts,
-    TAGS_PP, output_opts, without_source_link, track_available,
+    TAGS_PP, output_opts, without_source_link, track_available, best_label, codec_family,
 )
 
 
@@ -65,14 +65,14 @@ def test_opts_video_audio():
 def test_tiers_listed_only_when_present():
     p = inspect_payload(info(YT))
     assert [q["id"] for q in p["video"]["qualities"]] == ["best", "1080", "720", "480"]
-    assert p["video"]["qualities"][0]["label"] == "Best (2160p)" and p["video"]["default"] == "1080"
+    assert p["video"]["qualities"][0]["label"] == "Best (2160p · VP9)" and p["video"]["default"] == "1080"
     assert p["source"] == "Youtube · www.youtube.com"
 
 
 def test_vertical_uses_short_side():
     p = inspect_payload(info(VERTICAL))
     assert [q["id"] for q in p["video"]["qualities"]] == ["best", "1080", "720"]
-    assert p["video"]["qualities"][0]["label"] == "Best (1080p)"
+    assert p["video"]["qualities"][0]["label"] == "Best (1080p · VP9/H.264)"
 
 
 def test_low_res_offers_best_only_with_notice():
@@ -247,3 +247,23 @@ def test_m4a_opts_copy_aac():
 def test_track_available():
     p = {"video": {"available": False}, "audio": {"available": True, "m4a": False}}
     assert [track_available(p, o) for o in ("video", "audio", "m4a")] == [False, True, False]
+
+
+V = lambda side, codec, fps=None: {"url": "https://x/v", "protocol": "https", "width": side * 16 // 9,
+                                   "height": side, "vcodec": codec, "acodec": "none", "fps": fps}
+
+
+def test_best_label_cases():
+    assert best_label([V(2160, "av01.0.12M.08", 60), V(2160, "vp09.00.51.08", 60),
+                       V(2160, "vp09.00.51.08", 30), V(1080, "avc1.640028", 60)]) == "Best (2160p60 · AV1/VP9)"
+    assert best_label([V(1080, "avc1.64001F", 30)]) == "Best (1080p · H.264)"
+    assert best_label([V(1080, "avc1.64001F", 50)]) == "Best (1080p50 · H.264)"
+    assert best_label([V(1080, "avc1.64001F", 59.94)]) == "Best (1080p60 · H.264)"
+    assert best_label([V(1080, None)]) == "Best (1080p)"
+    assert best_label([V(1080, "avc1"), V(1080, "vp8")]) == "Best (1080p)"
+    assert best_label([{"url": "https://x/v", "vcodec": None}]) == "Best"
+
+
+def test_codec_family():
+    assert [codec_family(c) for c in ("AV01.0", "vp9", "hvc1.1", "hevc", "avc3.x", "h264", "vp8", None)] == [
+        "AV1", "VP9", "H.265", "H.265", "H.264", "H.264", None, None]

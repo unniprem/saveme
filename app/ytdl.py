@@ -103,6 +103,44 @@ def short_side(fmt: dict) -> int | None:
     return h or None
 
 
+_CODEC_PREFIXES = (
+    (("av01",), "AV1"),
+    (("vp09", "vp9"), "VP9"),
+    (("hev1", "hvc1", "h265", "hevc"), "H.265"),
+    (("avc1", "avc3", "h264"), "H.264"),
+)
+
+
+def codec_family(vcodec: str | None) -> str | None:
+    if not isinstance(vcodec, str):
+        return None
+    v = vcodec.lower()
+    for prefixes, family in _CODEC_PREFIXES:
+        if v.startswith(prefixes):
+            return family
+    return None
+
+
+def best_label(video_fmts: list[dict]) -> str:
+    """Label for the "best" quality: real size, frame rate above 30, and codecs."""
+    sized = [(s, x) for x in video_fmts if (s := short_side(x))]
+    if not sized:
+        return "Best"
+    top = max(s for s, _ in sized)
+    kept = [x for s, x in sized if s == top]
+    fps_values = [x["fps"] for x in kept
+                  if isinstance(x.get("fps"), (int, float)) and not isinstance(x["fps"], bool) and x["fps"] > 0]
+    top_fps = max(fps_values) if fps_values else None
+    if top_fps is not None:
+        kept = [x for x in kept if x.get("fps") == top_fps]
+    fps_text = str(round(top_fps)) if top_fps is not None and top_fps > 30 else ""
+    families = [codec_family(x.get("vcodec")) for x in kept]
+    codecs = ""
+    if None not in families:
+        codecs = "/".join(f for f in ("AV1", "VP9", "H.265", "H.264") if f in families)
+    return f"Best ({top}p{fps_text}" + (f" \u00b7 {codecs}" if codecs else "") + ")"
+
+
 def unwrap_first_entry(info: dict) -> tuple[dict, str | None]:
     """The first entry of a playlist and a notice when there are more. Entries may be
     lazy (a generator or yt-dlp's paged lists), so at most two non-empty entries out of
@@ -184,7 +222,7 @@ def inspect_payload(info: dict) -> dict:
     sizes = [s for s in (short_side(x) for x in video_fmts) if s]
     max_side = max(sizes) if sizes else None
     tiers = [n for n in TIERS if any(abs(s - n) <= TIER_TOLERANCE for s in sizes)]
-    qualities = [{"id": "best", "label": f"Best ({max_side}p)" if max_side else "Best"}]
+    qualities = [{"id": "best", "label": best_label(video_fmts)}]
     qualities += [{"id": str(n), "label": f"{n}p"} for n in tiers]
     if not tiers and max_side:
         notices.append(f"Only {max_side}p is available.")
