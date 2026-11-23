@@ -58,6 +58,10 @@ def test_index_has_labelled_url_field_and_live_region():
     assert len(inputs) == 1
 
 
+def test_how_it_works_mentions_m4a():
+    assert "MP3 or M4A audio" in _html()
+
+
 def test_footer_copy_is_exact():
     assert FOOTER in _html()
 
@@ -118,6 +122,7 @@ def test_app_js_carries_pinned_copy():
     for text in (LOST, SAVED, NO_AUDIO):
         assert text in js
     assert "sessionStorage" in js
+    assert "M4A audio (original)" in js
 
 
 def test_app_js_never_injects_html():

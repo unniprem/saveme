@@ -9,7 +9,8 @@ Routes:
   /hls/<name>          files under the media dir's hls/
   /redirect?to=<url>   302 to <url>
   /page?title=&video=&thumb=   HTML with <title>, og:title, og:video, og:image
-                       (title_html= instead of title= is inserted unescaped, entities and all)
+                       (title_html= instead of title= is inserted unescaped, entities and all;
+                       desc= repeated desc_times= times becomes og:description)
   /plain               HTML with no media
   /evil.mp4            an HLS playlist pointing at /canary.ts, served as video/mp4
   /canary.ts           counts as a hit if anything fetches it
@@ -30,6 +31,8 @@ from urllib.parse import parse_qs, urlsplit
 CONTENT_TYPES = {
     ".mp4": "video/mp4",
     ".mp3": "audio/mpeg",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
     ".m3u8": "application/vnd.apple.mpegurl",
     ".ts": "video/mp2t",
 }
@@ -114,6 +117,8 @@ class _Handler(BaseHTTPRequestHandler):
             head += meta("video", self.server.media.url(video) if video.startswith("/") else video)
         if "thumb" in query:
             head += meta("image", query["thumb"][0])
+        if "desc" in query:
+            head += meta("description", query["desc"][0] * int(query.get("desc_times", ["1"])[0]))
         return f"<!doctype html>\n<html><head>\n<meta charset=\"utf-8\">\n{head}</head><body></body></html>\n"
 
     def _file(self, rel: str, mode: str) -> None:

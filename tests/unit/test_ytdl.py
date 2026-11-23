@@ -8,6 +8,8 @@ from app.errors import AppError
 from app.ytdl import (
     FFMPEG_WRAPPER_DIR, NATIVE_PROTOCOLS, base_opts, chosen_formats, downgrade_notice,
     inspect_payload, keep_safe_formats, unwrap_first_entry, video_opts, audio_opts,
+    TAGS_PP, output_opts, without_source_link, track_available, best_label, codec_family,
+    MAX_DESCRIPTION_TAG_BYTES, with_capped_description,
 )
 
 
@@ -64,14 +66,14 @@ def test_opts_video_audio():
 def test_tiers_listed_only_when_present():
     p = inspect_payload(info(YT))
     assert [q["id"] for q in p["video"]["qualities"]] == ["best", "1080", "720", "480"]
-    assert p["video"]["qualities"][0]["label"] == "Best (2160p)" and p["video"]["default"] == "1080"
+    assert p["video"]["qualities"][0]["label"] == "Best (2160p · VP9)" and p["video"]["default"] == "1080"
     assert p["source"] == "Youtube · www.youtube.com"
 
 
 def test_vertical_uses_short_side():
     p = inspect_payload(info(VERTICAL))
     assert [q["id"] for q in p["video"]["qualities"]] == ["best", "1080", "720"]
-    assert p["video"]["qualities"][0]["label"] == "Best (1080p)"
+    assert p["video"]["qualities"][0]["label"] == "Best (1080p · VP9/H.264)"
 
 
 def test_low_res_offers_best_only_with_notice():
@@ -215,3 +217,108 @@ def test_unwrap_stops_scanning_empty_entries():
     with pytest.raises(AppError) as e:
         unwrap_first_entry({"_type": "playlist", "entries": holes()})
     assert e.value.code == "playlist_unsupported"
+
+
+def test_output_opts_add_tags_last():
+    for opts in (output_opts("video", "best"), output_opts("audio", "best")):
+        assert opts["postprocessors"][-1] == TAGS_PP
+    assert output_opts("audio", "best")["postprocessors"][0]["key"] == "FFmpegExtractAudio"
+    assert output_opts("video", "720")["format_sort"] == video_opts("720")["format_sort"]
+    assert TAGS_PP["add_chapters"] is True and TAGS_PP["add_infojson"] is False
+
+
+def test_without_source_link_blanks_purl_and_comment():
+    out = without_source_link({"title": "t", "webpage_url": "https://x/y"})
+    assert out["meta_purl"] == "" and out["meta_comment"] == "" and out["webpage_url"] == "https://x/y"
+
+
+def test_long_description_tags_are_cut_on_a_character_boundary():
+    description = "\u20ac" * 70_000  # 205 KiB of 3-byte characters; byte 16384 is mid-character
+    info = {"title": "t", "description": description}
+    out = with_capped_description(info)
+    tag = out["meta_description"]
+    assert MAX_DESCRIPTION_TAG_BYTES == 16 * 1024
+    assert len(tag.encode("utf-8")) == 16383 and description.startswith(tag)
+    assert out["meta_synopsis"] == tag and out["description"] == description
+    assert info == {"title": "t", "description": description}  # the input is untouched
+
+
+def test_description_cut_survives_lone_surrogates():
+    # The worker replaces lone surrogates after this step, so it must not trip on them.
+    assert with_capped_description({"description": "\ud800" * 10_000})["meta_description"] == "\ud800" * 5461
+
+
+def test_short_or_missing_description_adds_no_tags():
+    for info in ({"description": "x" * MAX_DESCRIPTION_TAG_BYTES}, {"description": None}, {}):
+        assert with_capped_description(info) == info
+
+
+def test_ffmpeg_metadata_writes_the_capped_description():
+    from yt_dlp.postprocessor import FFmpegMetadataPP
+
+    info = with_capped_description(without_source_link(
+        {"title": "t", "description": "a" * 200_000, "webpage_url": "https://x/y"}))
+    pp = FFmpegMetadataPP(yt_dlp.YoutubeDL({"quiet": True}), add_chapters=False)
+    args = dict(v.split("=", 1) for k, v in pp._get_metadata_opts(info) if k == "-metadata")
+    assert args["description"] == args["synopsis"] == "a" * MAX_DESCRIPTION_TAG_BYTES
+    assert args["purl"] == args["comment"] == ""
+
+
+# acodec -> is it AAC. Not AAC: MP3 in MP4 (mp4a.40.32-34, mp4a.69, mp4a.6B), AC-3 and
+# E-AC-3 (mp4a.a5, mp4a.a6), Opus (mp4a.ad), and an unknown codec (None).
+AAC_CASES = {
+    "mp4a.40.2": True, "MP4A.40.2": True, "mp4a.40.5": True, "mp4a.40.29": True, "aac": True, "AAC": True,
+    "mp4a": True, "mp4a.66": True, "mp4a.67": True, "mp4a.68": True,
+    "mp4a.40.32": False, "mp4a.40.33": False, "mp4a.40.34": False, "mp4a.69": False, "mp4a.6B": False,
+    "mp4a.a5": False, "mp4a.a6": False, "mp4a.ad": False, "mp4a.40": False, "opus": False, "mp3": False,
+    None: False,
+}
+
+
+def test_m4a_flag_needs_known_aac():
+    f = lambda **k: {"url": "https://x/f", "protocol": "https", **k}
+    for acodec, aac in AAC_CASES.items():
+        assert inspect_payload({"formats": [f(vcodec="none", acodec=acodec)]})["audio"]["m4a"] is aac, acodec
+    assert inspect_payload({"formats": [f(vcodec=None, acodec=None)]})["audio"]["m4a"] is False
+
+
+def test_m4a_selector_takes_exactly_what_inspect_calls_aac():
+    select = yt_dlp.YoutubeDL({"quiet": True}).build_format_selector(output_opts("m4a", "best")["format"])
+    pick = lambda formats: [x["format_id"] for x in select(
+        {"formats": formats, "incomplete_formats": False, "has_merged_format": False})]
+    for acodec, aac in AAC_CASES.items():
+        assert pick([f("a", None, None, "none", acodec, "m4a")]) == (["a"] if aac else []), acodec
+    # No AAC-only audio: the b[...] half takes a combined format with AAC.
+    assert pick([f("o", None, None, "none", "opus", "webm"), f("c", 640, 360, "avc1", "aac", "mp4")]) == ["c"]
+
+
+def test_m4a_opts_copy_aac():
+    aac = "(?i)^(?:aac|mp4a|mp4a[.]40[.](?!3[234]$)[0-9]+|mp4a[.]6[678])$"
+    o = output_opts("m4a", "best")
+    assert o["format"] == f"ba[acodec~='{aac}']/b[acodec~='{aac}']"
+    assert o["postprocessors"] == [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}, TAGS_PP]
+
+
+def test_track_available():
+    p = {"video": {"available": False}, "audio": {"available": True, "m4a": False}}
+    assert [track_available(p, o) for o in ("video", "audio", "m4a")] == [False, True, False]
+
+
+V = lambda side, codec, fps=None: {"url": "https://x/v", "protocol": "https", "width": side * 16 // 9,
+                                   "height": side, "vcodec": codec, "acodec": "none", "fps": fps}
+
+
+def test_best_label_cases():
+    assert best_label([V(2160, "av01.0.12M.08", 60), V(2160, "vp09.00.51.08", 60),
+                       V(2160, "vp09.00.51.08", 30), V(1080, "avc1.640028", 60)]) == "Best (2160p60 · AV1/VP9)"
+    assert best_label([V(1080, "avc1.64001F", 30)]) == "Best (1080p · H.264)"
+    assert best_label([V(1080, "avc1.64001F", 50)]) == "Best (1080p50 · H.264)"
+    assert best_label([V(1080, "avc1.64001F", 59.94)]) == "Best (1080p60 · H.264)"
+    assert best_label([V(1080, None)]) == "Best (1080p)"
+    assert best_label([V(1080, "avc1"), V(1080, "vp8")]) == "Best (1080p)"
+    assert best_label([{"url": "https://x/v", "vcodec": None}]) == "Best"
+
+
+def test_codec_family():
+    assert [codec_family(c) for c in ("AV01.0", "vp9", "hvc1.1", "hevc", "avc3.x", "h264", "vp8", None)] == [
+        "AV1", "VP9", "H.265", "H.265", "H.264", "H.264", None, None]

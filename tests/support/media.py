@@ -36,17 +36,38 @@ def _ffmpeg(args: list[str], cwd: Path) -> None:
         raise RuntimeError(f"ffmpeg {' '.join(args)} failed:\n{proc.stderr}")
 
 
+def _master(playlist: str, codecs: str) -> str:
+    return f'#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=70000,CODECS="{codecs}"\n{playlist}\n'
+
+
 def make_media(dir: Path) -> dict[str, Path]:
     """Write the test media into `dir`; return {relative name: path}."""
     _ffmpeg([*_VIDEO_SRC, *_AUDIO_SRC, "-t", "2", "-map", "0:v", "-map", "1:a",
              *_H264, "-c:a", "aac", "-movflags", "+faststart", "sample.mp4"], dir)
+    _ffmpeg([*_VIDEO_SRC, *_AUDIO_SRC, "-t", "2", "-map", "0:v", "-map", "1:a",
+             *_H264, "-c:a", "aac", "-movflags", "+faststart",
+             "-metadata", "comment=http://leak.example/x", "tagged.mp4"], dir)
     _ffmpeg([*_VIDEO_SRC, "-t", "2", *_H264, "-movflags", "+faststart", "video_only.mp4"], dir)
     _ffmpeg([*_AUDIO_SRC, "-t", "2", "-c:a", "libmp3lame", "-q:a", "4", "sample.mp3"], dir)
+    for image in ("cover.jpg", "cover.png"):
+        _ffmpeg(["-f", "lavfi", "-i", "color=c=red:size=64x64", "-frames:v", "1", image], dir)
+    (dir / "junk.jpg").write_bytes(b"not an image")
+    (dir / "big.jpg").write_bytes(b"\xff\xd8\xff\xe0" + bytes(64 * 1024))  # 32 s through /slow/
     (dir / "big.mp4").write_bytes(os.urandom(3 * 1024 * 1024))
     hls = dir / "hls"
     hls.mkdir()
     _ffmpeg(_HLS, hls)
-    names = ["sample.mp4", "video_only.mp4", "sample.mp3", "big.mp4", "hls/master.m3u8"]
+    aac = hls / "aac"
+    aac.mkdir()
+    _ffmpeg([*_AUDIO_SRC, "-t", "4", "-c:a", "aac", "-b:a", "64k", "-f", "hls", "-hls_time", "2",
+             "-hls_playlist_type", "vod", "-hls_segment_filename", "a_%03d.ts", "a.m3u8"], aac)
+    (aac / "master.m3u8").write_text(_master("a.m3u8", "mp4a.40.2"))
+    opus = hls / "opus"
+    opus.mkdir()
+    (opus / "master.m3u8").write_text(_master("../aac/a.m3u8", "opus"))
+    names = ["sample.mp4", "tagged.mp4", "video_only.mp4", "sample.mp3",
+             "cover.jpg", "cover.png", "junk.jpg", "big.jpg", "big.mp4", "hls/master.m3u8",
+             "hls/aac/master.m3u8", "hls/opus/master.m3u8"]
     out = {name: dir / name for name in names}
     missing = [name for name, path in out.items() if not path.is_file()]
     if missing:

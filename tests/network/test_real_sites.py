@@ -13,6 +13,8 @@ from pathlib import Path
 
 import httpx
 import pytest
+from mutagen.id3 import ID3
+from mutagen.mp4 import MP4
 
 from tests.network import urls
 
@@ -94,6 +96,32 @@ def test_youtube_inspect_and_480p_and_mp3(client, tmp_path):
     probe = _probe(_download(client, audio, tmp_path))
     assert _codecs(probe, "audio") == ["mp3"]
     assert "mp3" in probe["format"]["format_name"]
+
+
+def test_youtube_m4a_and_tags_and_cover(client, tmp_path):
+    info = _inspect(client, urls.YOUTUBE)
+    assert info["audio"]["m4a"] is True
+    best = next(q for q in info["video"]["qualities"] if q["id"] == "best")
+    assert best["label"].startswith("Best (")
+
+    m4a = _run_job(client, urls.YOUTUBE, "m4a")
+    path = _download(client, m4a, tmp_path)
+    assert _codecs(_probe(path), "audio") == ["aac"]
+    tags = MP4(path).tags
+    assert tags["\xa9nam"] and tags["\xa9nam"][0]
+    assert tags["\xa9ART"] and tags["\xa9ART"][0]
+    assert tags["covr"]
+    for key, values in tags.items():
+        if key == "covr":
+            continue
+        for value in values:
+            text = value if isinstance(value, str) else str(value)
+            assert "youtube.com/watch" not in text and "youtu.be" not in text, (key, text[:200])
+
+    mp3 = _run_job(client, urls.YOUTUBE, "audio")
+    id3 = ID3(_download(client, mp3, tmp_path))
+    assert id3.getall("TIT2") and id3.getall("TPE1")
+    assert len(id3.getall("APIC")) == 1
 
 
 def test_youtu_be_short_link_inspects(client):

@@ -104,6 +104,14 @@ check "MP3 from FLAC"                  o4.mp3     "mp3"        -i s.flac $MP3
 check "MP3 from AC-3 in MKV"           o5.mp3     "mp3"        -i ac3.mkv $MP3
 got=$(/app/app/bin/ffprobe -v error -show_entries stream=codec_name -of csv=p=0 vp9.webm | sort | xargs)
 if [ "$got" = "opus vp9" ]; then echo "PASS  ffprobe reads WebM"; else echo "FAIL  ffprobe reads WebM: got '$got'"; failed=1; fi
+# Chapters and tags: yt-dlp's FFmpegMetadata feeds an ;FFMETADATA1 file back in as a second input.
+printf ';FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=1000\ntitle=One\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=1000\nEND=2000\ntitle=Two\n' > ch.meta
+if /app/app/bin/ffmpeg -hide_banner -loglevel error -nostdin -y -i s.mp4 -i ch.meta -map 0 -dn -ignore_unknown -c copy -map_metadata 1 -metadata title=Tagged ch.mp4 2>err.txt </dev/null \
+   && [ "$(ffprobe -v error -show_chapters -of csv=p=0 ch.mp4 | wc -l | tr -d ' ')" = 2 ]; then
+  echo "PASS  chapters via ffmetadata"
+else
+  echo "FAIL  chapters via ffmetadata: $(tail -n 2 err.txt | tr '\n' ' ')"; failed=1
+fi
 [ "$failed" = 0 ] || exit 1
 
 echo "==> integration tests against the minimal ffmpeg"

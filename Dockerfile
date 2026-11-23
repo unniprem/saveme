@@ -67,7 +67,7 @@ RUN ./configure \
         --enable-zlib \
         --enable-libmp3lame \
         --enable-protocol=file,pipe \
-        --enable-demuxer=mov,matroska,mpegts,flv,avi,ogg,mp3,aac,flac,wav \
+        --enable-demuxer=mov,matroska,mpegts,flv,avi,ogg,mp3,aac,flac,wav,ffmetadata \
         --enable-muxer=mp4,ipod,mov,matroska,webm,mp3 \
         --enable-parsers \
         --enable-bsfs \

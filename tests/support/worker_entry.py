@@ -1,8 +1,8 @@
 """Test-only worker entry (`python -m tests.support.worker_entry`).
 
 Same as `python -m app.worker` (memory limit included) except that the guard's
-policy also allows the loopback media server (127.0.0.1). Production never accepts an
-injected policy.
+policy also allows the loopback media server (127.0.0.1), and SAVEME_TEST_COVER_BUDGET
+(seconds) can shorten the cover-art budget. Production never accepts an injected policy.
 """
 import os
 import sys
@@ -19,6 +19,11 @@ def main() -> None:
     ffmpeg_dir = os.environ.get("SAVEME_TEST_FFMPEG_DIR")
     if ffmpeg_dir:  # where the app/bin wrappers should find the real ffmpeg/ffprobe
         os.environ["SAVEME_FFMPEG_DIR"] = ffmpeg_dir
+    cover_budget = os.environ.get("SAVEME_TEST_COVER_BUDGET")
+    if cover_budget:  # a stalled thumbnail then costs a test little time
+        from app import cover
+
+        cover.COVER_BUDGET_SECONDS = float(cover_budget)
     from app import worker
 
     with worker.protocol_out() as out:

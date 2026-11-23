@@ -45,3 +45,8 @@ def test_lone_surrogates_replaced(title, expected):
     name.encode("utf-8")
     header = content_disposition(name)
     header.encode("latin-1")  # a header value must be encodable
+
+
+def test_m4a_name_and_type():
+    assert sanitize_filename("Song", "m4a") == "Song.m4a"
+    assert media_type_for("m4a") == "audio/mp4"

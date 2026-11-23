@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-Output = Literal["video", "audio"]
+Output = Literal["video", "audio", "m4a"]
 Quality = Literal["best", "1080", "720", "480"]
 
 

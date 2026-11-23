@@ -40,7 +40,7 @@ FOOTER = ("Only download media you have the right to save. Works with many sites
           "— compatibility depends on the source.")
 INSPECT_RESULT = {"title": "Stub", "video": {"available": True,
                                               "qualities": [{"id": "best", "label": "Best"}]},
-                  "audio": {"available": True}}
+                  "audio": {"available": True, "m4a": True}}
 
 
 # --- Helpers ---------------------------------------------------------------
@@ -290,7 +290,7 @@ async def test_extra_fields_rejected(client, stub, path, body):
 
 
 @pytest.mark.parametrize("body, message", [
-    ({"url": URL, "output": "gif"}, "output must be one of: video, audio"),
+    ({"url": URL, "output": "gif"}, "output must be one of: video, audio, m4a"),
     ({"url": URL, "output": "video", "quality": "4k"},
      "quality must be one of: best, 1080, 720, 480"),
     ({"url": URL}, "output is required"),
@@ -301,6 +301,11 @@ async def test_bad_enum_message_names_field(client, stub, body, message):
     assert r.status_code == 400
     assert r.json() == error_body("invalid_request", message)
     assert stub.calls == []
+
+
+async def test_m4a_output_is_accepted(client, stub):
+    r = await client.post("/api/jobs", json={"url": URL, "output": "m4a"})
+    assert r.status_code == 202
 
 
 @pytest.mark.parametrize("content", [b"{not json", b"[1, 2]", b""])

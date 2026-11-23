@@ -145,6 +145,22 @@ def test_readme_hedges_the_reddit_cause():
     assert "This is why some Reddit links fail" not in text
 
 
+def test_readme_states_when_files_get_cover_art():
+    # Cover art is best effort, so the README must not promise it unconditionally.
+    text = _read("README.md")
+    lines = text.splitlines()
+    assert "carry the video's thumbnail as cover art" not in text
+    feature = next(line for line in lines if line.startswith("- Files are tagged"))
+    assert "JPEG or PNG" in feature
+    usage = next(line for line in lines if line.startswith("**Tags and cover art.**"))
+    for condition in ("best effort", "JPEG or PNG", "15 seconds", "MKV or WebM"):
+        assert condition in usage, condition
+    security = next(line for line in lines if line.startswith("**Cover art is handled outside FFmpeg.**"))
+    assert "15 seconds" in security and security.endswith("A failed cover never fails a download.")
+    m4a = next(line for line in lines if line.startswith("**M4A audio (original).**"))
+    assert "says its audio is AAC" in m4a
+
+
 def _ffmpeg_configure() -> str:
     text = _read("Dockerfile")
     stage = text.split("\nFROM debian:trixie-slim AS ffmpeg\n", 1)[1].split("\nFROM ", 1)[0]
@@ -172,6 +188,10 @@ def test_ffmpeg_build_reads_local_files_only():
     demuxers = re.search(r"--enable-demuxer=(\S+)", flags).group(1).split(",")
     # These open other files or URLs named inside the media.
     assert not {"hls", "dash", "concat", "image2", "tee"} & set(demuxers)
+    assert "ffmetadata" in demuxers
+    decoders = re.search(r"--enable-decoder=(\S+)", flags).group(1).split(",")
+    images = {"mjpeg", "png", "webp", "image2", "jpeg_pipe", "png_pipe", "webp_pipe", "bmp", "gif"}
+    assert not images & (set(demuxers) | set(decoders))
     # Debian's ffmpeg package must not come back in the runtime stage.
     runtime = _read("Dockerfile").rsplit("\nFROM ", 1)[1]
     assert not re.search(r"apt-get install[^\n]*\bffmpeg\b", runtime)

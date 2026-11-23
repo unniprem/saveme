@@ -2,6 +2,62 @@
 
 ---
 
+## 2026-11-23 19:21 IST — Session: File tags, cover art and M4A audio
+
+### Summary
+
+The owner asked me to execute the latest plan (`docs/superpowers/plans/2026-11-23-file-tags-and-m4a.md`). It was run task by task with a fresh implementer and a reviewer per task, then a whole-branch review and one fix wave, all on `feature/file-tags-m4a`. Saved files now carry title, artist, date, description and chapters, never the source link (`purl`/`comment` are blanked). They also get the source's JPEG or PNG thumbnail as cover art. The worker fetches it through its guarded `urlopen` (at most 5 MB, at most 3 URLs, 5 s per request, 15 s overall) and mutagen embeds it, so FFmpeg never reads an image. A new "M4A audio (original)" choice (`output: "m4a"`) stream-copies AAC and appears only when the source really has AAC; `"audio"` still means MP3. "Best" now reads like `Best (2160p60 · AV1/VP9)`. The FFmpeg build gained only the `ffmetadata` demuxer.
+
+**Verified:**
+- Offline suite at `a57f600`: 471 passed, 2 skipped, 7 deselected.
+- `scripts/docker-ffmpeg-check.sh` on an image built from `a57f600`: every case passed, including "chapters via ffmetadata", and 270 integration tests passed against the minimal FFmpeg (Linux).
+- At `0176c82`, in an isolated Compose project on port 8001: the smoke test passed, and `pytest -m network` passed 6 tests, including the new YouTube M4A/tags/cover test. Reddit failed with `login_required` as before. That project was then removed.
+- A real-browser check at 375 px and desktop, light and dark: the M4A chip shows for YouTube and not for a direct MP4, and a pre-upgrade stored MP3 job still shows "MP3".
+- A real YouTube M4A came out with title, artist, date and a cover. The cover worked only after `7f94a67`.
+
+### Changes Made
+
+| Commit    | Type | Description |
+| --------- | ---- | ----------- |
+| `eb9980b` | feat | Tag downloads with title, artist, date and chapters, never the source link |
+| `7e2c94b` | feat | Embed the source thumbnail as cover art with mutagen, best effort |
+| `c9ecb8c` | feat | Offer M4A audio that stream-copies the source's AAC |
+| `23af5c6` | feat | Label Best with its real size, frame rate and codecs |
+| `81c2d0b` | feat | Add the M4A audio choice to the page |
+| `7f94a67` | fix | Always try the source's own thumbnail for cover art |
+| `0176c82` | docs | Describe M4A, file tags and cover art |
+| `a3a4904` | fix | Bound the cover-art fetch with an overall time budget |
+| `8de7a91` | fix | Cap the description written into tags at 16 KiB |
+| `1cd50f9` | fix | Offer and select M4A only for audio that really is AAC |
+| `a57f600` | docs | State when files get cover art |
+
+### Key Decisions
+
+- **The source's own `thumbnail` is always one of the 3 cover tries.** yt-dlp guesses YouTube's high-res names (`maxresdefault`, `hq720`, `sddefault`), and on older videos all three 404. When the source's own `thumbnail` isn't already among the best 3, the tries are the best 2 plus it. Newer videos still get maxres first.
+- **The cover fetch runs in a daemon thread with a 15 s join, not SIGALRM.** urllib3 blocks until a whole block arrives, and `socket_timeout` limits only each receive, so a slow host could hold a finished job until it timed out. Signals are process-wide. An abandoned thread holds at most 5 MB, writes nothing and dies with the worker.
+- **"Has AAC" is one case-insensitive pattern, used for both inspect and the format selector.** It accepts `aac`, bare `mp4a`, `mp4a.40.<n>` except 32–34, and `mp4a.66`–`68`. The spec's goal is "offered only when the source has AAC". The plan's `^=mp4a` also matched MP3, AC-3 and Opus in MP4, and the build has no AAC encoder to fall back on, so those jobs would fail after the whole download. This overrides the plan's exact selector string, and the spec and plan still show the old one.
+- **The description in tags is capped at 16 KiB.** FFmpeg gets each tag as one argument, and Linux limits one argument to 128 KiB. Without the cap, a very long description would turn a link that used to work into `internal`.
+- **Every M4A FFmpeg step reads "Preparing M4A".** The AAC HLS path runs `FixupM3u8` before `ExtractAudio`, and "Converting to MP4" on an M4A job would mislead.
+- **An invalid `output` stays a 400 `invalid_request`.** The plan said 422, but that was never the app's behaviour, and changing it would break clients.
+- **Docker checks ran in an isolated Compose project (`saveme-ftest`, port 8001).** The plan's bare `docker compose up -d --build` would have replaced the live `saveme-saveme-1` container with an unmerged branch.
+
+### Issues Encountered
+
+- **No cover on a real YouTube download.** The browser check in Task 5 caught this, and the guessed-names root cause was found with a probe. Fixed in `7f94a67`.
+- **The whole-branch review found an unbounded cover fetch.** A 1 byte/s host could keep a finished job busy until `MAX_JOB_SECONDS`. Fixed in `a3a4904`, along with three smaller fixes.
+- **Tagging rewrites the file,** so `test_resume_continues_a_real_partial_download` could no longer compare bytes. It now checks for an MP4 header, and its Range assertion still proves the resume.
+- **A lone-surrogate title crashed FFmpeg's arguments** (`UnicodeEncodeError`). `info` is now scrubbed before processing, through `app.runner`'s private `_replace_lone_surrogates`. That should move to a shared module.
+- **The permission check denied a subagent's `sed` edit of one test assertion** (`test_worker_inspect.py`, "Best (360p)" → "Best (360p · H.264)"). The owner approved the edit and it was redone with Edit.
+- **Known limitations:**
+  - Only the description is capped, so a huge title or tag list could still exceed the argument limit.
+  - The AAC pattern still admits rare non-AAC `mp4a.40.<n>` values such as ALS (36).
+  - An abandoned cover thread could still print a log line.
+- **Not done:**
+  - `saveme:local` now points at this branch's build, while the live `saveme-saveme-1` container still runs the old image.
+  - Nothing is pushed or merged.
+
+---
+
 ## 2026-11-10 17:26 IST — Session: Security hardening (#3–#8)
 
 ### Summary

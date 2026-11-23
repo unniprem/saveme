@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>A private, self-hosted media downloader.</strong><br>
-  Paste a link, see what's there, and save it as an MP4 video or an MP3, all on your own machine.
+  Paste a link, see what's there, and save it as an MP4 video, an MP3 or an M4A, all on your own machine.
 </p>
 
 <p align="center">
@@ -61,7 +61,8 @@ SaveMe sits in between: yt-dlp's reach, behind a one-page interface, running on 
 
 - Inspect a link before downloading: title, length, thumbnail and the qualities that exist
 - Video as MP4: **Best**, **1080p**, **720p** or **480p**
-- Audio as **MP3** (LAME VBR, about 190 kbps)
+- Audio as **MP3** (LAME VBR, about 190 kbps), or as **M4A** that keeps the source's original AAC audio with no re-encoding, when the source has it
+- Files are tagged with the title, artist, date, description and chapters, and get the source's thumbnail as cover art when it's a JPEG or PNG
 - Live progress, including the separate video and audio tracks many sites send
 - **Cancel** a download and **resume** it within 5 minutes, even after a page reload
 - A bounded queue, with limits on file size, job time and disk use
@@ -175,10 +176,16 @@ If you ran SaveMe without Docker (see [Development](#development)), deleting the
 ## Usage
 
 1. **Paste a link and choose Fetch.** SaveMe shows the title, length, thumbnail and the formats available.
-2. **Pick a format** (a video quality, or **MP3 audio**) and choose **Download**.
+2. **Pick a format** (a video quality, **MP3 audio** or **M4A audio (original)**) and choose **Download**.
 3. **Save the file.** When it's ready, your browser saves it straight away. If the browser holds it back, use the **Save file** link.
 
 **Video qualities.** **1080p**, **720p** and **480p** pick the highest H.264 version at or below that size, so the file plays almost everywhere. The default is the highest of these the source offers. **Best** is the highest resolution regardless of codec; it may be VP9 or AV1, which VLC and browsers play but QuickTime may not.
+
+**Best label.** The **Best** option shows what you'd get, for example `Best (2160p60 · AV1/VP9)`. That is the short side of the picture (2160p), the frame rate when it's above 30 (60), and the codec families available at that size and frame rate (AV1 or VP9). If the source doesn't say what a codec is, the codec part is left out, as in `Best (1080p)`.
+
+**M4A audio (original).** Shown after **MP3 audio**, and only when the source says its audio is AAC. SaveMe copies that audio into an `.m4a` file as it is, so it's quick and loses no quality. If the source has no AAC audio, or doesn't say what its audio is, the choice doesn't appear; use **MP3 audio** instead.
+
+**Tags and cover art.** Every download is tagged with the title, artist, date, description and chapters when the source provides them. Cover art is best effort: when the source has a JPEG or PNG thumbnail, it's embedded in MP3, M4A and MP4 files. The file is saved without a cover if there's no such thumbnail, if it can't be fetched within 15 seconds, or if it isn't a usable image. A video delivered as MKV or WebM (because it couldn't be converted to MP4) never gets a cover. The link a file came from is never written into it.
 
 **Saving.** Each file can be saved once, by one download at a time. It's deleted after it's saved, or after `JOB_TTL_MINUTES` (30 by default) if it never is. If a save is interrupted, or the browser takes nothing for a minute, the server stops sending and keeps the file, so **Save file** works again.
 
@@ -190,7 +197,7 @@ SaveMe works with sites [yt-dlp supports](https://github.com/yt-dlp/yt-dlp/blob/
 
 | Source | Status | Notes |
 |---|---|---|
-| YouTube | ✅ Verified | Inspect, 480p MP4 (H.264) and MP3 download. `youtu.be` short links: inspect verified. |
+| YouTube | ✅ Verified | Inspect, 480p MP4 (H.264), MP3 and M4A download, with tags and cover art. `youtu.be` short links: inspect verified. |
 | Direct media links (e.g. `.mp4`) | ✅ Verified | Inspect and download. |
 | Facebook, Instagram, X/Twitter | ⚠️ Best effort | yt-dlp has extractors, but they're untested here and often need a login. |
 | Reddit | ⚠️ Often fails | Reddit refused the test post with 403 ("requires a login"). The likely cause is that Reddit refuses clients that don't look like a browser: yt-dlp asks for browser impersonation for Reddit, which needs `curl_cffi`, and SaveMe deliberately leaves that out (see [Security](#security)). |
@@ -256,6 +263,10 @@ SaveMe fetches whatever URL it's given, so it's designed so that a link can't be
 - FFmpeg is built from source with only what the app needs: no network protocols, no HLS/DASH/concat demuxers and few decoders. The `Dockerfile` lists exactly what's included.
 - Proxies are disabled, and `curl_cffi` isn't installed, because its networking runs in C and would bypass the guard.
 - Deno, which yt-dlp needs for YouTube, runs without network permission.
+
+**Cover art is handled outside FFmpeg.** The worker fetches the thumbnail through the same guard as every other request. It accepts JPEG or PNG only (judged by the file's first bytes), at most 5 MB, and tries at most three addresses, each request with a 5-second network timeout and the whole fetch within 15 seconds. The image is then written into the file by mutagen, a Python tag library, so FFmpeg never reads it and the FFmpeg build has no image decoders. A failed cover never fails a download.
+
+**Files never carry their source link.** The page address and any `comment` tag the source file arrived with are blanked before tagging. The only addition to the FFmpeg build for tags is the `ffmetadata` demuxer, which reads the chapter list.
 
 **One bad link fails only its own job.** A worker reads at most 16 MB from any page, manifest or API response (media downloads aren't affected). Each worker process, including the Deno and FFmpeg it starts, is limited to 1 GB of memory, so a hostile page can't use up the memory the rest of the app shares. The memory limit applies in the Docker image; macOS doesn't allow it, so a native macOS run goes without. The API also caps request bodies at 64 KB, counts link lookups against the inspection and queue limits, and accepts a POST only from the page's own origin.
 

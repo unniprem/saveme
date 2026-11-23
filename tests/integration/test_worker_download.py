@@ -6,9 +6,13 @@ import io
 import json
 import shutil
 import subprocess
+import time
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
+from mutagen.id3 import ID3
+from mutagen.mp4 import MP4
 
 from app.errors import CATALOG, AppError, too_large_message
 from tests.support.media import real_ffmpeg
@@ -51,6 +55,21 @@ def probe(path: Path) -> dict:
                            "stream=codec_name,codec_type:format=duration", "-of", "json", str(path)],
                           capture_output=True, text=True, timeout=30, check=True)
     return json.loads(proc.stdout)
+
+
+def tags(path: Path) -> dict[str, str]:
+    """Container tags by the real ffprobe, keys lower-cased; {} when there are none."""
+    proc = subprocess.run([shutil.which("ffprobe"), "-v", "error", "-show_entries", "format_tags",
+                           "-of", "json", str(path)], capture_output=True, text=True, timeout=30, check=True)
+    found = json.loads(proc.stdout).get("format", {}).get("tags", {})
+    return {k.lower(): v for k, v in found.items()}
+
+
+def probe_streams_with_bitrate(path: Path) -> list[dict]:
+    proc = subprocess.run([shutil.which("ffprobe"), "-v", "error", "-show_entries",
+                           "stream=codec_name,bit_rate", "-of", "json", str(path)],
+                          capture_output=True, text=True, timeout=30, check=True)
+    return json.loads(proc.stdout)["streams"]
 
 
 def progress_of(events: list[dict]) -> list[dict]:
@@ -97,6 +116,27 @@ def test_hls_merge_to_mp4(media_server, job):
 def test_quality_downgrade_notice(media_server, job):
     data = result_of(*download(media_server, "/hls/master.m3u8", job, quality="720"))
     assert data["notice"] == "720p wasn't available; downloaded 360p."
+
+
+def test_m4a_is_a_stream_copy_of_aac(media_server, job):
+    events, rc = download(media_server, "/hls/aac/master.m3u8", job, output="m4a")
+    data = result_of(events, rc)
+    assert data["file"] == "media.m4a" and data["ext"] == "m4a"
+    s = probe_streams_with_bitrate(job / "media.m4a")  # 64k source; a re-encode would be ~128k
+    assert [x["codec_name"] for x in s] == ["aac"] and int(s[0]["bit_rate"]) < 80_000
+    assert "Preparing M4A" in phases_of(events) and "Converting to MP3" not in phases_of(events)
+    assert "Converting to MP4" not in phases_of(events)
+    assert listing(job) == ["media.m4a"]
+
+
+def test_m4a_without_aac_fails_before_download(media_server, job):
+    before = media_server.hits["/hls/aac/a_000.ts"]
+    assert error_of(*download(media_server, "/hls/opus/master.m3u8", job, output="m4a"))["code"] == "no_audio"
+    assert media_server.hits["/hls/aac/a_000.ts"] == before and listing(job) == []
+
+
+def test_m4a_from_unknown_codec_direct_link_is_refused(media_server, job):
+    assert error_of(*download(media_server, "/media/sample.mp4", job, output="m4a"))["code"] == "no_audio"
 
 
 def test_audio_from_video_only_fails(media_server, job):
@@ -162,8 +202,87 @@ def test_hostile_title_stays_in_workdir(media_server, job, tmp_path):
     data = result_of(*download(media_server, path, job))
     assert data["file"] == "media.mp4" and data["title"] == HOSTILE_TITLE
     assert listing(job) == ["media.mp4"]
+    assert tags(job / "media.mp4")["title"] == HOSTILE_TITLE
     assert listing(tmp_path) == ["job"]
     assert {d: listing(d) for d in outside} == outside
+
+
+def test_mp3_and_mp4_carry_title_and_no_source_link(media_server, job, tmp_path):
+    page = "/page?title=Tagged%20Song&video=/media/sample.mp4"
+    events, rc = download(media_server, page, job, output="audio")
+    result_of(events, rc)
+    t = tags(job / "media.mp3")
+    assert t["title"] == "Tagged Song"
+    assert not any(media_server.url("") in v for v in t.values())
+    assert "Adding tags" in phases_of(events)
+    assert listing(job) == ["media.mp3"]          # no .meta / .temp files left
+    other = tmp_path / "v"
+    other.mkdir()
+    result_of(*download(media_server, page, other))
+    t = tags(other / "media.mp4")
+    assert t["title"] == "Tagged Song" and not any(media_server.url("") in v for v in t.values())
+
+
+def test_huge_description_is_cut_in_the_tags(media_server, job):
+    # 205 KiB in one ffmpeg argument is over Linux's 128 KiB limit (E2BIG). macOS has no
+    # such limit, so this checks the cut rather than the failure.
+    page = "/page?title=T&video=/media/sample.mp4&desc=%E2%82%AC&desc_times=70000"
+    result_of(*download(media_server, page, job))
+    t = tags(job / "media.mp4")
+    assert t["description"] == t["synopsis"] == "\u20ac" * 5461  # 16383 bytes of UTF-8
+
+
+def test_source_comment_link_is_removed(media_server, job):
+    result_of(*download(media_server, "/media/tagged.mp4", job))
+    assert not any("leak.example" in v for v in tags(job / "media.mp4").values())
+
+
+def cover_page(media_server, thumb: str) -> str:
+    return f"/page?title=T&video=/media/sample.mp4&thumb={quote(thumb, safe='')}"
+
+
+def test_mp3_gets_jpeg_cover(media_server, media, job):
+    result_of(*download(media_server, cover_page(media_server, media_server.url("/media/cover.jpg")),
+                        job, output="audio"))
+    assert [f.data for f in ID3(job / "media.mp3").getall("APIC")] == [media["cover.jpg"].read_bytes()]
+    assert listing(job) == ["media.mp3"]
+
+
+def test_mp4_gets_png_cover(media_server, media, job):
+    result_of(*download(media_server, cover_page(media_server, media_server.url("/media/cover.png")), job))
+    assert [bytes(c) for c in MP4(job / "media.mp4").tags["covr"]] == [media["cover.png"].read_bytes()]
+
+
+def test_webp_thumbnail_is_never_fetched(media_server, job):
+    result_of(*download(media_server, cover_page(media_server, media_server.url("/media/cover.webp")), job))
+    assert "covr" not in (MP4(job / "media.mp4").tags or {})
+    assert media_server.hits["/media/cover.webp"] == 0
+
+
+@pytest.mark.parametrize("thumb", ["/media/junk.jpg", "/missing.jpg"])
+def test_junk_and_missing_thumbnails_still_deliver(media_server, job, thumb):
+    result_of(*download(media_server, cover_page(media_server, media_server.url(thumb)), job))
+    assert "covr" not in (MP4(job / "media.mp4").tags or {})
+    assert listing(job) == ["media.mp4"]
+
+
+def test_blocked_thumbnail_still_delivers(media_server, job):
+    events, rc = download(media_server, cover_page(media_server, "http://169.254.169.254/x.jpg"), job)
+    result_of(events, rc)
+    assert not any(e["event"] == "error" for e in events)
+    assert "covr" not in (MP4(job / "media.mp4").tags or {})
+
+
+def test_trickling_thumbnail_still_delivers_on_time(media_server, job, monkeypatch):
+    # /slow/ sends 1 KiB every 0.5 s, so no read ever times out and the 64 KiB image would
+    # take 32 s. The worker gives up after its cover budget (1 s here) instead.
+    monkeypatch.setenv("SAVEME_TEST_COVER_BUDGET", "1")
+    start = time.monotonic()
+    result_of(*download(media_server, cover_page(media_server, media_server.url("/slow/big.jpg")), job))
+    assert time.monotonic() - start < 20
+    assert media_server.hits["/slow/big.jpg"] == 1
+    assert "covr" not in (MP4(job / "media.mp4").tags or {})
+    assert listing(job) == ["media.mp4"]
 
 
 def test_percent_only_with_exact_total(media_server, tmp_path):
@@ -280,6 +399,27 @@ def test_failed_mp4_remux(tmp_path, name, outcome):
     else:
         assert _to_mp4(src) == (src, outcome)
     assert listing(tmp_path) == [name]  # no half-written media.mp4
+
+
+def test_remux_to_mp4_keeps_chapters_and_title(tmp_path):
+    from app.worker import _to_mp4
+
+    meta = tmp_path / "ch.meta"
+    meta.write_text(";FFMETADATA1\ntitle=Kept\n"
+                    "[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=1000\ntitle=One\n"
+                    "[CHAPTER]\nTIMEBASE=1/1000\nSTART=1000\nEND=2000\ntitle=Two\n")
+    src = tmp_path / "media.mkv"
+    subprocess.run([real_ffmpeg(), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+                    "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25", "-i", str(meta),
+                    "-map_metadata", "1", "-map_chapters", "1", "-t", "2",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src)],
+                   check=True, capture_output=True, timeout=60)
+    dst, notice = _to_mp4(src)
+    assert dst.name == "media.mp4" and notice is None
+    proc = subprocess.run([shutil.which("ffprobe"), "-v", "error", "-show_chapters", "-of", "json", str(dst)],
+                          capture_output=True, text=True, timeout=30, check=True)
+    assert len(json.loads(proc.stdout)["chapters"]) == 2
+    assert tags(dst)["title"] == "Kept"
 
 
 @pytest.mark.parametrize("change", [

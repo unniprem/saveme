@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
 from urllib.parse import urlsplit
 
+from app.cover import cover_opener, embed_cover, fetch_cover
 from app.errors import BLOCKED_MARKER, AppError, classify_ytdlp_error, too_large_message
 from app.filenames import media_type_for
 from app.netguard import BlockedAddressError, check_url_syntax, install_connect_guard
@@ -46,7 +47,7 @@ _READ_BLOCK = 1024 * 1024
 # ffmpeg). Measured on a YouTube job (10 Nov 2026): deno peaks near 570 MiB, the worker
 # near 85 MiB, ffmpeg near 2 MiB.
 WORKER_MEMORY_BYTES = 1024 * 1024 * 1024
-_MISSING_TRACK = {"video": "no_video", "audio": "no_audio"}
+_MISSING_TRACK = {"video": "no_video", "audio": "no_audio", "m4a": "no_audio"}
 
 
 class _StderrLogger:
@@ -308,8 +309,10 @@ class _Phases:
             return
         if key == "Merger":
             self.phase("Merging video and audio")
+        elif key == "Metadata":
+            self.phase("Adding tags")
         else:
-            self.phase("Converting to MP3" if self._output == "audio" else "Converting to MP4")
+            self.phase({"audio": "Converting to MP3", "m4a": "Preparing M4A"}.get(self._output, "Converting to MP4"))
 
     def phase(self, detail: str) -> None:
         if detail != self._last:
@@ -451,10 +454,14 @@ def _download(url: str, output: str, quality: str, workdir: Path, max_bytes: int
               emit: Callable[[dict], None]) -> dict:
     from yt_dlp.utils import DownloadError, ExtractorError
 
-    from app.ytdl import audio_opts, base_opts, chosen_formats, downgrade_notice, inspect_payload, video_opts
+    from app.runner import _replace_lone_surrogates
+    from app.ytdl import (
+        base_opts, chosen_formats, downgrade_notice, inspect_payload, output_opts, track_available,
+        with_capped_description, without_source_link,
+    )
 
     progress, phases, logger = _Progress(emit, max_bytes), _Phases(emit, output), _DownloadLogger()
-    params = _ydl_params(base_opts(workdir), video_opts(quality) if output == "video" else audio_opts(),
+    params = _ydl_params(base_opts(workdir), output_opts(output, quality),
                          {"max_filesize": max_bytes, "progress_hooks": [progress],
                           "postprocessor_hooks": [phases]})
     params["logger"] = logger
@@ -462,10 +469,13 @@ def _download(url: str, output: str, quality: str, workdir: Path, max_bytes: int
         with _youtube_dl(params) as ydl:
             ydl.add_post_processor(_parts_recorder(progress), when="before_dl")
             info, playlist_notice = resolve(ydl, url)
+            # Tag values travel as ffmpeg arguments, which can't hold lone surrogates.
+            info = _replace_lone_surrogates(with_capped_description(without_source_link(info)))
             # Same availability rule as inspect: an unknown codec may hold the track.
-            if not inspect_payload(info)[output]["available"]:
+            if not track_available(inspect_payload(info), output):
                 raise AppError(_MISSING_TRACK[output])
             processed = ydl.process_ie_result(info, download=True)
+            cover = fetch_cover(cover_opener(ydl.urlopen), processed)
     except _TooLarge:
         raise AppError("too_large", too_large_message(max_bytes)) from None
     except (DownloadError, ExtractorError) as exc:
@@ -473,7 +483,7 @@ def _download(url: str, output: str, quality: str, workdir: Path, max_bytes: int
             raise  # a guard block anywhere in the text wins (classified as blocked_address)
         if _is_missing_format(exc):
             raise AppError(_MISSING_TRACK[output]) from exc
-        if output == "audio" and _lacks_audio(workdir):
+        if output in ("audio", "m4a") and _lacks_audio(workdir):
             raise AppError("no_audio") from exc
         raise
     if logger.oversize:
@@ -489,6 +499,8 @@ def _download(url: str, output: str, quality: str, workdir: Path, max_bytes: int
             phases.phase("Converting to MP4")
             final, notice = _to_mp4(final)
             notices.append(notice)
+    if cover:
+        embed_cover(final, *cover)
     title = processed.get("title")
     return {"file": final.name, "ext": final.suffix[1:], "title": title if isinstance(title, str) else None,
             "notice": " ".join(n for n in notices if n) or None}

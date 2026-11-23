@@ -21,6 +21,7 @@
   const ACTIVE = ["queued", "downloading", "converting"];
   const MB = 1024 * 1024;
   const AUDIO = "audio"; // the MP3 format choice; video choices are "video:<quality id>"
+  const M4A = "m4a"; // the original-AAC M4A choice, offered only when the source has known AAC audio
   const VIDEO_PREFIX = "video:";
 
   const MSG = {
@@ -167,7 +168,7 @@
           id: saved.id,
           url: str(saved.url),
           title: str(saved.title),
-          output: saved.output === "audio" ? "audio" : "video",
+          output: saved.output === "audio" || saved.output === "m4a" ? saved.output : "video",
           filename: str(saved.filename),
           autoSaved: saved.autoSaved === true,
         };
@@ -237,6 +238,7 @@
     const input = el.formats.querySelector("input:checked");
     if (!input || input.disabled) return null;
     if (input.value === AUDIO) return { output: "audio", quality: "best" };
+    if (input.value === M4A) return { output: "m4a", quality: "best" };
     return { output: "video", quality: input.value.slice(VIDEO_PREFIX.length) };
   }
 
@@ -286,7 +288,7 @@
       source: str(d.source),
       page: httpUrl(d.webpage_url),
       video: { available: Boolean(video.available), qualities, preferred: str(video.default) },
-      audio: { available: Boolean(audio.available) },
+      audio: { available: Boolean(audio.available), m4a: Boolean(audio.available) && audio.m4a === true },
       notices: Array.isArray(d.notices) ? d.notices.map(str).filter(Boolean) : [],
     };
   }
@@ -328,7 +330,7 @@
     show(el.durationLine, !hasThumb && hasDuration);
   }
 
-  // One radio "chip" per video quality, then MP3. The server's preferred quality starts checked.
+  // One radio "chip" per video quality, then MP3, then M4A when offered. The server's preferred quality starts checked.
   function renderFormats(info) {
     const chips = info.video.available
       ? info.video.qualities.map((q) => formatChip(VIDEO_PREFIX + q.id, q.label, false))
@@ -337,7 +339,8 @@
     const mp3Input = mp3.querySelector("input");
     mp3Input.disabled = !info.audio.available;
     if (mp3Input.disabled) mp3Input.setAttribute("aria-describedby", "format-note");
-    el.formats.replaceChildren(...chips, mp3);
+    const extra = info.audio.m4a ? [formatChip(M4A, "M4A audio (original)", true)] : [];
+    el.formats.replaceChildren(...chips, mp3, ...extra);
 
     const preferred = info.video.qualities.find((q) => q.id === info.video.preferred) || info.video.qualities[0];
     let pick = "";
@@ -392,6 +395,7 @@
     const { output, quality } = choice;
     if (output === "video" && !inspected.info.video.qualities.some((q) => q.id === quality)) return;
     if (output === "audio" && !inspected.info.audio.available) return;
+    if (output === "m4a" && !inspected.info.audio.m4a) return;
 
     const previous = state;
     const { url, info } = inspected;
@@ -660,7 +664,7 @@
 
   // Draws the whole job panel from one description, so no stale piece is left behind.
   function paintJob(p) {
-    setText(el.jobKind, job ? (job.output === "audio" ? "MP3" : "Video") : "");
+    setText(el.jobKind, job ? (job.output === "audio" ? "MP3" : job.output === "m4a" ? "M4A" : "Video") : "");
     setText(el.jobName, job ? job.title : "");
     setText(el.jobStatus, p.headline);
     setText(el.jobPercent, p.percent || "");
