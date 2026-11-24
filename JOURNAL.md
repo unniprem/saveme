@@ -68,6 +68,14 @@ The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merg
     - An MPEG-4 Part 2 upload (`Old camera.mp4`, which Chrome can't play: `error.code` 4) showed the note, disabled Set to playhead ×2 and Play clip, and ignored `I`. Typed times still exported it.
     - With a 60 s idle time, the keep-alive polled at 15 s gaps (6 in 100 s), and the source was still `ready` after 100 s.
 - Whole suite at `1f31a98`: `.venv/bin/pytest -q` gave **673 passed, 2 skipped, 7 deselected** (118 s), against the 599-passed baseline. The downloader's tests all still pass.
+- **Docker, at `4aaa323`.** The image was rebuilt as `saveme:clip-studio`. The live `saveme-saveme-1` (`saveme:local`) wasn't touched and stayed up.
+  - `scripts/docker-ffmpeg-check.sh saveme:clip-studio`: every matrix case passed, and **441 integration tests** passed inside the image against the minimal FFmpeg 9.0.2 (387 before), including every batch worker test.
+  - `scripts/docker-smoke.sh` gave SMOKE OK. It ran in an isolated Compose project: `COMPOSE_PROJECT_NAME=saveme-ctest`, `COMPOSE_FILE=compose.yaml:<override with image saveme:clip-studio>`, `SAVEME_PORT=8001`.
+  - In that hardened container (`container-zip.sh`), an upload of `Beach day.mp4`, then a 2-clip batch, gave `Beach day (2 clips).zip`:
+    - `application/zip`, with 2 stored entries (54,256 and 90,802 bytes) and `testzip` clean;
+    - the job `expired`/`delivered` once saved;
+    - 0 job folders left in `/tmp/media-jobs` after Close.
+  - The `saveme-ctest` project was then removed.
 
 ### Key Decisions
 
