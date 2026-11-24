@@ -1267,7 +1267,7 @@
       const line = document.createElement("div");
       line.className = "flex flex-wrap items-center gap-x-3 gap-y-1";
       const what = document.createElement("span");
-      what.className = "min-w-0 flex-1 break-words text-ink-900 dark:text-ink-50";
+      what.className = "min-w-48 flex-1 break-words text-ink-900 dark:text-ink-50"; // the status wraps below on a phone
       const name = document.createElement("span");
       name.className = "font-semibold";
       name.textContent = str(c.title) || `Short ${c.number}`;
