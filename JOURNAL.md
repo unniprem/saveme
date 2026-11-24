@@ -8,7 +8,7 @@
 
 The owner sent the Phase 3 brief: an automatic short-video renderer on top of Clip Studio and AI Highlights. It covers 9:16/16:9/1:1/4:5 output, smart reframing (center, face, speaker, split-screen, blurred background, original), word-timed burned-in subtitles in six styles with Malayalam support, templates, optional branding, batch rendering with a ZIP, and an Auto Shorts tab. It is built in small tested commits on `feature/auto-shorts`, with this journal updated after every task. The brief was taken as a go-ahead without a question round, and design calls are under Key Decisions.
 
-**Status: Task 1 (audit and design) done. Task 2 next.**
+**Status: Tasks 1–4 done. The image rebuild verifying Task 2's FFmpeg fix is running. Task 5 (styles and preview) is next.**
 
 ### Progress by task
 
@@ -18,9 +18,28 @@ The owner sent the Phase 3 brief: an automatic short-video renderer on top of Cl
   - `feature/auto-shorts` was cut from `2edc86b`.
   - No `OPENROUTER_API_KEY` exists here, so OpenRouter is still checked only through its mocked suite. Auto Shorts doesn't call it.
   - `docs/AUTO_SHORTS_DESIGN.md` holds the audit, architecture, FFmpeg build/licensing/security review, reframing, subtitles, templates, API, lifecycle, limits and test plan.
-- [ ] Task 2, FFmpeg encoders and rendering infrastructure.
-- [ ] Task 3, aspect ratios, layouts and templates.
-- [ ] Task 4, subtitle generation and timing.
+- [x] **Task 2, FFmpeg encoders and rendering infrastructure.**
+  - `app/renderer.py`: a worker, `python -m app.renderer`, with modes `render` (`video` and `frame`) and `asset`; `analyze` is stubbed until Task 6. It applies its own `RLIMIT_DATA`, nice 10 and a deny-all connect guard.
+  - `app/encoders.py`: capability detection from `ffmpeg -encoders`/`-filters`, the encoder choice (`auto` picks VideoToolbox when listed), and x264/VideoToolbox/AAC arguments for the `draft`, `standard` and `high` presets.
+  - `app/render_graph.py`: filtergraphs for crop, fit-with-blur, fit-with-colour and split, plus the ASS captions, logo overlay and intro/outro concat. The graph holds only numbers and fixed relative names.
+  - `app/reframe.py`: geometry and piecewise-linear crop paths as flat FFmpeg expressions. `app/layouts.py`: the layout modes.
+  - `RenderSettings` (9 `RENDER_*` variables) in `app/config.py`, `.env.example` and the README.
+  - Dockerfile: libx264, aac, swscale, libass, dav1d, the decoders, mjpeg/rawvideo encoders, image2/rawvideo muxers, `image_png_pipe`, the filters, and the runtime libraries and fonts.
+  - Every output is checked with ffprobe; a failed hardware encode falls back to libx264; progress is FFmpeg's measured `out_time`.
+- [x] **Task 3, aspect ratios, layouts and templates.**
+  - `app/shorts_templates.py`: 7 platforms with safe areas, 3 qualities, 6 FPS choices and the 6 templates, all as data.
+  - `app/caption_styles.py`: the 6 caption styles and 4 font presets.
+  - `app/render_spec.py`: strict pydantic request models and `resolve()` (template ⊕ platform ⊕ overrides), plus `options()` for the API.
+- [x] **Task 4, subtitle generation and timing.**
+  - Word timestamps:
+    - an optional `words` field on each transcript segment;
+    - the transcriber's `word_timestamps` request field;
+    - `WHISPER_WORD_TIMESTAMPS` (default true), passed by `AiManager`.
+  - Word-edge refinement against the audio's energy (`Voicing`, `refine_words` in `app/transcriber.py`).
+  - `app/captions.py`:
+    - clip words, timed or estimated by grapheme length;
+    - segmentation, balanced lines and fitting chars to the frame;
+    - SRT, and ASS with per-word highlight events, safe-area placement, the Malayalam family, title bar, watermark and escaping.
 - [ ] Task 5, subtitle styles and preview.
 - [ ] Task 6, smart crop and face tracking.
 - [ ] Task 7, branding and preset management.
@@ -32,7 +51,12 @@ The owner sent the Phase 3 brief: an automatic short-video renderer on top of Cl
 
 | Commit    | Type | Description |
 | --------- | ---- | ----------- |
-| (next)    | docs | Add the Auto Shorts design |
+| `80b2831` | docs | Add the Auto Shorts design |
+| `aeeed49` | feat | Add the renderer worker, layouts, encoder choice and render settings |
+| `975adac` | feat | Add declarative Auto Shorts templates, platforms, caption styles and request schemas |
+| `2216fd2` | feat | Store word timestamps, moved onto the speech itself |
+| `a0ccb60` | feat | Generate word-timed captions as SRT and ASS |
+| `50ec5b5` | build | Add H.264, AAC, libass, dav1d and rendering filters to the image's FFmpeg |
 
 ### Test Results
 
@@ -48,6 +72,44 @@ The owner sent the Phase 3 brief: an automatic short-video renderer on top of Cl
   | VideoToolbox 8 Mb/s | 4.8 s | 183 MB | 28.1 MB |
 
   All x264 runs were at CRF 21.
+
+- **Task 2:**
+  - `tests/integration/test_renderer.py`: 49 passed. It renders with the real FFmpeg and checks with ffprobe (codecs, H.264 High, `yuv420p`, size, FPS, duration, A/V start at 0) and with pixels from colour-coded sources:
+    - each aspect, and each layout's position;
+    - a rotated source, non-square pixels, a source with no audio;
+    - the still, logo, intro/outro;
+    - the size limit, the hardware-to-software fallback, malformed requests;
+    - the worker protocol, and cancel stopping FFmpeg.
+  - `tests/unit/test_render_core.py`: 55 passed (settings, capability parsing, encoder args, geometry, crop paths evaluated against their FFmpeg expressions, layouts, graphs).
+  - Found while testing, fixed before committing:
+    - video could start one frame after the audio (`fps=…:start_time=0` fixes it);
+    - an unmeasured progress event.
+  - **Docker, first build `saveme:auto-shorts`: 770 MB** (Phase 2 image: 738 MB). `scripts/docker-ffmpeg-check.sh`: every matrix case passed; integration tests inside the image **585 passed, 5 failed, 1 skipped**.
+    - 1 real failure: the logo test, because `png_pipe` isn't a configure name. The demuxer is `image_png_pipe`, now fixed in `50ec5b5`.
+    - 4 failures were expected: the check runs current tests against the image's app code, which was built before word timestamps.
+    - A rebuild is running.
+- **Task 3:** `tests/unit/test_render_spec.py`: 55 passed. Every template defines aspect, layout, captions and branding; resolution and overrides work; 28 invalid or tampered presets are refused; text is cleaned and capped. The test found that a template's caption offset carried over to a user-chosen position, pushing captions out of the safe area. It is fixed in both places (`a0ccb60`).
+- **Task 4:**
+  - `tests/unit/test_captions.py`: 37 passed.
+  - `tests/integration/test_transcriber.py`, `test_ai_jobs.py`, `tests/unit/test_transcript.py`: 93 passed with word timestamps.
+  - `tests/integration/test_caption_render.py`: 4 passed:
+    - burned captions show inside their cue times and never outside;
+    - captions off leaves no ink;
+    - Malayalam: every glyph found a font in libass's debug log (here CoreText picked Malayalam Sangam MN), with ink in the caption box;
+    - **opt-in real speech**: 15 isolated words said by `say`, transcribed by real Whisper `base`, then burned in.
+  - **Timing against actual speech** (words said one at a time with known gaps, so the truth comes from the audio):
+
+    | | Starts (median / worst) | Ends (median / worst) |
+    | --- | --- | --- |
+    | Raw Whisper word times | 0.62 s / 0.89 s early | 0.14 s / 0.26 s early |
+    | After refinement | 0.03 s / 0.046 s | 0.057 s / 0.236 s |
+    | Refined, with pink noise added (0.03 amplitude) | 0.029 s / 0.046 s | 0.047 s / 0.115 s |
+    | Continuous four-phrase speech: phrase start / end | within 0.03 s | 0.1–0.37 s early on fading endings |
+
+  - **Word-timestamp cost** (66 s `say` talk, `base`, 2 threads, idle machine): 5.0/5.1 s with words vs 5.8/5.4 s without, so no measurable extra time. Peak RSS was 546 MB vs 476–534 MB.
+  - Stills checked by eye (`$CLAUDE_JOB_DIR/tmp/r1/stills/`):
+    - Bold Creator: the word highlight, outline and watermark.
+    - Malayalam news template: correct conjuncts and chillu, the box style, the brand-colour title bar and the blurred background.
 
 ### Key Decisions
 
@@ -65,14 +127,21 @@ The owner sent the Phase 3 brief: an automatic short-video renderer on top of Cl
 - **Word timestamps in the transcriber** (`WHISPER_WORD_TIMESTAMPS`, default on) as an optional field. Older cached transcripts stay valid, with estimated word timing.
 - **Fonts come from Debian packages** (Roboto Apache-2.0, DejaVu, Manjari OFL-1.1). No font files are committed.
 - **Presets live in the browser** (localStorage plus JSON export/import), and every render request is validated as untrusted.
+- **Word edges are refined against the audio in the transcriber**, where the samples already are: a start moves past the last ≥150 ms pause inside its span, and an end extends through speech (≤0.4 s, never past the next word). Raw Whisper starts were up to 0.9 s early, which is visible with word highlighting.
+- **Captions are positioned with `\an`+`\pos`** inside the platform's safe area (9:16 keeps the bottom 20–22 % and right 12–14 % clear). A template's offset applies only at its own position, and the result is clamped to the safe area.
+- **The filtergraph is passed as a file (`-/filter_complex graph.txt`)**, and FFmpeg runs with its cwd in the work folder. The `ass` filter then reads `subs.ass` by a fixed relative name, so no path is ever escaped into a graph.
+- **`fps=…:start_time=0`** holds the first decoded frame from t = 0. Video and audio both start at 0, and crop paths and captions use the clip's own time.
 
 ### Issues Encountered
 
-- None so far.
+- Whisper word starts absorb pauses (fixed by the refinement above).
+- The `png_pipe` configure name (it is `image_png_pipe`).
+- A command with `rm -rf "$T/work/"*` was stopped by the safety check; separate folders were used instead.
 
 ### Pending Work
 
-- Tasks 2–10.
+- Re-run `scripts/docker-ffmpeg-check.sh saveme:auto-shorts` on the rebuilt image (expect the logo test to pass).
+- Tasks 5–10.
 
 ### Handoff
 
