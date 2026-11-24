@@ -7,9 +7,10 @@
 // from a link (openLink) or uploaded from this computer (openFile). Its states:
 //   closed → loading (upload | queued | downloading | converting | checking) → ready → closed
 //   loading or ready → gone (failed, removed after a while unused, or the server restarted)
-// While ready, one export (a clip job) runs at a time, saved to the device like a download.
-// sessionStorage keeps the source and the marks, so a reload comes back to the studio; an upload
-// still in progress can't survive a reload.
+// While ready, the current marks can be added to a clip list, and one export runs at a time: the
+// current marks as one clip (a clip job), or the whole list as one ZIP (a batch job). Either is
+// saved to the device like a download. sessionStorage keeps the source, the marks and the list,
+// so a reload comes back to the studio; an upload still in progress can't survive a reload.
 // app.js owns the page around the studio and calls in through window.SaveMeStudio.
 "use strict";
 
@@ -26,6 +27,7 @@
   const STEPS = { small: 0.1, large: 1, page: 10 };
   const LOADING = ["uploading", "queued", "downloading", "converting", "checking"];
   const EXPORTING = ["queued", "cutting"];
+  const MAX_LIST = 20; // the server's max_batch_clips, until /api/studio says otherwise
 
   const MSG = {
     saved: "Clip saved. Mark another part, or close the studio.", // announced; shown as headline + next
@@ -44,6 +46,12 @@
     exportLost: "This clip couldn't be found on the server. Export it again.",
     exportExpired: "This clip expired before it was saved. Export it again.",
     exportCancelled: "Nothing was kept on the server.",
+    zipSaved: "ZIP saved. Mark more parts, or close the studio.",
+    zipNext: "Mark more parts, or close the studio.",
+    zipExpired: "This ZIP expired before it was saved. Export it again.",
+    zipLost: "This ZIP couldn't be found on the server. Export it again.",
+    inList: "This part is already in the clip list.",
+    listFull: (max) => `The clip list holds up to ${max} clips. Export or remove some first.`,
   };
   const HEADLINE = {
     starting: "Starting…",
@@ -64,6 +72,10 @@
     exportCancelling: "Cancelling…",
     exportCancelled: "Export cancelled",
     exportExpired: "Clip expired",
+    zipCutting: "Cutting the clips",
+    zipReady: "ZIP ready",
+    zipSaved: "ZIP saved",
+    zipExpired: "ZIP expired",
   };
 
   const el = {};
@@ -75,7 +87,8 @@
     "handle-end", "clip-start", "clip-end", "set-start", "set-end", "clip-length", "play-clip", "export-clip",
     "clip-msg", "export", "export-spin", "export-done", "export-fail", "export-status-text", "export-percent",
     "export-bar", "export-fill", "export-meta", "export-save-row", "export-save", "export-error",
-    "export-actions", "export-cancel", "announcer",
+    "export-actions", "export-cancel", "add-clip", "clip-list-wrap", "clip-list", "clip-list-count",
+    "export-zip", "export-zip-label", "announcer",
   ]) {
     el[id.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = document.getElementById(id);
   }
@@ -92,7 +105,8 @@
   let keepTimer = 0;
   let previewing = false; // "Play clip" is playing: pause at the end mark
   let drag = null; // the handle being dragged: "start" | "end"
-  let exportJob = null; // { id, autoSaved }
+  let list = []; // the clip list: { start, end } in whole milliseconds, sorted by start
+  let exportJob = null; // { id, autoSaved, kind: "clip" | "zip" }
   let exportTimer = 0;
   let exportFailures = 0;
   let deliverBy = 0;
@@ -164,7 +178,9 @@
     try {
       sessionStorage.setItem(STORE_KEY, JSON.stringify({
         id: source.id, title: source.title, start: marks.start, end: marks.end,
+        clips: list.map((c) => [c.start, c.end]),
         exportId: exportJob ? exportJob.id : "", exportAutoSaved: Boolean(exportJob && exportJob.autoSaved),
+        exportKind: exportJob ? exportJob.kind : "",
       }));
     } catch {
       // Storage unavailable: the studio works, it just can't come back after a reload.
@@ -199,6 +215,7 @@
     duration = 0;
     marks.start = 0;
     marks.end = 0;
+    list = [];
     loadFailures = 0;
     setText(el.studioTitle, title || "Your video");
     resetExport();
@@ -315,8 +332,14 @@
       marks.start = saved.start;
       marks.end = saved.end;
     }
+    if (Array.isArray(saved.clips)) {
+      list = saved.clips.slice(0, MAX_LIST)
+        .filter((c) => Array.isArray(c) && isNum(c[0]) && isNum(c[1]) && c[0] >= 0 && c[1] > c[0])
+        .map((c) => ({ start: c[0], end: c[1] }));
+    }
     if (typeof saved.exportId === "string" && JOB_ID_RE.test(saved.exportId)) {
-      exportJob = { id: saved.exportId, autoSaved: saved.exportAutoSaved === true };
+      exportJob = { id: saved.exportId, autoSaved: saved.exportAutoSaved === true,
+        kind: saved.exportKind === "zip" ? "zip" : "clip" };
     }
     paintLoading({ headline: HEADLINE.restoring });
     pollSource(gen);
@@ -444,14 +467,20 @@
       marks.end = duration ? Math.min(duration, DEFAULT_LENGTH) : DEFAULT_LENGTH;
     }
     if (duration) marks.end = Math.min(marks.end, duration);
+    if (duration) {
+      list = list.map((c) => ({ start: c.start, end: Math.min(c.end, ms(duration)) }))
+        .filter((c) => c.end - c.start >= MIN_CLIP);
+    }
     store();
     show(el.studioLoading, false);
     show(el.studioPreviewNote, false);
     setLine(el.clipMsg, "");
     el.studioVideo.src = mediaUrl();
     show(el.studioEditor, true);
+    renderList();
     render();
     announce(MSG.ready);
+    if (!limits) api("/api/studio").then((l) => { limits = l; renderList(); }, () => {});
     scheduleKeepAlive(gen);
     if (exportJob) pollExport(gen, exportJob.id);
   }
@@ -508,6 +537,7 @@
     if (document.activeElement !== el.clipEnd) el.clipEnd.value = fmtTime(marks.end);
     setText(el.clipLength, fmtTime(marks.end - marks.start));
     el.exportClip.disabled = !(marks.end - marks.start >= MIN_CLIP) || exportRunning();
+    el.exportZip.disabled = list.length === 0 || exportRunning();
   }
 
   // Move one mark, keeping at least MIN_CLIP between them and both inside the video.
@@ -622,6 +652,111 @@
     previewing = false;
   }
 
+  // ---- clip list ---------------------------------------------------------------------------
+
+  const maxList = () => (limits && isNum(limits.max_batch_clips) ? limits.max_batch_clips : MAX_LIST);
+  const rangeText = (c) => `${fmtTime(c.start)} to ${fmtTime(c.end)}`;
+
+  function addToList() {
+    if (state !== "ready" || !(marks.end - marks.start >= MIN_CLIP)) return;
+    const item = { start: ms(marks.start), end: ms(marks.end) };
+    let problem = "";
+    if (list.some((c) => c.start === item.start && c.end === item.end)) problem = MSG.inList;
+    else if (list.length >= maxList()) problem = MSG.listFull(maxList());
+    if (problem) {
+      setLine(el.clipMsg, problem, "error");
+      announce(problem);
+      return;
+    }
+    list.push(item);
+    list.sort((a, b) => a.start - b.start || a.end - b.end);
+    setLine(el.clipMsg, "");
+    store();
+    renderList();
+    render();
+    const n = list.indexOf(item) + 1;
+    announce(`Clip ${n}, ${rangeText(item)}, added. ${list.length} in the list.`);
+  }
+
+  function loadFromList(item) {
+    marks.start = item.start;
+    marks.end = item.end;
+    el.clipStart.removeAttribute("aria-invalid");
+    el.clipEnd.removeAttribute("aria-invalid");
+    setLine(el.clipMsg, "");
+    stopPreview();
+    if (el.studioVideo.getAttribute("src")) el.studioVideo.currentTime = item.start;
+    store();
+    render();
+    announce(`Clip ${list.indexOf(item) + 1} loaded: ${rangeText(item)}.`);
+  }
+
+  function removeFromList(item) {
+    const at = list.indexOf(item);
+    if (at < 0) return;
+    list.splice(at, 1);
+    store();
+    renderList();
+    render();
+    announce(`Clip ${at + 1} removed. ${list.length ? `${list.length} in the list.` : "The list is empty."}`);
+    // The removed row had focus: move it to the row that took its place, else the one before.
+    const rows = el.clipList.querySelectorAll("[data-remove]");
+    const next = rows[Math.min(at, rows.length - 1)];
+    (next || el.addClip).focus();
+  }
+
+  const ROW_BUTTON = "h-10 shrink-0 rounded-lg px-3 text-sm font-semibold focus-visible:outline-2 "
+    + "focus-visible:outline-offset-2 focus-visible:outline-brand-700 dark:focus-visible:outline-brand-400";
+
+  function listButton(text, label, extra, onClick) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `${ROW_BUTTON} ${extra}`;
+    button.textContent = text;
+    button.setAttribute("aria-label", label);
+    button.addEventListener("click", onClick);
+    return button;
+  }
+
+  // Rebuild the list's rows (text only, through textContent) and its counts.
+  function renderList() {
+    const rows = list.map((item, i) => {
+      const n = i + 1;
+      const row = document.createElement("li");
+      row.className = "flex flex-wrap items-center gap-x-3 gap-y-1 py-2";
+      const number = document.createElement("span");
+      number.className = "w-6 shrink-0 text-sm font-semibold tabular-nums text-ink-600 dark:text-ink-400";
+      number.textContent = String(n);
+      const range = document.createElement("span");
+      range.className = "min-w-0 flex-1 text-sm tabular-nums text-ink-900 dark:text-ink-50";
+      const times = document.createElement("span");
+      times.className = "whitespace-nowrap";
+      times.textContent = `${fmtTime(item.start)} – ${fmtTime(item.end)}`;
+      const length = document.createElement("span");
+      length.className = "whitespace-nowrap text-ink-600 dark:text-ink-400";
+      length.textContent = `· ${fmtTime(item.end - item.start)}`;
+      range.append(times, " ", length);
+      const actions = document.createElement("span");
+      actions.className = "flex gap-2";
+      actions.append(
+        listButton("Load", `Load clip ${n} into the editor`,
+          "bg-brand-50 text-brand-700 hover:bg-brand-100 dark:bg-white/10 dark:text-ink-50 dark:hover:bg-white/15",
+          () => loadFromList(item)),
+        listButton("Remove", `Remove clip ${n}`,
+          "border border-ink-300 text-ink-700 hover:border-red-300 hover:bg-red-50 hover:text-red-700 "
+          + "dark:border-ink-700 dark:text-ink-200 dark:hover:border-red-400/40 dark:hover:bg-red-950/40 dark:hover:text-red-300",
+          () => removeFromList(item)),
+      );
+      actions.lastChild.dataset.remove = "";
+      row.append(number, range, actions);
+      return row;
+    });
+    el.clipList.replaceChildren(...rows);
+    show(el.clipListWrap, list.length > 0);
+    setText(el.clipListCount, `${list.length} of ${maxList()}`);
+    setText(el.exportZipLabel, `Export ${list.length} clip${list.length === 1 ? "" : "s"} as ZIP`);
+  }
+
   // ---- export ------------------------------------------------------------------------------
 
   const exportRunning = () => Boolean(exportJob) && !el.exportCancel.hidden;
@@ -647,7 +782,10 @@
     setLine(el.exportMeta, p.meta || "");
     setLine(el.exportError, p.error || "");
     show(el.exportSaveRow, Boolean(p.save));
-    if (p.save && exportJob) el.exportSave.href = `/api/jobs/${encodeURIComponent(exportJob.id)}/file`;
+    if (p.save && exportJob) {
+      el.exportSave.href = `/api/jobs/${encodeURIComponent(exportJob.id)}/file`;
+      setText(el.exportSave, exportJob.kind === "zip" ? "Save ZIP" : "Save clip");
+    }
     show(el.exportCancel, Boolean(p.cancel));
     el.exportCancel.disabled = Boolean(p.cancelling);
     show(el.exportActions, Boolean(p.cancel));
@@ -655,23 +793,34 @@
     render();
   }
 
-  async function startExport() {
-    if (state !== "ready" || exportRunning() || el.exportClip.disabled) return;
+  // Export the current marks as one clip (kind "clip"), or the whole list as one ZIP ("zip").
+  async function startExport(kind) {
+    const button = kind === "zip" ? el.exportZip : el.exportClip;
+    if (state !== "ready" || exportRunning() || button.disabled) return;
     const g = gen;
     resetExport();
-    exportJob = { id: "", autoSaved: false };
+    exportJob = { id: "", autoSaved: false, kind };
     paintExport({ headline: HEADLINE.exportQueued, icon: "spin", bar: null, cancel: true, cancelling: true });
+    const base = `/api/sources/${encodeURIComponent(source.id)}`;
     let created;
     try {
-      created = await api(`/api/sources/${encodeURIComponent(source.id)}/clips`,
-        { start: ms(marks.start), end: ms(marks.end) });
+      created = kind === "zip"
+        ? await api(`${base}/batch`, { clips: list.map((c) => ({ start: c.start, end: c.end })) })
+        : await api(`${base}/clips`, { start: ms(marks.start), end: ms(marks.end) });
     } catch (err) {
       if (g !== gen) return;
-      resetExport();
-      render();
-      if (err.code === "source_not_found") gone("");
-      else if (err.code === "source_not_ready") loadFailed(err.message);
-      else setLine(el.clipMsg, err.message, "error");
+      if (err.code === "source_not_found" || err.code === "source_not_ready") {
+        resetExport();
+        if (err.code === "source_not_found") gone("");
+        else loadFailed(err.message);
+      } else if (kind === "zip") { // shown under the list, next to the button that was used
+        exportEnded({ headline: HEADLINE.exportFailed, icon: "fail", error: err.message });
+        return;
+      } else {
+        resetExport();
+        render();
+        setLine(el.clipMsg, err.message, "error");
+      }
       announce(err.message);
       return;
     }
@@ -682,7 +831,7 @@
       render();
       return;
     }
-    exportJob = { id: created.job_id, autoSaved: false };
+    exportJob = { id: created.job_id, autoSaved: false, kind };
     store();
     announce("Export started.");
     applyExport({ status: str(created.status) || "queued" }, g);
@@ -696,7 +845,8 @@
     } catch (err) {
       if (g !== gen || !exportJob || exportJob.id !== id) return;
       if (err.code === "job_not_found") {
-        exportEnded({ headline: HEADLINE.exportFailed, icon: "fail", error: MSG.exportLost });
+        exportEnded({ headline: HEADLINE.exportFailed, icon: "fail",
+          error: exportJob.kind === "zip" ? MSG.zipLost : MSG.exportLost });
         return;
       }
       if (err.status >= 400 && err.status < 500 && err.status !== 429) {
@@ -719,11 +869,14 @@
   function applyExport(v, g) {
     const status = str(v.status);
     const id = exportJob.id;
+    const zip = exportJob.kind === "zip";
     if (EXPORTING.includes(status)) {
       const pct = status === "cutting" && isNum(v.progress_percent) ? v.progress_percent : null;
       const written = isNum(v.downloaded_bytes) && v.downloaded_bytes > 0 ? `${fmtMB(v.downloaded_bytes)} written` : "";
+      // A ZIP's detail says which clip is being cut: "Cutting clip 2 of 5".
+      const cutting = zip ? str(v.detail) || HEADLINE.zipCutting : HEADLINE.cutting;
       paintExport({
-        headline: status === "cutting" ? HEADLINE.cutting : HEADLINE.exportQueued,
+        headline: status === "cutting" ? cutting : HEADLINE.exportQueued,
         icon: "spin", bar: pct, percent: pct === null ? "" : `${Math.floor(pct)}%`, meta: written, cancel: true,
       });
       exportTimer = setTimeout(() => pollExport(g, id), POLL_MS);
@@ -735,23 +888,25 @@
       if (autoSave) deliverBy = Date.now() + DELIVERY_WAIT_MS;
       const saving = deliverBy > Date.now();
       paintExport({
-        headline: saving ? HEADLINE.saving : HEADLINE.exportReady, icon: saving ? "spin" : "",
-        bar: 100, meta: exportFilename, save: true,
+        headline: saving ? HEADLINE.saving : zip ? HEADLINE.zipReady : HEADLINE.exportReady,
+        icon: saving ? "spin" : "", bar: 100, meta: exportFilename, save: true,
       });
       if (autoSave) {
-        el.exportSave.click(); // the browser downloads the clip; the server then deletes it
+        el.exportSave.click(); // the browser downloads the file; the server then deletes it
         announce(HEADLINE.saving);
       }
       if (saving) exportTimer = setTimeout(() => pollExport(g, id), POLL_MS);
-      else announce("Clip ready. Select Save clip.");
+      else announce(zip ? "ZIP ready. Select Save ZIP." : "Clip ready. Select Save clip.");
     } else if (status === "failed") {
       exportEnded({ headline: HEADLINE.exportFailed, icon: "fail",
         error: (v.error && str(v.error.message)) || "The export failed. Please try again." });
     } else if (status === "expired") {
       if (v.reason === "delivered") {
-        exportEnded({ headline: HEADLINE.exportSaved, icon: "done", meta: MSG.next }, MSG.saved);
+        exportEnded(zip ? { headline: HEADLINE.zipSaved, icon: "done", meta: MSG.zipNext }
+          : { headline: HEADLINE.exportSaved, icon: "done", meta: MSG.next }, zip ? MSG.zipSaved : MSG.saved);
       } else {
-        exportEnded({ headline: HEADLINE.exportExpired, icon: "fail", error: MSG.exportExpired });
+        exportEnded({ headline: zip ? HEADLINE.zipExpired : HEADLINE.exportExpired, icon: "fail",
+          error: zip ? MSG.zipExpired : MSG.exportExpired });
       }
     } else if (status === "cancelled") {
       exportEnded({ headline: HEADLINE.exportCancelled, meta: MSG.exportCancelled });
@@ -814,7 +969,9 @@
   el.setStart.addEventListener("click", () => toPlayhead("start"));
   el.setEnd.addEventListener("click", () => toPlayhead("end"));
   el.playClip.addEventListener("click", playClip);
-  el.exportClip.addEventListener("click", startExport);
+  el.exportClip.addEventListener("click", () => startExport("clip"));
+  el.exportZip.addEventListener("click", () => startExport("zip"));
+  el.addClip.addEventListener("click", addToList);
   el.exportCancel.addEventListener("click", cancelExport);
   document.addEventListener("keydown", onKey);
   document.addEventListener("visibilitychange", onVisibility);
