@@ -42,6 +42,7 @@ from app.netguard import (IpPolicy, Resolver, check_source_address, check_url_sy
                           system_resolver)
 from app.runner import DEFAULT_WORKER_CMD, RunWorker, run_worker
 from app.schemas import InspectRequest, JobRequest, Output, Quality
+from app.studio_routes import add_studio_routes
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,8 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 _HTTP_MESSAGES = {404: "Not found.", 405: "Method not allowed."}
 _CHOICES = {"output": get_args(Output), "quality": get_args(Quality)}
 _FIELD_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+_TIME_FIELDS = frozenset({"start", "end"})
+_NUMBER_ERRORS = frozenset({"float_type", "float_parsing", "finite_number", "greater_than_equal"})
 
 
 # --- Errors -------------------------------------------------------------------
@@ -104,6 +107,8 @@ def _validation_message(errors: Sequence[dict]) -> str:
         if _FIELD_NAME.fullmatch(field):
             return f"{field} is not an accepted field"
         return "The request has a field that isn't accepted"
+    if kind in _NUMBER_ERRORS and field in _TIME_FIELDS:
+        return f"{field} must be a number of seconds, 0 or more"
     if kind == "literal_error" and field in _CHOICES:
         return f"{field} must be one of: {', '.join(_CHOICES[field])}"
     if kind == "missing":
@@ -368,7 +373,17 @@ def _api_router(settings: Settings, runtime: _Runtime, *, worker_cmd: tuple[str,
                 delivery_idle_seconds: float, delivery_max_seconds: float) -> APIRouter:
     router = APIRouter(prefix="/api")
     inspections = asyncio.Semaphore(settings.max_active_inspections)
-    checking_jobs = 0  # job requests whose links are being resolved
+    checking_links = 0  # job and source requests whose links are being resolved
+
+    async def check_link(url: str, jobs: JobManager) -> None:
+        """Resolve the link's host while holding a queue place, so lookups are bounded."""
+        nonlocal checking_links
+        jobs.ensure_queue_room(reserved=checking_links)
+        checking_links += 1
+        try:
+            await check_source_address(url, policy=ip_policy, resolver=resolver)
+        finally:
+            checking_links -= 1
 
     # The cheap syntax check comes first, so a malformed link never takes a slot. The DNS
     # lookup runs inside the slot (or queue place), so the caps bound lookups too.
@@ -385,15 +400,9 @@ def _api_router(settings: Settings, runtime: _Runtime, *, worker_cmd: tuple[str,
 
     @router.post("/jobs", status_code=202)
     async def create_job(body: JobRequest):
-        nonlocal checking_jobs
         url = check_url_syntax(body.url)
         jobs = runtime.jobs()
-        jobs.ensure_queue_room(reserved=checking_jobs)
-        checking_jobs += 1
-        try:
-            await check_source_address(url, policy=ip_policy, resolver=resolver)
-        finally:
-            checking_jobs -= 1
+        await check_link(url, jobs)
         job = jobs.submit(url, body.output, body.quality)
         return {"job_id": job.id, "status": job.status}
 
@@ -417,6 +426,7 @@ def _api_router(settings: Settings, runtime: _Runtime, *, worker_cmd: tuple[str,
         return _FileDelivery(runtime.jobs(), job_id, idle=delivery_idle_seconds,
                              limit=delivery_max_seconds)
 
+    add_studio_routes(router, settings, runtime.jobs, check_link=check_link)
     return router
 
 
