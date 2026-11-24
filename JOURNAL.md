@@ -20,6 +20,7 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 | `06424ea` | feat | Keep clip sources in the job manager with close, idle expiry and a cap |
 | `8e53efa` | feat | Run clip and upload jobs in the job manager |
 | `b2dd526` | feat | Add Clip Studio API routes for sources, preview and clips |
+| `049063b` | feat | Accept video uploads for Clip Studio with their own limits |
 
 ### Test Results
 
@@ -30,6 +31,11 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 - Task 4 (`06424ea`): 526 passed, 2 skipped, 7 deselected. 15 new source tests: link source to ready, progress and failure, separate ID spaces, not delivered or counted as a ready file, not evicted for disk room, idle expiry and touch, close in each state, cap replace and busy, queue places, and `MAX_CLIP_SOURCES` bounds.
 - Task 5 (`8e53efa`): 551 passed, 2 skipped, 7 deselected. New tests: clip request and progress, delivery and naming; each range rule; end clamping; no resume; closing a source cancels its running and queued clips; a pending clip keeps its source alive; upload clips drop tags; the upload lifecycle, failure, abort, close-then-finish, disk admission counting active jobs, and the source cap.
 - Task 6 (`b2dd526`): 569 passed, 2 skipped, 7 deselected. 18 new API tests: limits; the link source flow with Range (206) and `no-store`; 409 before ready; a clip end to end (stub) with its download name; eight request-validation cases plus `Infinity`; separate ID spaces on every route; close needs a matching Origin, DELETE is 405, a repeat is harmless; a source is gone after a restart; URL and address checks; a source takes a queue place.
+- Task 7 (`049063b`): 589 passed, 2 skipped, 7 deselected. 20 new upload tests:
+  - Header checks: content type 415, chunked 411, empty 400, too large 413.
+  - Only the upload path skips the 64 KiB cap. Origin, Host and degraded mode still apply.
+  - Title parsing.
+  - Through a real uvicorn server: a client that leaves mid-body frees its folder and queue place; an idle client gets 504 `timeout`; a source closed mid-transfer gets 404 and is removed.
 
 ### Key Decisions
 
@@ -37,6 +43,7 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 - **Sources and clips are new kinds of job in `JobManager`.** That way they share the queue, slots, disk budget, sweep and shutdown, and no limit is copied or bypassed.
 - **Uploads are raw `application/octet-stream` bodies with a `Content-Length`.** Only this path skips the Guard's 64 KiB read. Host, Origin, degraded mode, the size cap, the disk check and the timeouts still apply, and no form parser is added.
 - **A source is closed only by the owner, idle time or the source cap, never to make disk room.** Evicting it would pull the video out from under someone mid-edit, so a job that doesn't fit gets `disk_full` instead, as today. The cap (`MAX_CLIP_SOURCES`, default 2) replaces the least recently used idle source.
+- **An upload is admitted only if it fits the disk budget counting active jobs.** Its bytes land before any slot is taken, so the lighter check that downloads get at submit time would let several big uploads overrun the budget.
 - **Clips cut from uploads carry no metadata,** because phones write location and device details into videos. Clips cut from links keep title, artist and date, and chapters are dropped because their times would be wrong.
 
 ### Issues Encountered
@@ -46,7 +53,7 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 
 ### Pending Work
 
-- Tasks 7–10 of the plan (Tasks 1–6 done).
+- Tasks 8–10 of the plan (Tasks 1–7 done): the page, then docs and image checks.
 - Known gap: an upload source that fails while waiting for a slot (`disk_full` at its deadline) leaves its folder until the next sweep (at most `sweep_interval`, 60 s), not at once.
 
 ### Handoff
