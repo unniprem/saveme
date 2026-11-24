@@ -19,6 +19,7 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 | `f7bcebd` | feat | Add a worker clip mode that cuts by stream copy with progress |
 | `06424ea` | feat | Keep clip sources in the job manager with close, idle expiry and a cap |
 | `8e53efa` | feat | Run clip and upload jobs in the job manager |
+| `b2dd526` | feat | Add Clip Studio API routes for sources, preview and clips |
 
 ### Test Results
 
@@ -28,6 +29,7 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 - Task 3 (`f7bcebd`): 511 passed, 2 skipped, 7 deselected. A 3.3–7.3 s cut of a 10 s video (keyframe every second) shows 102 frames (4.08 s at 25 fps), its first shown frame is at 0, and its audio is 4.01 s long.
 - Task 4 (`06424ea`): 526 passed, 2 skipped, 7 deselected. 15 new source tests: link source to ready, progress and failure, separate ID spaces, not delivered or counted as a ready file, not evicted for disk room, idle expiry and touch, close in each state, cap replace and busy, queue places, and `MAX_CLIP_SOURCES` bounds.
 - Task 5 (`8e53efa`): 551 passed, 2 skipped, 7 deselected. New tests: clip request and progress, delivery and naming; each range rule; end clamping; no resume; closing a source cancels its running and queued clips; a pending clip keeps its source alive; upload clips drop tags; the upload lifecycle, failure, abort, close-then-finish, disk admission counting active jobs, and the source cap.
+- Task 6 (`b2dd526`): 569 passed, 2 skipped, 7 deselected. 18 new API tests: limits; the link source flow with Range (206) and `no-store`; 409 before ready; a clip end to end (stub) with its download name; eight request-validation cases plus `Infinity`; separate ID spaces on every route; close needs a matching Origin, DELETE is 405, a repeat is harmless; a source is gone after a restart; URL and address checks; a source takes a queue place.
 
 ### Key Decisions
 
@@ -44,7 +46,7 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 
 ### Pending Work
 
-- Tasks 6–10 of the plan (Tasks 1–5 done).
+- Tasks 7–10 of the plan (Tasks 1–6 done).
 - Known gap: an upload source that fails while waiting for a slot (`disk_full` at its deadline) leaves its folder until the next sweep (at most `sweep_interval`, 60 s), not at once.
 
 ### Handoff
