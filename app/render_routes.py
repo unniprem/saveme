@@ -49,7 +49,9 @@ class CaptionsRequest(BaseModel):
     spec: RenderSpec = RenderSpec()
 
 
-class ValidateRequest(BaseModel):
+
+
+class _ValidateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     spec: RenderSpec
@@ -98,8 +100,18 @@ def add_render_routes(router: APIRouter, render: Callable[[], RenderManager], *,
         return render().options()
 
     @router.post("/shorts/validate")
-    async def validate_spec(body: ValidateRequest):
-        return {"spec": body.spec.model_dump()}
+    async def validate_spec(request: Request):
+        """{"valid": true, "spec": <normalised>} or {"valid": false, "error": {...}}: a question about a
+        preset, so a bad one is an answer (200), not a failed request."""
+        data = await read_json_body(request, limit=64 * 1024, idle=idle_seconds)
+        try:
+            body = _parse(_ValidateBody, data)
+        except RequestValidationError as exc:
+            from app.main import _validation_message
+
+            return {"valid": False, "error": {"code": "invalid_request",
+                                              "message": _validation_message(exc.errors())}}
+        return {"valid": True, "spec": body.spec.model_dump()}
 
     @router.post("/sources/{source_id}/shorts/captions")
     async def captions(source_id: str, body: CaptionsRequest):

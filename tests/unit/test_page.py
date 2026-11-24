@@ -66,7 +66,7 @@ def test_footer_copy_is_exact():
     assert FOOTER in _html()
 
 
-SCRIPTS = ["common.js", "studio.js", "ai.js", "app.js"]  # deferred, so they run in this order
+SCRIPTS = ["common.js", "studio.js", "ai.js", "shorts.js", "app.js"]  # deferred, so they run in this order
 
 
 def test_references_built_css_and_deferred_scripts():
@@ -218,7 +218,7 @@ def test_studio_copy_is_pinned():
 
 def test_tailwind_scans_every_page_file():
     css = (STATIC / "src" / "input.css").read_text(encoding="utf-8")
-    for name in ("index.html", "app.js", "studio.js", "ai.js"):
+    for name in ("index.html", "app.js", "studio.js", "ai.js", "shorts.js"):
         assert f'@source "../{name}";' in css, name
 
 
@@ -279,3 +279,61 @@ def test_ai_copy_is_pinned():
     assert "window.SaveMeStudioBridge" in ai and "sessionStorage" in ai
     studio = (STATIC / "studio.js").read_text(encoding="utf-8")
     assert "window.SaveMeStudioBridge = Object.freeze(" in studio
+
+
+SHORTS_IDS = [
+    "tab-shorts", "shorts-panel", "shorts-status", "shorts-use-marks", "shorts-select-all", "shorts-clips",
+    "shorts-clips-empty", "shorts-platform", "shorts-template", "shorts-quality", "shorts-fps", "shorts-layout",
+    "shorts-margin", "shorts-manual", "shorts-manual-x", "shorts-manual-y", "shorts-manual-zoom",
+    "shorts-transcript", "shorts-transcribe", "shorts-captions", "shorts-burn", "shorts-srt", "shorts-style",
+    "shorts-position", "shorts-size", "shorts-words", "shorts-color", "shorts-highlight", "shorts-highlight-mode",
+    "shorts-uppercase", "shorts-branding", "shorts-logo", "shorts-logo-position", "shorts-logo-size",
+    "shorts-logo-opacity", "shorts-watermark", "shorts-brand-color", "shorts-brand-on", "shorts-title-bar",
+    "shorts-intro", "shorts-outro", "shorts-presets", "shorts-preset-name", "shorts-preset-save",
+    "shorts-preset-list", "shorts-preset-load", "shorts-preset-delete", "shorts-preset-export",
+    "shorts-preset-import", "shorts-preview-pick", "shorts-preview-at", "shorts-preview-frame",
+    "shorts-preview-clip", "shorts-preview-img", "shorts-preview-video", "shorts-editor", "shorts-cues",
+    "shorts-cues-add", "shorts-cues-reset", "shorts-cues-done", "shorts-render", "shorts-render-msg",
+    "shorts-progress", "shorts-progress-bar", "shorts-results", "shorts-zip", "shorts-cancel",
+]
+
+
+def test_auto_shorts_markup():
+    tags = _parsed().tags
+    by_id = {a["id"]: (t, a) for t, a in tags if a.get("id")}
+    for name in SHORTS_IDS:
+        assert name in by_id, name
+    tag, attrs = by_id["tab-shorts"]
+    assert tag == "button" and attrs.get("role") == "tab" and attrs.get("aria-controls") == "shorts-panel"
+    assert attrs.get("aria-selected") == "false"
+    panel = by_id["shorts-panel"][1]
+    assert panel.get("role") == "tabpanel" and panel.get("aria-labelledby") == "tab-shorts" and "hidden" in panel
+    labels = {a.get("for") for t, a in tags if t == "label"}
+    for name in ("shorts-platform", "shorts-template", "shorts-quality", "shorts-fps", "shorts-layout",
+                 "shorts-margin", "shorts-style", "shorts-position", "shorts-size", "shorts-words", "shorts-color",
+                 "shorts-highlight", "shorts-logo", "shorts-watermark", "shorts-brand-color", "shorts-intro",
+                 "shorts-outro", "shorts-preset-name", "shorts-preset-import", "shorts-preview-at"):
+        assert name in labels, name
+    assert by_id["shorts-logo"][1].get("accept", "").startswith("image/png")
+    assert by_id["shorts-progress-bar"][1].get("role") == "progressbar"
+    assert by_id["shorts-watermark"][1].get("maxlength") == "60"
+    for name in ("shorts-progress", "shorts-editor"):
+        assert by_id[name][1].get("tabindex") == "-1", name
+    for name in ("shorts-render-msg", "shorts-preview-msg", "shorts-preset-msg", "shorts-status"):
+        assert by_id[name][1].get("aria-live") == "polite", name
+    assert by_id["shorts-zip"][0] == "a" and "download" in by_id["shorts-zip"][1]
+
+
+def test_auto_shorts_copy_and_routes_are_pinned():
+    page, js = _html(), (STATIC / "shorts.js").read_text(encoding="utf-8")
+    assert "SaveMe never adds a watermark of its own." in page
+    assert "It is a best effort: SaveMe doesn't identify voices." in page
+    assert "Presets stay in this browser." in page
+    assert "The total and the time left are estimates." in page
+    for route in ("/api/shorts/options", "/api/shorts/validate", "/shorts/captions`", "/shorts/assets?kind=",
+                  "/shorts/previews`", "/renders`", "/cancel`", "/zip`", "/analyses`"):
+        assert route in js, route
+    assert "window.SaveMeStudioBridge" in js and "localStorage" in js and "sessionStorage" in js
+    studio = (STATIC / "studio.js").read_text(encoding="utf-8")
+    for name in ("onClips(callback)", "clips,", "marks: () =>"):
+        assert name in studio, name

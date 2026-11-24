@@ -12,6 +12,7 @@
   <script src="/static/common.js" defer></script>
   <script src="/static/studio.js" defer></script>
   <script src="/static/ai.js" defer></script>
+  <script src="/static/shorts.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body class="flex min-h-dvh flex-col bg-ink-50 font-sans text-ink-900 antialiased dark:bg-ink-950 dark:text-ink-100">
@@ -203,6 +204,7 @@
         <div id="studio-tabs" role="tablist" aria-label="Clip Studio mode" class="mt-5 flex gap-1 rounded-xl bg-ink-100 p-1 dark:bg-white/5">
           <button id="tab-manual" type="button" role="tab" aria-selected="true" aria-controls="manual-panel" tabindex="0" class="h-10 flex-1 rounded-lg px-4 text-sm font-semibold text-ink-600 hover:text-ink-900 aria-selected:bg-white aria-selected:text-brand-700 aria-selected:shadow-card focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 sm:flex-none dark:text-ink-400 dark:hover:text-ink-100 dark:aria-selected:bg-ink-800 dark:aria-selected:text-ink-50 dark:focus-visible:outline-brand-400">Manual</button>
           <button id="tab-ai" type="button" role="tab" aria-selected="false" aria-controls="ai-panel" tabindex="-1" class="h-10 flex-1 rounded-lg px-4 text-sm font-semibold text-ink-600 hover:text-ink-900 aria-selected:bg-white aria-selected:text-brand-700 aria-selected:shadow-card focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 sm:flex-none dark:text-ink-400 dark:hover:text-ink-100 dark:aria-selected:bg-ink-800 dark:aria-selected:text-ink-50 dark:focus-visible:outline-brand-400">AI Highlights</button>
+          <button id="tab-shorts" type="button" role="tab" aria-selected="false" aria-controls="shorts-panel" tabindex="-1" class="h-10 flex-1 rounded-lg px-4 text-sm font-semibold text-ink-600 hover:text-ink-900 aria-selected:bg-white aria-selected:text-brand-700 aria-selected:shadow-card focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 sm:flex-none dark:text-ink-400 dark:hover:text-ink-100 dark:aria-selected:bg-ink-800 dark:aria-selected:text-ink-50 dark:focus-visible:outline-brand-400">Auto Shorts</button>
         </div>
 
         <div id="manual-panel" role="tabpanel" aria-labelledby="tab-manual">
@@ -370,6 +372,178 @@
               </div>
             </div>
           </details>
+        </div>
+
+        <div id="shorts-panel" role="tabpanel" aria-labelledby="tab-shorts" hidden class="mt-4">
+          <p id="shorts-status" aria-live="polite" class="text-sm text-ink-700 data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:text-ink-300 dark:data-[tone=error]:text-red-400">Checking Auto Shorts…</p>
+          <p class="mt-3 rounded-xl bg-brand-50 px-4 py-3 text-sm text-brand-900 dark:bg-brand-500/10 dark:text-brand-200">Shorts are rendered on this computer: reframed, captioned from the transcript and re-encoded as H.264 MP4. Nothing is uploaded anywhere.</p>
+
+          <section aria-labelledby="shorts-clips-title" class="mt-4">
+            <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-2">
+              <h3 id="shorts-clips-title" class="font-semibold">Clips to render</h3>
+              <div class="flex flex-wrap gap-2">
+                <button id="shorts-use-marks" type="button" class="h-10 shrink-0 rounded-xl bg-brand-50 px-4 text-sm font-semibold text-brand-700 enabled:hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:enabled:hover:bg-white/15 dark:focus-visible:outline-brand-400">Use current marks</button>
+                <button id="shorts-select-all" type="button" class="h-10 shrink-0 rounded-xl bg-brand-50 px-4 text-sm font-semibold text-brand-700 enabled:hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:enabled:hover:bg-white/15 dark:focus-visible:outline-brand-400">Select all</button>
+              </div>
+            </div>
+            <p id="shorts-clips-empty" class="mt-2 text-sm text-ink-600 dark:text-ink-400">No clips yet. Add clips in Manual or AI Highlights, or press Use current marks.</p>
+            <ol id="shorts-clips" aria-labelledby="shorts-clips-title" class="mt-2 divide-y divide-ink-200 dark:divide-ink-800"></ol>
+          </section>
+
+          <section aria-labelledby="shorts-format-title" class="mt-5 border-t border-ink-200 pt-4 dark:border-ink-800">
+            <h3 id="shorts-format-title" class="font-semibold">Format</h3>
+            <div class="mt-2 grid gap-3 sm:grid-cols-2">
+              <div><label for="shorts-platform" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Platform</label><select id="shorts-platform" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400"></select></div>
+              <div><label for="shorts-template" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Template</label><select id="shorts-template" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400" aria-describedby="shorts-template-desc"></select></div>
+              <div><label for="shorts-quality" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Quality</label><select id="shorts-quality" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400"></select></div>
+              <div><label for="shorts-fps" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Frame rate</label><select id="shorts-fps" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400"></select></div>
+            </div>
+            <p id="shorts-template-desc" class="mt-1 text-xs text-ink-600 dark:text-ink-400"></p>
+          </section>
+
+          <section aria-labelledby="shorts-framing-title" class="mt-5 border-t border-ink-200 pt-4 dark:border-ink-800">
+            <h3 id="shorts-framing-title" class="font-semibold">Framing</h3>
+            <div class="mt-2 grid gap-3 sm:grid-cols-2">
+              <div><label for="shorts-layout" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Framing mode</label><select id="shorts-layout" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400" aria-describedby="shorts-layout-note"></select></div>
+              <div><div class="flex items-baseline justify-between gap-2"><label for="shorts-margin" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Safe margin around faces</label><output id="shorts-margin-out" for="shorts-margin" class="text-xs tabular-nums text-ink-600 dark:text-ink-400"></output></div><input id="shorts-margin" type="range" min="0" max="25" step="1" value="8" class="mt-2 w-full accent-brand-700 disabled:opacity-60 dark:accent-brand-400"></div>
+            </div>
+            <p id="shorts-layout-note" class="mt-1 text-xs text-ink-600 dark:text-ink-400">Speaker focus follows the face whose mouth moves while someone is speaking. It is a best effort: SaveMe doesn't identify voices.</p>
+            <div class="mt-3"><label for="shorts-manual" class="flex items-center gap-2 text-sm text-ink-700 has-disabled:opacity-60 dark:text-ink-300"><input id="shorts-manual" type="checkbox" class="size-4 accent-brand-700 dark:accent-brand-400">Set the framing by hand (the same for every clip)</label></div>
+            <fieldset id="shorts-manual-fields" hidden class="mt-2 grid gap-3 sm:grid-cols-3">
+              <legend class="sr-only">Manual framing</legend>
+              <div><div class="flex items-baseline justify-between gap-2"><label for="shorts-manual-x" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Left – right</label><output id="shorts-manual-x-out" for="shorts-manual-x" class="text-xs tabular-nums text-ink-600 dark:text-ink-400"></output></div><input id="shorts-manual-x" type="range" min="0" max="100" step="1" value="50" class="mt-2 w-full accent-brand-700 disabled:opacity-60 dark:accent-brand-400"></div>
+              <div><div class="flex items-baseline justify-between gap-2"><label for="shorts-manual-y" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Top – bottom</label><output id="shorts-manual-y-out" for="shorts-manual-y" class="text-xs tabular-nums text-ink-600 dark:text-ink-400"></output></div><input id="shorts-manual-y" type="range" min="0" max="100" step="1" value="50" class="mt-2 w-full accent-brand-700 disabled:opacity-60 dark:accent-brand-400"></div>
+              <div><div class="flex items-baseline justify-between gap-2"><label for="shorts-manual-zoom" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Zoom</label><output id="shorts-manual-zoom-out" for="shorts-manual-zoom" class="text-xs tabular-nums text-ink-600 dark:text-ink-400"></output></div><input id="shorts-manual-zoom" type="range" min="100" max="300" step="5" value="100" class="mt-2 w-full accent-brand-700 disabled:opacity-60 dark:accent-brand-400"></div>
+            </fieldset>
+          </section>
+
+          <section aria-labelledby="shorts-captions-title" class="mt-5 border-t border-ink-200 pt-4 dark:border-ink-800">
+            <h3 id="shorts-captions-title" class="font-semibold">Captions</h3>
+            <p id="shorts-transcript" class="mt-1 text-sm text-ink-600 data-[tone=error]:text-red-700 dark:text-ink-400 dark:data-[tone=error]:text-red-400"></p>
+            <div class="mt-2 flex flex-wrap gap-2">
+              <button id="shorts-transcribe" type="button" hidden class="h-10 shrink-0 rounded-xl bg-brand-50 px-4 text-sm font-semibold text-brand-700 enabled:hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:enabled:hover:bg-white/15 dark:focus-visible:outline-brand-400">Transcribe this video</button>
+            </div>
+            <div class="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:gap-x-5">
+              <label for="shorts-captions" class="flex items-center gap-2 text-sm text-ink-700 has-disabled:opacity-60 dark:text-ink-300"><input id="shorts-captions" type="checkbox" class="size-4 accent-brand-700 dark:accent-brand-400" checked>Add captions</label>
+              <label for="shorts-burn" class="flex items-center gap-2 text-sm text-ink-700 has-disabled:opacity-60 dark:text-ink-300"><input id="shorts-burn" type="checkbox" class="size-4 accent-brand-700 dark:accent-brand-400" checked>Burn them into the video</label>
+              <label for="shorts-srt" class="flex items-center gap-2 text-sm text-ink-700 has-disabled:opacity-60 dark:text-ink-300"><input id="shorts-srt" type="checkbox" class="size-4 accent-brand-700 dark:accent-brand-400">Also save SRT files</label>
+            </div>
+            <div id="shorts-caption-fields" class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div><label for="shorts-style" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Style</label><select id="shorts-style" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400"></select></div>
+              <div><label for="shorts-position" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Position</label><select id="shorts-position" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400"></select></div>
+              <div><label for="shorts-size" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Size (px)</label><input id="shorts-size" type="number" inputmode="numeric" min="16" max="200" step="2" value="54" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400 tabular-nums"></div>
+              <div><label for="shorts-words" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Words per caption</label><input id="shorts-words" type="number" inputmode="numeric" min="1" max="15" step="1" value="8" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400 tabular-nums"></div>
+              <div><label for="shorts-color" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Text colour</label><input id="shorts-color" type="color" value="#ffffff" class="mt-1 h-11 w-full min-w-0 cursor-pointer rounded-xl border border-ink-300 bg-white p-1 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:focus-visible:outline-brand-400"></div>
+              <div><label for="shorts-highlight" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Highlight colour</label><input id="shorts-highlight" type="color" value="#ffd400" class="mt-1 h-11 w-full min-w-0 cursor-pointer rounded-xl border border-ink-300 bg-white p-1 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:focus-visible:outline-brand-400"></div>
+              <div><label for="shorts-highlight-mode" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Word highlight</label><select id="shorts-highlight-mode" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400"></select></div>
+              <div class="flex items-end pb-2.5"><label for="shorts-uppercase" class="flex items-center gap-2 text-sm text-ink-700 has-disabled:opacity-60 dark:text-ink-300"><input id="shorts-uppercase" type="checkbox" class="size-4 accent-brand-700 dark:accent-brand-400">Capitals</label></div>
+            </div>
+          </section>
+
+          <details id="shorts-branding" class="group mt-5 rounded-xl border border-ink-200 dark:border-ink-800"><summary class="flex cursor-pointer items-center justify-between gap-3 rounded-xl px-4 py-3 font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 dark:focus-visible:outline-brand-400"><span id="shorts-branding-summary">Branding (off)</span><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-4 shrink-0 transition-transform group-open:rotate-180 motion-reduce:transition-none"><path d="m6 9 6 6 6-6"/></svg></summary><div class="border-t border-ink-200 px-4 pt-3 pb-4 dark:border-ink-800">
+            <p class="text-sm text-ink-600 dark:text-ink-400">Nothing is added unless you add it here. SaveMe never adds a watermark of its own.</p>
+            <div class="mt-3 grid gap-3 sm:grid-cols-2">
+              <div>
+                <label for="shorts-logo" class="inline-flex cursor-pointer items-center gap-2 rounded-md text-sm font-semibold text-brand-700 underline decoration-brand-700/30 underline-offset-4 hover:decoration-brand-700 has-focus-visible:outline-2 has-focus-visible:outline-offset-4 has-focus-visible:outline-brand-700 has-disabled:cursor-not-allowed has-disabled:opacity-60 dark:text-brand-300 dark:decoration-brand-300/40"><input id="shorts-logo" type="file" class="sr-only" accept="image/png,.png">Add a logo (PNG)</label>
+                <p id="shorts-logo-name" class="mt-1 text-xs text-ink-600 dark:text-ink-400"></p>
+                <button id="shorts-logo-remove" type="button" hidden class="h-10 shrink-0 rounded-xl bg-brand-50 px-4 text-sm font-semibold text-brand-700 enabled:hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:enabled:hover:bg-white/15 dark:focus-visible:outline-brand-400 mt-1">Remove logo</button>
+              </div>
+              <div><label for="shorts-logo-position" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Logo corner</label><select id="shorts-logo-position" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400"></select></div>
+              <div><div class="flex items-baseline justify-between gap-2"><label for="shorts-logo-size" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Logo size</label><output id="shorts-logo-size-out" for="shorts-logo-size" class="text-xs tabular-nums text-ink-600 dark:text-ink-400"></output></div><input id="shorts-logo-size" type="range" min="5" max="40" step="1" value="15" class="mt-2 w-full accent-brand-700 disabled:opacity-60 dark:accent-brand-400"></div>
+              <div><div class="flex items-baseline justify-between gap-2"><label for="shorts-logo-opacity" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Logo opacity</label><output id="shorts-logo-opacity-out" for="shorts-logo-opacity" class="text-xs tabular-nums text-ink-600 dark:text-ink-400"></output></div><input id="shorts-logo-opacity" type="range" min="10" max="100" step="5" value="90" class="mt-2 w-full accent-brand-700 disabled:opacity-60 dark:accent-brand-400"></div>
+              <div><label for="shorts-watermark" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Watermark text</label>
+                <input id="shorts-watermark" type="text" maxlength="60" autocomplete="off" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400"></div>
+              <div class="grid grid-cols-2 gap-3">
+                <div><label for="shorts-brand-color" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Brand colour</label><input id="shorts-brand-color" type="color" value="#e5484d" class="mt-1 h-11 w-full min-w-0 cursor-pointer rounded-xl border border-ink-300 bg-white p-1 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:focus-visible:outline-brand-400"></div>
+                <div class="flex items-end pb-2.5"><label for="shorts-brand-on" class="flex items-center gap-2 text-sm text-ink-700 has-disabled:opacity-60 dark:text-ink-300"><input id="shorts-brand-on" type="checkbox" class="size-4 accent-brand-700 dark:accent-brand-400">Use it</label></div>
+              </div>
+              <div class="flex items-end"><label for="shorts-title-bar" class="flex items-center gap-2 text-sm text-ink-700 has-disabled:opacity-60 dark:text-ink-300"><input id="shorts-title-bar" type="checkbox" class="size-4 accent-brand-700 dark:accent-brand-400">Show the clip's title in a bar</label></div>
+              <div>
+                <label for="shorts-intro" class="inline-flex cursor-pointer items-center gap-2 rounded-md text-sm font-semibold text-brand-700 underline decoration-brand-700/30 underline-offset-4 hover:decoration-brand-700 has-focus-visible:outline-2 has-focus-visible:outline-offset-4 has-focus-visible:outline-brand-700 has-disabled:cursor-not-allowed has-disabled:opacity-60 dark:text-brand-300 dark:decoration-brand-300/40"><input id="shorts-intro" type="file" class="sr-only" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm">Add an intro (up to 15 s)</label>
+                <p id="shorts-intro-name" class="mt-1 text-xs text-ink-600 dark:text-ink-400"></p>
+                <label for="shorts-outro" class="inline-flex cursor-pointer items-center gap-2 rounded-md text-sm font-semibold text-brand-700 underline decoration-brand-700/30 underline-offset-4 hover:decoration-brand-700 has-focus-visible:outline-2 has-focus-visible:outline-offset-4 has-focus-visible:outline-brand-700 has-disabled:cursor-not-allowed has-disabled:opacity-60 dark:text-brand-300 dark:decoration-brand-300/40 mt-2"><input id="shorts-outro" type="file" class="sr-only" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm">Add an outro (up to 15 s)</label>
+                <p id="shorts-outro-name" class="mt-1 text-xs text-ink-600 dark:text-ink-400"></p>
+              </div>
+            </div>
+            <p id="shorts-branding-msg" aria-live="polite" hidden class="mt-2 text-sm break-words text-ink-700 data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:text-ink-300 dark:data-[tone=error]:text-red-400"></p></div></details>
+
+          <details id="shorts-presets" class="group mt-5 rounded-xl border border-ink-200 dark:border-ink-800"><summary class="flex cursor-pointer items-center justify-between gap-3 rounded-xl px-4 py-3 font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 dark:focus-visible:outline-brand-400"><span id="shorts-presets-summary">Saved presets</span><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-4 shrink-0 transition-transform group-open:rotate-180 motion-reduce:transition-none"><path d="m6 9 6 6 6-6"/></svg></summary><div class="border-t border-ink-200 px-4 pt-3 pb-4 dark:border-ink-800">
+            <p class="text-sm text-ink-600 dark:text-ink-400">Presets stay in this browser. Export one to keep it or move it to another computer.</p>
+            <div class="mt-3 grid gap-3 sm:grid-cols-2">
+              <div><label for="shorts-preset-name" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Name</label>
+                <input id="shorts-preset-name" type="text" maxlength="40" autocomplete="off" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400"></div>
+              <div class="flex items-end"><button id="shorts-preset-save" type="button" class="h-10 shrink-0 rounded-xl bg-brand-50 px-4 text-sm font-semibold text-brand-700 enabled:hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:enabled:hover:bg-white/15 dark:focus-visible:outline-brand-400">Save current settings</button></div>
+              <div><label for="shorts-preset-list" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Saved</label><select id="shorts-preset-list" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400"></select></div>
+              <div class="flex flex-wrap items-end gap-2">
+                <button id="shorts-preset-load" type="button" class="h-10 shrink-0 rounded-xl bg-brand-50 px-4 text-sm font-semibold text-brand-700 enabled:hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:enabled:hover:bg-white/15 dark:focus-visible:outline-brand-400">Load</button>
+                <button id="shorts-preset-delete" type="button" class="h-10 shrink-0 rounded-xl bg-brand-50 px-4 text-sm font-semibold text-brand-700 enabled:hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:enabled:hover:bg-white/15 dark:focus-visible:outline-brand-400">Delete</button>
+                <button id="shorts-preset-export" type="button" class="h-10 shrink-0 rounded-xl bg-brand-50 px-4 text-sm font-semibold text-brand-700 enabled:hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:enabled:hover:bg-white/15 dark:focus-visible:outline-brand-400">Export</button>
+                <label for="shorts-preset-import" class="inline-flex cursor-pointer items-center gap-2 rounded-md text-sm font-semibold text-brand-700 underline decoration-brand-700/30 underline-offset-4 hover:decoration-brand-700 has-focus-visible:outline-2 has-focus-visible:outline-offset-4 has-focus-visible:outline-brand-700 has-disabled:cursor-not-allowed has-disabled:opacity-60 dark:text-brand-300 dark:decoration-brand-300/40"><input id="shorts-preset-import" type="file" class="sr-only" accept="application/json,.json">Import</label>
+              </div>
+            </div>
+            <p id="shorts-preset-msg" aria-live="polite" hidden class="mt-2 text-sm break-words text-ink-700 data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:text-ink-300 dark:data-[tone=error]:text-red-400"></p></div></details>
+
+          <section aria-labelledby="shorts-preview-title" class="mt-5 border-t border-ink-200 pt-4 dark:border-ink-800">
+            <h3 id="shorts-preview-title" class="font-semibold">Preview</h3>
+            <div class="mt-2 grid gap-3 sm:grid-cols-2">
+              <div><label for="shorts-preview-pick" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Clip</label><select id="shorts-preview-pick" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400"></select></div>
+              <div><div class="flex items-baseline justify-between gap-2"><label for="shorts-preview-at" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Moment</label><output id="shorts-preview-at-out" for="shorts-preview-at" class="text-xs tabular-nums text-ink-600 dark:text-ink-400"></output></div><input id="shorts-preview-at" type="range" min="0" max="1000" step="1" value="300" class="mt-2 w-full accent-brand-700 disabled:opacity-60 dark:accent-brand-400"></div>
+            </div>
+            <div class="mt-3 flex flex-col gap-2 sm:flex-row">
+              <button id="shorts-preview-frame" type="button" class="h-11 w-full rounded-xl border border-ink-300 bg-white px-5 font-semibold text-ink-700 enabled:hover:border-brand-700/50 enabled:hover:text-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-ink-700 dark:bg-transparent dark:text-ink-200 dark:enabled:hover:border-brand-400/60 dark:enabled:hover:text-brand-300 dark:focus-visible:outline-brand-400">Preview frame</button>
+              <button id="shorts-preview-clip" type="button" class="h-11 w-full rounded-xl border border-ink-300 bg-white px-5 font-semibold text-ink-700 enabled:hover:border-brand-700/50 enabled:hover:text-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-ink-700 dark:bg-transparent dark:text-ink-200 dark:enabled:hover:border-brand-400/60 dark:enabled:hover:text-brand-300 dark:focus-visible:outline-brand-400">Preview clip (draft)</button>
+            </div>
+            <p id="shorts-preview-msg" aria-live="polite" hidden class="mt-2 text-sm break-words text-ink-700 data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:text-ink-300 dark:data-[tone=error]:text-red-400"></p>
+            <figure id="shorts-preview" hidden class="mt-3 flex justify-center rounded-xl bg-ink-100 p-3 dark:bg-white/5">
+              <img id="shorts-preview-img" alt="Preview of the short" hidden class="max-h-[32rem] w-auto max-w-full rounded-lg shadow-card">
+              <video id="shorts-preview-video" controls playsinline preload="metadata" hidden class="max-h-[32rem] w-auto max-w-full rounded-lg shadow-card"></video>
+            </figure>
+          </section>
+
+          <section id="shorts-editor" hidden tabindex="-1" aria-labelledby="shorts-editor-title" class="mt-5 rounded-xl border border-ink-200 p-4 outline-none dark:border-ink-800">
+            <div class="flex flex-wrap items-baseline justify-between gap-2">
+              <h3 id="shorts-editor-title" class="font-semibold">Captions</h3>
+              <span id="shorts-editor-timing" class="text-xs text-ink-600 dark:text-ink-400"></span>
+            </div>
+            <p class="mt-1 text-xs text-ink-600 dark:text-ink-400">Fix any word, or the time a caption shows (seconds from the clip's start). Changes are used for this clip's short.</p>
+            <ol id="shorts-cues" aria-labelledby="shorts-editor-title" class="mt-2 max-h-96 space-y-2 overflow-y-auto overscroll-contain"></ol>
+            <p id="shorts-editor-msg" aria-live="polite" hidden class="mt-2 text-sm break-words text-ink-700 data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:text-ink-300 dark:data-[tone=error]:text-red-400"></p>
+            <div class="mt-3 flex flex-wrap gap-2">
+              <button id="shorts-cues-add" type="button" class="h-10 shrink-0 rounded-xl bg-brand-50 px-4 text-sm font-semibold text-brand-700 enabled:hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:enabled:hover:bg-white/15 dark:focus-visible:outline-brand-400">Add a caption</button>
+              <button id="shorts-cues-reset" type="button" class="h-10 shrink-0 rounded-xl bg-brand-50 px-4 text-sm font-semibold text-brand-700 enabled:hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:enabled:hover:bg-white/15 dark:focus-visible:outline-brand-400">Back to automatic</button>
+              <button id="shorts-cues-done" type="button" class="h-10 shrink-0 rounded-xl bg-brand-50 px-4 text-sm font-semibold text-brand-700 enabled:hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:enabled:hover:bg-white/15 dark:focus-visible:outline-brand-400">Done</button>
+            </div>
+          </section>
+
+          <section aria-labelledby="shorts-render-title" class="mt-5 border-t border-ink-200 pt-4 dark:border-ink-800">
+            <h3 id="shorts-render-title" class="sr-only">Render</h3>
+            <p id="shorts-render-msg" aria-live="polite" hidden class="mt-2 text-sm break-words text-ink-700 data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:text-ink-300 dark:data-[tone=error]:text-red-400"></p>
+            <div class="mt-2 flex flex-col gap-2 sm:flex-row">
+              <button id="shorts-render" type="button" class="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-brand-700 px-6 font-semibold text-white enabled:hover:bg-brand-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:bg-ink-200 disabled:text-ink-600 sm:w-auto dark:bg-brand-500 dark:enabled:hover:bg-brand-600 dark:focus-visible:outline-brand-400 dark:disabled:bg-ink-800 dark:disabled:text-ink-400">
+                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-5 shrink-0"><rect x="6" y="2" width="12" height="20" rx="2"/><path d="m10 9 5 3-5 3z"/></svg>
+                <span id="shorts-render-label">Render shorts</span>
+              </button>
+            </div>
+          </section>
+
+          <section id="shorts-progress" hidden tabindex="-1" aria-labelledby="shorts-progress-status" class="mt-4 rounded-xl bg-ink-50 p-4 outline-none dark:bg-white/5">
+            <div class="flex items-center justify-between gap-3">
+              <p class="flex min-w-0 items-center gap-2 font-semibold">
+                <span id="shorts-progress-spin" class="shrink-0 text-brand-700 dark:text-brand-300"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" class="size-5 animate-spin motion-reduce:animate-none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3" stroke-opacity="0.25"/><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg></span>
+                <span id="shorts-progress-status"></span>
+              </p>
+              <span id="shorts-progress-percent" class="font-bold tabular-nums text-brand-700 dark:text-brand-300"></span>
+            </div>
+            <div id="shorts-progress-bar" role="progressbar" aria-labelledby="shorts-progress-status" aria-valuemin="0" aria-valuemax="100" class="mt-3 h-2 overflow-hidden rounded-full bg-brand-100 dark:bg-white/10">
+              <div id="shorts-progress-fill" class="h-full w-0 rounded-full bg-linear-to-r from-coral-500 to-tangerine-500 transition-[width] duration-500 ease-out motion-reduce:transition-none"></div>
+            </div>
+            <p class="mt-1 text-xs text-ink-600 dark:text-ink-400">Each clip's percentage is measured as FFmpeg encodes it. The total and the time left are estimates.</p>
+            <ol id="shorts-results" aria-label="Shorts" class="mt-3 divide-y divide-ink-200 dark:divide-ink-800"></ol>
+            <div class="mt-3 flex flex-col gap-2 sm:flex-row">
+              <a id="shorts-zip" hidden download class="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-brand-700 px-6 font-semibold text-white enabled:hover:bg-brand-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:bg-ink-200 disabled:text-ink-600 sm:w-auto dark:bg-brand-500 dark:enabled:hover:bg-brand-600 dark:focus-visible:outline-brand-400 dark:disabled:bg-ink-800 dark:disabled:text-ink-400">Download all (ZIP)</a>
+              <button id="shorts-cancel" type="button" class="h-11 w-full rounded-xl border border-ink-300 bg-white px-5 font-semibold text-ink-700 enabled:hover:border-red-300 enabled:hover:bg-red-50 enabled:hover:text-red-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-wait disabled:opacity-60 sm:w-auto dark:border-ink-700 dark:bg-transparent dark:text-ink-200 dark:enabled:hover:border-red-400/40 dark:enabled:hover:bg-red-950/40 dark:enabled:hover:text-red-300 dark:focus-visible:outline-brand-400">Cancel</button>
+            </div>
+          </section>
         </div>
 
         <div id="clip-list-wrap" hidden class="mt-5 border-t border-ink-200 pt-4 dark:border-ink-800">

@@ -112,13 +112,18 @@ async def test_a_bad_render_setting_turns_off_only_auto_shorts(settings, stub):
         await ready_source(client)  # Clip Studio still works
 
 
-async def test_validate_normalises_a_preset_and_refuses_a_bad_one(client):
+async def test_validate_normalises_a_preset_and_answers_for_a_bad_one(client):
     r = await client.post("/api/shorts/validate", json={"spec": {"template": "educational", "fps": 30}})
-    assert r.status_code == 200 and r.json()["spec"]["template"] == "educational" and r.json()["spec"]["fps"] == 30
+    body = r.json()
+    assert r.status_code == 200 and body["valid"] is True
+    assert body["spec"]["template"] == "educational" and body["spec"]["fps"] == 30
     r = await client.post("/api/shorts/validate", json={"spec": {"captions": {"color": "javascript:x"}}})
-    assert r.status_code == 400 and r.json()["error"]["code"] == "invalid_request"
+    assert r.status_code == 200 and r.json() == {"valid": False, "error": {
+        "code": "invalid_request", "message": "spec.captions.color is not valid"}}
     r = await client.post("/api/shorts/validate", json={"spec": {"template": "x"}, "extra": 1})
-    assert r.status_code == 400
+    assert r.status_code == 200 and r.json()["valid"] is False
+    r = await client.post("/api/shorts/validate", content=b"x" * (65 * 1024), headers={"content-type": "application/json"})
+    assert r.status_code == 413
 
 
 # --- captions -----------------------------------------------------------------------------------
