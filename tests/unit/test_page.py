@@ -349,6 +349,15 @@ def test_cards_are_simple():
     assert "Load into editor" not in ai
 
 
+def test_step_one_copy():
+    page = _html()
+    ai = (STATIC / "ai.js").read_text(encoding="utf-8")
+    shorts = (STATIC / "shorts.js").read_text(encoding="utf-8")
+    assert "syncChips(" in shorts and 'name="make-platform"' in page
+    assert "Finding moments needs an OpenRouter key" in ai
+    assert "Ranking moments" in ai and "highlights found" not in ai
+
+
 SHORTS_IDS = [
     "shorts-status", "shorts-hand", "shorts-clips", "shorts-platform", "shorts-template", "shorts-quality", "shorts-fps", "shorts-layout",
     "shorts-margin", "shorts-manual", "shorts-manual-x", "shorts-manual-y", "shorts-manual-zoom",

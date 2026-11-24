@@ -7,8 +7,8 @@
 //
 // An analysis runs on the server (POST /api/sources/{id}/analyses) and is followed by polling
 // GET /api/analyses/{id}: queued → preparing → extracting → transcribing → analyzing → ranking →
-// ready (or failed / cancelled). sessionStorage keeps the analysis, the form, the tab and the
-// edits, so a reload comes back to the same highlights.
+// ready (or failed / cancelled). sessionStorage keeps the analysis, the form, the tab, the ticks and
+// the edits, so a reload comes back to the same moments.
 "use strict";
 
 (() => {
@@ -28,18 +28,18 @@
     extracting: "Extracting audio",
     transcribing: "Transcribing on this computer",
     analyzing: "Analyzing the transcript",
-    ranking: "Ranking highlights",
-    ready: "Highlights ready",
+    ranking: "Ranking moments",
+    ready: "Moments ready",
     transcribed: "Transcript ready",
     failed: "Analysis failed",
     cancelled: "Analysis cancelled",
     cancelling: "Cancelling…",
   };
   const MSG = {
-    notConfigured: "AI analysis isn't set up: add OPENROUTER_API_KEY to the server's .env and restart SaveMe. "
-      + "You can still transcribe and search this video.",
+    notConfigured: "Finding moments needs an OpenRouter key: add OPENROUTER_API_KEY to the server's .env and restart "
+      + "SaveMe (see docs/OPENROUTER_SETUP.md). You can still make shorts from clips you cut by hand in Manual.",
     lost: "This analysis is no longer on the server. Start it again.",
-    noTranscript: "No transcript yet. Find highlights or Transcribe only makes one on this computer, or import subtitles below.",
+    noTranscript: "No transcript yet. Find moments or Transcribe only makes one on this computer, or import subtitles below.",
     badTime: "Type a time like 1:05 or 65.5.",
     startAfterEnd: "The start must be before the end.",
     exportBusy: "Another export is running. Wait for it to finish, or cancel it.",
@@ -71,6 +71,7 @@
   let failures = 0;
   let estimateTimer = 0;
   let estimateSeq = 0;
+  let overLimit = false; // the estimate from the transcript is over the cost limit: Find moments won't run
   let edits = {}; // highlight id -> [start, end] as adjusted by the user
   let selected = new Set(); // the ticked moments: these are made into shorts
   let pickedFor = ""; // the analysis whose moments the ticks and edits belong to
@@ -260,15 +261,19 @@
     scheduleEstimate();
   }
 
+  // Step 1 says something only when Find moments can't run; the model line lives under More settings.
   function paintStatus() {
+    const whisper = `Transcription: Whisper ${str(status.whisper_model)}, on this computer.`;
     if (!status.available) {
-      const message = (status.error && str(status.error.message)) || "AI Highlights is turned off.";
-      setLine(el.aiStatus, `AI Highlights is off: ${message} Fix the setting and restart SaveMe.`, "error");
+      const message = (status.error && str(status.error.message)) || "Finding moments is turned off.";
+      setLine(el.aiStatus, `Finding moments is off: ${message} Fix the setting and restart SaveMe.`, "error");
+      setText(el.aiModel, "");
     } else if (!status.configured) {
-      setLine(el.aiStatus, MSG.notConfigured);
+      setLine(el.aiStatus, MSG.notConfigured, "error");
+      setText(el.aiModel, whisper);
     } else {
-      setLine(el.aiStatus, `AI model: ${str(status.model)} (through OpenRouter). Transcription: Whisper `
-        + `${str(status.whisper_model)}, on this computer.`);
+      setLine(el.aiStatus, "");
+      setText(el.aiModel, `AI model: ${str(status.model)} (through OpenRouter). ${whisper}`);
     }
     el.aiTest.disabled = !status.available || !status.configured;
   }
@@ -331,9 +336,9 @@
     for (const input of [el.aiMin, el.aiMax, el.aiMinScore]) input.removeAttribute("aria-invalid");
     let problem = "";
     let bad = null;
-    if (!Number.isFinite(min) || min < 3 || min > 600) [problem, bad] = ["The shortest clip must be 3 to 600 seconds.", el.aiMin];
-    else if (!Number.isFinite(max) || max < 5 || max > 900) [problem, bad] = ["The longest clip must be 5 to 900 seconds.", el.aiMax];
-    else if (max < min + 1) [problem, bad] = ["The longest clip must be at least 1 second longer than the shortest.", el.aiMax];
+    if (!Number.isFinite(min) || min < 3 || min > 600) [problem, bad] = ["The shortest moment must be 3 to 600 seconds.", el.aiMin];
+    else if (!Number.isFinite(max) || max < 5 || max > 900) [problem, bad] = ["The longest moment must be 5 to 900 seconds.", el.aiMax];
+    else if (max < min + 1) [problem, bad] = ["The longest moment must be at least 1 second longer than the shortest.", el.aiMax];
     else if (!Number.isInteger(score) || score < 0 || score > 100) [problem, bad] = ["The minimum score must be a whole number from 0 to 100.", el.aiMinScore];
     if (problem) {
       bad.setAttribute("aria-invalid", "true");
@@ -351,7 +356,7 @@
   function paintButtons() {
     const available = Boolean(status && status.available);
     const configured = available && status.configured;
-    el.aiStart.disabled = !source || running || making || !configured;
+    el.aiStart.disabled = !source || running || making || overLimit || !configured;
     el.aiTranscribe.disabled = !source || running || !available;
     el.aiSubsFile.disabled = !source || running || !available;
     el.aiRetranscribe.disabled = running;
@@ -362,14 +367,22 @@
     estimateTimer = setTimeout(estimate, ESTIMATE_DELAY_MS);
   }
 
+  function setOverLimit(on) {
+    if (overLimit === on) return;
+    overLimit = on;
+    paintButtons();
+  }
+
   async function estimate() {
     if (!source || !status || !status.available || !status.configured) {
       setLine(el.aiEstimate, "");
+      setOverLimit(false);
       return;
     }
     const built = request(false);
     if (!built.body) {
       setLine(el.aiEstimate, "");
+      setOverLimit(false);
       return;
     }
     const g = gen;
@@ -378,16 +391,18 @@
     try {
       result = await api(`${sourceBase()}/analyses/estimate`, built.body);
     } catch (err) {
-      if (g === gen && seq === estimateSeq) setLine(el.aiEstimate, `Couldn't estimate the cost. ${err.message}`, "error");
+      if (g === gen && seq === estimateSeq) {
+        setLine(el.aiEstimate, `Couldn't estimate the cost. ${err.message}`, "error");
+        setOverLimit(false);
+      }
       return;
     }
     if (g !== gen || seq !== estimateSeq) return;
-    const basis = result.basis === "transcript" ? "from the transcript"
-      : "from the video's length (checked again once it's transcribed)";
-    const text = `Estimated cost: about ${fmtUsd(result.estimated_usd)}, at most ${fmtUsd(result.max_usd)}, `
-      + `${basis}. Limit: ${fmtUsd(result.limit_usd)} per analysis.`;
+    const text = `Estimated cost: about ${fmtUsd(result.estimated_usd)} (at most ${fmtUsd(result.max_usd)}).`;
     const over = result.within_limit === false && result.basis === "transcript";
-    setLine(el.aiEstimate, over ? `${text} That's over the limit, so it won't run.` : text, over ? "error" : "");
+    setLine(el.aiEstimate, over ? `${text} That's over the ${fmtUsd(result.limit_usd)} limit, so it won't run.` : text,
+      over ? "error" : "");
+    setOverLimit(over);
   }
 
   // ---- analysis -----------------------------------------------------------------------------
@@ -433,7 +448,7 @@
     analysisId = created.analysis_id;
     failures = 0;
     store();
-    announce(transcribeOnly ? "Transcription started." : "Looking for highlights.");
+    announce(transcribeOnly ? "Transcription started." : "Looking for moments.");
     poll(g, analysisId);
   }
 
@@ -489,7 +504,7 @@
       paintResults(shown || next, onlyTranscript && !shown);
       if (source) loadTranscript(gen, onlyTranscript);
       const found = Array.isArray(next.candidates) ? next.candidates.length : 0;
-      announce(onlyTranscript ? "Transcript ready." : `${count(found, "highlight", "highlights")} found.`);
+      announce(onlyTranscript ? "Transcript ready." : `${count(found, "moment", "moments")} found.`);
     } else {
       if (shown) paintResults(shown, false); // the earlier highlights are still good
       else show(el.aiResults, false);
@@ -591,7 +606,8 @@
       store();
     }
     show(el.aiResults, true);
-    setText(el.aiResultsCount, highlights.length ? count(highlights.length, "highlight", "highlights") : "");
+    setText(el.aiResultsCount, highlights.length ? count(highlights.length, "moment", "moments") : "");
+    show(el.makeNoMoments, highlights.length === 0);
     const usage = v.usage;
     if (usage && isNum(usage.cost_usd)) {
       const how = usage.cost_reported ? "reported by OpenRouter" : "estimated from the token counts";
@@ -931,7 +947,7 @@
       return;
     }
     const lines = data && isNum(data.segments) ? data.segments : 0;
-    setLine(el.aiSubsMsg, `Imported ${count(lines, "subtitle line", "subtitle lines")}. Find highlights will use them instead of transcribing.`);
+    setLine(el.aiSubsMsg, `Imported ${count(lines, "subtitle line", "subtitle lines")}. Find moments will use them instead of transcribing.`);
     announce("Subtitles imported.");
     loadTranscript(g, true);
     scheduleEstimate();

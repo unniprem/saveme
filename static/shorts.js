@@ -67,7 +67,7 @@
     "shorts-render-msg", "shorts-render", "shorts-render-label", "shorts-progress", "shorts-progress-spin",
     "shorts-progress-status", "shorts-progress-percent", "shorts-progress-bar", "shorts-progress-fill",
     "shorts-results", "shorts-zip", "shorts-cancel", "shorts-nocaps", "shorts-nocaps-msg", "shorts-nocaps-go",
-    "make-pick", "announcer",
+    "make-pick", "make-platform-chips", "make-platform-other", "announcer",
   ]) {
     el[id.replace(/^shorts-/, "").replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = document.getElementById(id);
   }
@@ -205,6 +205,17 @@
     return s;
   }
 
+  // "Where will you post?": the chip for the platform under More settings → Look, or none of them with
+  // "Other: <name>" when that platform isn't one of the three.
+  function syncChips() {
+    const radios = [...el.makePlatformChips.querySelectorAll('input[name="make-platform"]')];
+    const match = radios.find((r) => r.value === el.platform.value);
+    for (const r of radios) r.checked = r === match;
+    const other = match ? null : byId(options && options.platforms, el.platform.value);
+    setText(el.makePlatformOther, other ? `Other: ${other.name}` : "");
+    show(el.makePlatformOther, Boolean(other));
+  }
+
   // Ask the server whether a saved preset's spec is valid; its normalised spec, or an error to show.
   async function validated(s) {
     const r = await api("/api/shorts/validate", { spec: s });
@@ -243,6 +254,7 @@
     if (el.brandOn.checked) el.brandColor.value = b.brand_color.toLowerCase();
     if (typeof b.title_bar === "boolean") el.titleBar.checked = b.title_bar;
     outputs();
+    syncChips();
   }
 
   // ---- storage -------------------------------------------------------------------------------
@@ -289,6 +301,7 @@
     fill(el.highlightMode, HIGHLIGHTS);
     fill(el.logoPosition, CORNERS);
     applyTemplate(options.templates[0].id);
+    syncChips();
     if (options.available) {
       const encoder = options.encoder || {};
       setLine(el.status, `Ready. Encoding with ${encoder.hardware ? "the Mac's video hardware" : "x264 (software)"}`
@@ -1239,6 +1252,16 @@
     input.addEventListener("change", changed);
   }
   for (const input of [el.platform, el.words, el.size]) input.addEventListener("change", refreshCaptions);
+  el.platform.addEventListener("change", syncChips);
+  for (const radio of el.makePlatformChips.querySelectorAll('input[name="make-platform"]')) {
+    radio.addEventListener("change", () => {
+      if (!radio.checked || !options || !byId(options.platforms, radio.value)) return;
+      el.platform.value = radio.value;
+      changed();
+      refreshCaptions();
+      syncChips();
+    });
+  }
   el.transcribe.addEventListener("click", transcribe);
   el.cuesAdd.addEventListener("click", editorAdd);
   el.cuesReset.addEventListener("click", editorReset);
