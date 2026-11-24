@@ -8,7 +8,7 @@
 
 The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with local faster-whisper transcription and OpenRouter as the only AI provider, built test-first in small commits on `feature/ai-clipping`, with this journal updated after every task. The brief was taken as a go-ahead without a question round; design calls are under Key Decisions.
 
-**Status: in progress.** Tasks 1–7 (backend and UI) are done. Integration testing (Task 8) is next.
+**Status: in progress.** Tasks 1–8 are done: backend, UI and integration testing (suite, Docker image, hardened container, real browser). Task 9 (final docs and review) is in progress. The README, `docs/OPENROUTER_SETUP.md` and `docs/AI_CLIPPING_IMPLEMENTATION.md` are written, and an independent review is running.
 
 ### Progress by task
 
@@ -19,7 +19,7 @@ The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with lo
 - [x] **Task 5, highlight engine.** `app/highlights.py`: chunks (≤ 6,000 estimated tokens, ≤ 20 min, overlap max(60 s, max clip length)), prompts, strict JSON schema, per-item pydantic validation, snapping and length rules, dedupe (> 30 % of the shorter clip), ranking, estimates, and `analyze()` with the spend guard. Also `tests/network/test_openrouter_live.py` (opt-in, needs a key).
 - [x] **Task 6, job integration.** `JobManager` hooks: `hold_source`/`release_source`, `add_source_listener` and `make_room`. `app/ai_jobs.py` `AiManager` runs the stages with its own semaphore. `app/ai_routes.py` adds the routes. `app/main.py` wires them in, lets the subtitle import read its own body, and gives AI fields their own validation messages.
 - [x] **Task 7, UI.** A Manual / AI Highlights tab switch in Clip Studio (`static/index.html`) and `static/ai.js`. `window.SaveMeStudioBridge` in `static/studio.js` lets the AI tab reuse the editor, clip list and export. The design is in §11 of the design doc.
-- [ ] Task 8, integration testing
+- [x] **Task 8, integration testing.** The whole suite, the image's FFmpeg check, the Docker smoke test, a real transcription and a cancel in the hardened container, and Chrome walkthroughs of AI Highlights, Phase 1 clipping and the downloader.
 - [ ] Task 9, docs and review
 
 ### Changes Made
@@ -42,6 +42,12 @@ The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with lo
 | `dba2550` | feat | Add the AI Highlights API routes |
 | `16d59eb` | fix | Answer a missing transcript with null instead of 404 |
 | `a4134c3` | feat | Add the AI Highlights tab to Clip Studio |
+| `e2829d2` | fix | Retry a Whisper model download that fails for a moment |
+| `802b769` | test | Check AI Highlights in the Docker smoke test |
+| `55a8acd` | docs | Describe AI Highlights in the README |
+| `0dccfe4` | docs | Add the OpenRouter setup guide |
+| `7049622` | docs | Add AI clipping implementation notes and align the design's API |
+| `c284abe` | fix | Let the smoke test read the whole model list |
 
 ### Test Results
 
@@ -71,6 +77,26 @@ The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with lo
   - a 404 console error came from the "any transcript yet?" probe (`16d59eb`);
   - stopped runs didn't show where they stopped;
   - a cancelled run hid the earlier highlights.
+
+- **Task 8:**
+  - **Phase 1 regression in Chrome.** `check-zip.js` against `serve.py` (in `$CLAUDE_JOB_DIR/tmp/dev/`), with no console problems:
+    - three clips added and sorted, and a repeat refused;
+    - Load, Remove, and a reload restoring the list;
+    - a ZIP of 3 stored H.264+AAC entries;
+    - cancel winning the race with no download;
+    - Close clearing storage;
+    - phone 375 px, dark, with no horizontal scroll and 40 px row buttons, and a 2-clip ZIP from an upload.
+  - **Downloader in Chrome.** `check-download.js`: a video and an MP3 both reached "Saved", with no console problems.
+  - **Docker.** `saveme:ai-clipping` built. The first build failed on a transient DNS error fetching the Whisper model ("Name or service not known"); DNS worked from containers straight after, and the rebuild passed. `e2829d2` makes the installer retry.
+  - **`scripts/docker-ffmpeg-check.sh saveme:ai-clipping`: FFMPEG CHECK OK.** Every matrix case passed, the 4 new WAV cases included (AAC MP4, Opus WebM, AC-3 MKV to 16 kHz mono PCM), and **535 integration tests passed inside the image** against the minimal FFmpeg 9.0.2. One test skipped: the real-Whisper test, which needs macOS `say`.
+  - **`scripts/docker-smoke.sh`: SMOKE OK**, isolated as `COMPOSE_PROJECT_NAME=saveme-ctest` with an override setting `image: saveme:ai-clipping` and `SAVEME_PORT=8001`. The new AI step's `grep -q` caused a harmless BrokenPipe traceback, fixed in `c284abe`. The live `saveme-saveme-1` wasn't touched, and `saveme-ctest` was taken down afterwards.
+  - **Hardened container** (`container-ai.sh`, `container-ai-cancel.sh` in `$CLAUDE_JOB_DIR/tmp/dev/ai/`):
+    - Analysis without a key was refused with 503 `ai_not_configured`.
+    - Uploading the 100 s talk and running Transcribe only, with the baked `base` model, finished in 11 s. It found English and 20 segments, with correct text ("…now I use an AI assistant every single day…"), and the container's memory peaked near 364 MiB.
+    - The source folder held only `media.mp4` and `ai/transcript.json`. No folders were left after Close.
+    - Cancelling during transcription answered `cancelled`. Within 6 s, 0 transcriber processes remained (1 while it ran) and the `ai/` folder was empty. 0 folders were left after Close.
+  - **Whole suite at `c284abe`: 911 passed, 2 skipped, 8 deselected** (113 s, idle machine).
+  - One earlier whole-suite run, during the Docker build's FFmpeg compile (177 s instead of ~110 s), failed the **existing** `tests/integration/test_api.py::test_aborted_download_keeps_file`. It passed 5/5 alone and 102/102 in its file twice once the machine was idle. Cause: after aborting a download the test sleeps a fixed 1 s, then requests the file again. Under heavy CPU load the server may not have noticed the disconnect yet, so the file is still claimed (409). This predates this branch, and delivery wasn't changed. It's left as is and noted under Pending Work.
 
 ### Key Decisions
 
