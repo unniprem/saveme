@@ -19,8 +19,9 @@ from a link, or uploaded. It is never delivered, MAX_READY_FILES and disk-room e
 skip it, and it ends when closed, after JOB_TTL_MINUTES unused (never while one of its
 clips is pending), or when MAX_CLIP_SOURCES is reached and it is the least recently used.
 A clip (kind "clip") cuts a range out of a ready source into its own folder and, once
-ready, is delivered like a download; a cancelled clip can't be resumed. All kinds share
-the queue, the slots and the disk budget.
+ready, is delivered like a download; a cancelled clip can't be resumed. A batch (kind
+"batch") is the same for a list of ranges, delivered as one ZIP. All kinds share the
+queue, the slots and the disk budget.
 """
 import asyncio
 import logging
@@ -36,7 +37,9 @@ from pathlib import Path
 
 from app.config import ConfigError, Settings
 from app.errors import AppError
-from app.filenames import clip_filename, media_type_for, sanitize_filename
+from app.filenames import (ZIP_MEDIA_TYPE, batch_entry_name, batch_filename, clip_filename,
+                           media_type_for, sanitize_filename)
+from app.mediafile import BATCH_NAME, MAX_BATCH_CLIPS
 from app.runner import DEFAULT_WORKER_CMD, RunWorker, dir_size, run_worker
 
 logger = logging.getLogger(__name__)
@@ -59,7 +62,8 @@ END_TOLERANCE_SECONDS = 0.05
 _ACTIVE = frozenset({"downloading", "converting", "uploading", "checking", "cutting"})
 _PENDING = frozenset({"queued", *_ACTIVE})
 _TERMINAL = frozenset({"failed", "expired", "cancelled"})
-_JOB_KINDS = frozenset({"download", "clip"})  # what /api/jobs serves; sources have their own routes
+_JOB_KINDS = frozenset({"download", "clip", "batch"})  # what /api/jobs serves; sources have their own
+_CUT_KINDS = frozenset({"clip", "batch"})  # jobs cut out of a source
 
 
 def _is_job_id(value: object) -> bool:
@@ -129,11 +133,12 @@ class Job:
     finished_at: float | None = None
     resume_until: float | None = None  # set while a cancelled job can be resumed
     delivering: bool = False  # its file is being sent to a client
-    kind: str = "download"  # download | source | clip
+    kind: str = "download"  # download | source | clip | batch
     origin: str | None = None  # a source's origin: link | upload
-    source_id: str | None = None  # a clip's source
+    source_id: str | None = None  # a clip's or batch's source
     start: float | None = None  # a clip's range, in seconds
     end: float | None = None
+    ranges: tuple[tuple[float, float], ...] = ()  # a batch's ranges, in seconds, in order
     duration: float | None = None  # a ready source's length in seconds, when known
     last_used: float | None = None  # a ready source's last use, for its idle TTL
     task: asyncio.Task | None = field(default=None, repr=False)  # the latest run
@@ -312,7 +317,7 @@ class JobManager:
         job = self.get_source(source_id)
         if job.status not in _TERMINAL:
             for clip in [j for j in self._jobs.values()
-                         if j.kind == "clip" and j.source_id == job.id and j.status in _PENDING]:
+                         if j.kind in _CUT_KINDS and j.source_id == job.id and j.status in _PENDING]:
                 self.cancel(clip.id)
             if job.task is not None:
                 job.task.cancel()
@@ -353,13 +358,17 @@ class JobManager:
             self._jobs.pop(job.id, None)
         _remove_dir(job.workdir)
 
-    def submit_clip(self, source_id: str, start: float, end: float) -> Job:
-        """Queue a cut of [start, end) seconds out of a ready source (times in ms)."""
+    def _ready_source(self, source_id: str) -> Job:
         source = self.get_source(source_id)
         if source.status in _TERMINAL:
             raise AppError("source_not_found")
         if source.status != "ready" or source.file_path is None:
             raise AppError("source_not_ready")
+        return source
+
+    def submit_clip(self, source_id: str, start: float, end: float) -> Job:
+        """Queue a cut of [start, end) seconds out of a ready source (times in ms)."""
+        source = self._ready_source(source_id)
         start, end = _clip_range(round(start, 3), round(end, 3), source.duration)
         self._admit("clip")
         self.touch(source)
@@ -369,12 +378,32 @@ class JobManager:
         logger.info("clip %s queued from source %s", job.id, source.id)
         return job
 
+    def submit_batch(self, source_id: str, ranges: Sequence[tuple[float, float]]) -> Job:
+        """Queue cuts of every (start, end) range out of a ready source, delivered as one
+        ZIP; each range follows the clip rules, and an error names the clip it is about."""
+        source = self._ready_source(source_id)
+        if not 1 <= len(ranges) <= MAX_BATCH_CLIPS:
+            raise AppError("invalid_request", f"Send 1 to {MAX_BATCH_CLIPS} clips.")
+        checked = []
+        for number, (start, end) in enumerate(ranges, 1):
+            try:
+                checked.append(_clip_range(round(start, 3), round(end, 3), source.duration))
+            except AppError as exc:
+                raise AppError(exc.code, f"Clip {number}: {exc.message}") from None
+        self._admit("batch")
+        self.touch(source)
+        job = self._new_job(url="", output="video", quality="best", kind="batch", source_id=source.id,
+                            ranges=tuple(checked), title=source.title)
+        self._start(job)
+        logger.info("batch %s of %d clips queued from source %s", job.id, len(checked), source.id)
+        return job
+
     def _open_sources(self) -> list[Job]:
         return [j for j in self._jobs.values() if j.kind == "source" and j.status not in _TERMINAL]
 
     def _in_use(self, source: Job) -> bool:
-        """True while one of the source's clips is queued or running."""
-        return any(j.kind == "clip" and j.source_id == source.id and j.status in _PENDING
+        """True while one of the source's clips or batches is queued or running."""
+        return any(j.kind in _CUT_KINDS and j.source_id == source.id and j.status in _PENDING
                    for j in self._jobs.values())
 
     def _make_source_room(self) -> None:
@@ -521,8 +550,9 @@ class JobManager:
 
     def _reserve_for(self, kind: str) -> int:
         """Disk a job of this kind may need. A clip is a stream copy that -fs stops at
-        MAX_FILE_SIZE_MB; a download (two tracks, then their merge) or an upload (the file,
-        then its MP4 remux) may need two copies."""
+        MAX_FILE_SIZE_MB; a download (two tracks, then their merge), an upload (the file,
+        then its MP4 remux) or a batch (the ZIP, and the part being added to it) may need
+        two copies."""
         return self._settings.max_file_bytes if kind == "clip" else self._reserve
 
     def _make_room(self, *, count_active: bool, reserve: int, job: Job | None = None) -> bool:
@@ -615,7 +645,7 @@ class JobManager:
             self._fail(job, exc)
             return
         try:
-            if job.kind == "clip":
+            if job.kind in _CUT_KINDS:
                 await self._clip(job)
             elif job.origin == "upload":
                 await self._work(job, "checking", "Checking the video",
@@ -635,11 +665,18 @@ class JobManager:
             if source is None or source.status != "ready" or source.file_path is None:
                 self._fail(job, AppError("source_not_found"))  # closing it cancels its clips first
                 return
-            await self._work(job, "cutting", "Cutting the clip",
-                             {"mode": "clip", "source": str(source.file_path),
-                              "workdir": str(job.workdir), "start": job.start, "end": job.end,
-                              "keep_tags": source.origin == "link",
-                              "max_bytes": self._settings.max_file_bytes})
+            request = {"source": str(source.file_path), "workdir": str(job.workdir),
+                       "keep_tags": source.origin == "link", "max_bytes": self._settings.max_file_bytes}
+            if job.kind == "batch":
+                ext = source.file_path.suffix[1:]
+                request["clips"] = [{"start": start, "end": end,
+                                     "name": batch_entry_name(number, job.title, start, end, ext)}
+                                    for number, (start, end) in enumerate(job.ranges, 1)]
+                await self._work(job, "cutting", f"Cutting clip 1 of {len(job.ranges)}",
+                                 {"mode": "batch", **request})
+            else:
+                await self._work(job, "cutting", "Cutting the clip",
+                                 {"mode": "clip", **request, "start": job.start, "end": job.end})
         finally:
             if source is not None:
                 self.touch(source)  # the idle TTL restarts once its clip ends
@@ -683,25 +720,26 @@ class JobManager:
             return
         detail = event.get("detail")
         if event.get("event") == "progress":
-            job.status = "cutting" if job.kind == "clip" else "downloading"
+            job.status = "cutting" if job.kind in _CUT_KINDS else "downloading"
             if isinstance(detail, str):
                 job.detail = detail
             job.downloaded_bytes = _count(event.get("downloaded_bytes"))
             job.total_bytes = _count(event.get("total_bytes"))
             job.progress_percent = _percent(event.get("percent"))
         elif (event.get("event") == "phase" and event.get("phase") == "converting"
-              and job.kind != "clip"):
+              and job.kind not in _CUT_KINDS):
             job.status = "converting"
             job.detail = detail if isinstance(detail, str) else None
             job.progress_percent = None
 
     def _make_ready(self, job: Job, result: dict) -> None:
         ext, name = result.get("ext"), result.get("file")
-        if not isinstance(ext, str) or name != f"media.{ext}":
+        zip_expected = job.kind == "batch"  # only a batch returns a ZIP, and always does
+        if not isinstance(ext, str) or name != f"media.{ext}" or zip_expected != (name == BATCH_NAME):
             logger.error("job %s: worker returned an unexpected file entry", job.id)
             raise AppError("internal")
         try:
-            media_type = media_type_for(ext)
+            media_type = ZIP_MEDIA_TYPE if job.kind == "batch" else media_type_for(ext)
         except KeyError:
             logger.error("job %s: worker returned unsupported extension %r", job.id, ext)
             raise AppError("internal") from None
@@ -715,6 +753,8 @@ class JobManager:
         job.notice = notice if isinstance(notice, str) else None
         if job.kind == "clip":
             job.filename = clip_filename(job.title, job.start, job.end, ext)
+        elif job.kind == "batch":
+            job.filename = batch_filename(job.title, len(job.ranges))
         else:
             job.filename = sanitize_filename(job.title, ext)
         job.media_type = media_type
