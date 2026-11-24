@@ -103,7 +103,11 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 
 ### Handoff
 
-- All 10 plan tasks and the review fix pass are done. Every ruling (with its cost if wrong) and every deferred minor is in `.superpowers/sdd/2026-11-24-clip-studio-phase-1/progress.md` (git-ignored ledger).
+- All 10 plan tasks and the review fix pass are done. The deviations from the plan are recorded above:
+  - Under Issues Encountered: the clip test measuring shown frames instead of container duration, the MKV image-check case instead of TS, and the `videoWidth` preview fallback.
+  - Under Key Decisions: the disk reservations.
+  - Under Pending Work: the deferred review minors.
+- Browser checks used scripts in `/tmp/claude-501/saveme-dev/` (outside the repo, temporary): `serve.py` is a loopback-allowed dev server; `check-studio-*.js` and `check-review-fixes.js` drive Chrome through `playwright-core`. Recreate them from this description if `/tmp` is cleared.
 - Phase 2 (AutoClip-style: transcripts, highlight suggestions, 9:16 reframing, burned-in subtitles) needs an H.264 encoder in the FFmpeg build and its own security and licensing review first. See §7 of the design doc.
 - Tests: `.venv/bin/pytest -q`. Real FFmpeg and ffprobe must be on `PATH` (Homebrew on this Mac).
 
