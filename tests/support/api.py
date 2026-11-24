@@ -100,8 +100,8 @@ def live_server(app) -> Iterator[int]:
 class StudioStub:
     """Stand-in for run_worker covering every mode. A download writes media.mp4 and reports
     `duration`; a probe renames the upload to media.mp4; a clip emits one progress event
-    and writes a small media.mp4, and a batch the same with media.zip. Modes in `block`
-    wait on `gate` first."""
+    and writes a small media.mp4, and a batch the same with media.zip; a transcribe writes a
+    transcript of 5 s segments over the whole duration. Modes in `block` wait on `gate` first."""
 
     def __init__(self, *, duration: float | None = 12.5, block: tuple[str, ...] = ()):
         self.duration = duration
@@ -127,6 +127,17 @@ class StudioStub:
                       "downloaded_bytes": 10, "total_bytes": None})
             (workdir / "media.mp4").write_bytes(b"clip bytes")
             return {"file": "media.mp4", "ext": "mp4"}
+        if mode == "transcribe":
+            from tests.support.ai import speech_transcript
+            from app.transcript import save_transcript
+
+            on_event({"event": "phase", "phase": "extracting", "detail": "Extracting audio"})
+            on_event({"event": "phase", "phase": "transcribing", "detail": "Transcribing"})
+            transcript = speech_transcript(request["duration"] or self.duration or 12.5,
+                                           requested=request["language"])
+            save_transcript(workdir / "transcript.json", transcript)
+            return {"file": "transcript.json", "segments": len(transcript.segments),
+                    "language": transcript.language, "duration": transcript.duration}
         if mode == "batch":
             on_event({"event": "progress", "detail": f"Cutting clip 1 of {len(request['clips'])}",
                       "percent": 25.0, "downloaded_bytes": 10, "total_bytes": None})

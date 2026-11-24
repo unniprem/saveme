@@ -9,8 +9,9 @@ downloads and client disconnects go straight through it). It:
   (no Origin header is fine: curl and scripts don't send one);
 - answers 503 config_error for /api/* while the app is degraded;
 - reads a POST body itself, before any JSON parsing, and answers 413 request_too_large
-  once it passes MAX_BODY_BYTES (Content-Length or not). The one exception is the Clip
-  Studio upload (UPLOAD_PATH), whose route streams the file with limits of its own;
+  once it passes MAX_BODY_BYTES (Content-Length or not). The two exceptions are the Clip
+  Studio upload (UPLOAD_PATH) and the AI Highlights subtitle import (TRANSCRIPT_PATH), whose
+  routes read their bodies with limits of their own;
 - turns an unexpected exception into a 500 `internal` body; the traceback goes to the log only.
 
 Degraded mode: when the settings don't load (or TEMP_DIR is refused at startup) the
@@ -35,7 +36,9 @@ from starlette.datastructures import Headers, MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.config import ConfigError, Settings, load_settings
+from app.ai_jobs import TRANSCRIBER_CMD, AiManager
+from app.ai_routes import TRANSCRIPT_PATH, add_ai_routes
+from app.config import AiSettings, ConfigError, Settings, load_ai_settings, load_settings
 from app.errors import CATALOG, AppError
 from app.filenames import content_disposition
 from app.jobs import APP_DIR, JobManager
@@ -75,6 +78,18 @@ _HTTP_MESSAGES = {404: "Not found.", 405: "Method not allowed."}
 _CHOICES = {"output": get_args(Output), "quality": get_args(Quality)}
 _FIELD_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
 _TIME_FIELDS = frozenset({"start", "end"})
+# AI Highlights request fields: what each accepts, for any error about it.
+_ANALYSIS_FIELDS = {
+    "count": "count must be a whole number from 1 to 20",
+    "min_seconds": "min_seconds must be a number of seconds from 3 to 600",
+    "max_seconds": "max_seconds must be a number of seconds from 5 to 900",
+    "min_score": "min_score must be a whole number from 0 to 100",
+    "language": "language must be auto or a language from the list",
+    "instruction": "instruction can be at most 500 characters",
+    "retranscribe": "retranscribe must be true or false",
+    "transcribe_only": "transcribe_only must be true or false",
+}
+_LENGTH_RULE = "max_seconds must be at least 1 more than min_seconds"
 _NUMBER_ERRORS = frozenset({"float_type", "float_parsing", "finite_number", "greater_than_equal"})
 
 
@@ -110,6 +125,8 @@ def _validation_message(errors: Sequence[dict]) -> str:
             return f"{clip} must be an object with a start and an end"
         return f"{clip}: {_field_message(kind, '.'.join(str(part) for part in loc[2:]))}"
     field = ".".join(str(part) for part in loc)
+    if not field and kind == "value_error" and _LENGTH_RULE in str(error.get("msg", "")):
+        return _LENGTH_RULE
     if not field:
         return "The request body must be a JSON object."
     if field == "clips" and kind in ("too_short", "too_long"):
@@ -124,6 +141,8 @@ def _field_message(kind: object, field: str) -> str:
         if _FIELD_NAME.fullmatch(field):
             return f"{field} is not an accepted field"
         return "The request has a field that isn't accepted"
+    if field in _ANALYSIS_FIELDS and kind != "missing":
+        return _ANALYSIS_FIELDS[field]
     if kind in _NUMBER_ERRORS and field in _TIME_FIELDS:
         return f"{field} must be a number of seconds, 0 or more"
     if kind == "literal_error" and field in _CHOICES:
@@ -216,7 +235,7 @@ class _Guard:
             await send(message)
 
         refusal = self._refusal(scope)
-        if refusal is None and scope["method"] == "POST" and scope["path"] != UPLOAD_PATH:
+        if refusal is None and scope["method"] == "POST" and not _reads_own_body(scope["path"]):
             refusal, receive = await self._read_body(scope, receive)
         if refusal is not None:
             await refusal(scope, receive, send_with_headers)
@@ -275,6 +294,11 @@ class _Guard:
         return None
 
 
+def _reads_own_body(path: str) -> bool:
+    """The routes that read their own bodies, with limits of their own."""
+    return path == UPLOAD_PATH or TRANSCRIPT_PATH.fullmatch(path) is not None
+
+
 def _replay(messages: list[Message], receive: Receive) -> Receive:
     """A receive that hands out `messages` first, then defers to `receive`."""
     pending = list(messages)
@@ -288,11 +312,13 @@ def _replay(messages: list[Message], receive: Receive) -> Receive:
 # --- Runtime state and delivery ---------------------------------------------------
 
 class _Runtime:
-    """The job manager once started, or the configuration error that stopped it."""
+    """The job manager (and the AI manager beside it) once started, or the configuration error
+    that stopped them."""
 
     def __init__(self, config_error: ConfigError | None) -> None:
         self.config_error = config_error
         self.manager: JobManager | None = None
+        self.ai: AiManager | None = None
 
     def unavailable(self) -> AppError | None:
         if self.manager is not None:
@@ -304,6 +330,11 @@ class _Runtime:
         if self.manager is None:
             raise self.unavailable()
         return self.manager
+
+    def ai_manager(self) -> AiManager:
+        if self.ai is None:
+            raise self.unavailable()
+        return self.ai
 
 
 class _FileDelivery(Response):
@@ -446,6 +477,7 @@ def _api_router(settings: Settings, runtime: _Runtime, *, worker_cmd: tuple[str,
 
     add_studio_routes(router, settings, runtime.jobs, check_link=check_link,
                       upload_idle_seconds=upload_idle_seconds)
+    add_ai_routes(router, runtime.ai_manager, idle_seconds=upload_idle_seconds)
     return router
 
 
@@ -463,8 +495,14 @@ def create_app(
     delivery_idle_seconds: float = DELIVERY_IDLE_SECONDS,
     delivery_max_seconds: float = DELIVERY_MAX_SECONDS,
     upload_idle_seconds: float = UPLOAD_IDLE_SECONDS,
+    ai_settings: AiSettings | ConfigError | None = None,
+    transcriber_cmd: Sequence[str] = TRANSCRIBER_CMD,
+    openrouter_transport=None,
 ) -> FastAPI:
+    """`ai_settings` None means AI Highlights with no OpenRouter key (the module-level app reads
+    them from the environment). `openrouter_transport` replaces the network in tests."""
     worker_cmd = tuple(worker_cmd)
+    ai = load_ai_settings({}) if ai_settings is None else ai_settings
     healthy_settings = settings if isinstance(settings, Settings) else None
     runtime = _Runtime(settings if healthy_settings is None else None)
 
@@ -479,6 +517,11 @@ def create_app(
                 runtime.config_error = exc
             else:
                 runtime.manager = manager
+                runtime.ai = AiManager(ai, manager, run_worker=run_worker, transcriber_cmd=transcriber_cmd,
+                                       transport=openrouter_transport)
+                if isinstance(ai, ConfigError):
+                    logger.error("Invalid AI setting: %s AI Highlights is off; downloads and manual "
+                                 "clipping work as usual.", _config_message(ai))
         if runtime.config_error is not None:
             logger.error("Invalid configuration: %s saveme is running in degraded mode "
                          "(the API answers 503) until this is fixed and saveme is restarted.",
@@ -486,6 +529,9 @@ def create_app(
         try:
             yield
         finally:
+            ai_manager, runtime.ai = runtime.ai, None
+            if ai_manager is not None:
+                await ai_manager.shutdown()
             manager, runtime.manager = runtime.manager, None
             if manager is not None:
                 await manager.shutdown()
@@ -535,4 +581,11 @@ def _settings_or_error() -> Settings | ConfigError:
         return exc
 
 
-app = create_app(_settings_or_error())
+def _ai_settings_or_error() -> AiSettings | ConfigError:
+    try:
+        return load_ai_settings(os.environ)
+    except ConfigError as exc:
+        return exc
+
+
+app = create_app(_settings_or_error(), ai_settings=_ai_settings_or_error())
