@@ -8,7 +8,7 @@
 
 The owner sent the Phase 3 brief: an automatic short-video renderer on top of Clip Studio and AI Highlights. It covers 9:16/16:9/1:1/4:5 output, smart reframing (center, face, speaker, split-screen, blurred background, original), word-timed burned-in subtitles in six styles with Malayalam support, templates, optional branding, batch rendering with a ZIP, and an Auto Shorts tab. It is built in small tested commits on `feature/auto-shorts`, with this journal updated after every task. The brief was taken as a go-ahead without a question round, and design calls are under Key Decisions.
 
-**Status: Tasks 1–8 done (backend complete, tested with the real renderer). Task 9 (the Auto Shorts tab) is next, then Task 10 (end-to-end checks, docs).**
+**Status: Tasks 1–9 done. Task 10 is running: docs are written, and the image rebuild, FFmpeg check, isolated smoke test, an independent review and the final suite are in progress.**
 
 ### Progress by task
 
@@ -70,7 +70,19 @@ The owner sent the Phase 3 brief: an automatic short-video renderer on top of Cl
     - assets, an on-demand ZIP, and pruning (4 renders and 4 previews per source, 50 records).
   - `app/render_routes.py`: 13 routes. Render, preview and asset routes read their own bodies (2 MiB JSON cap, 2 MB logo, 100 MB intro/outro).
   - Wired into `app/main.py`: `_Runtime.render`, lifespan, `OWN_BODY_PATHS`, and `RENDER_*` loaded separately (a bad value turns off only Auto Shorts).
-- [ ] Task 9, UI.
+- [x] **Task 9, UI.**
+  - `static/shorts.js` and the Auto Shorts tab in `static/index.html`:
+    - clips with checkboxes, and Use current marks;
+    - platform, template, quality, FPS;
+    - framing mode, safe margin, manual X/Y/zoom;
+    - captions: on, burn, SRT, style, position, size, words, colours, highlight, capitals, transcript status and Transcribe;
+    - a per-clip caption editor;
+    - branding: logo, watermark, brand colour, title bar, intro/outro;
+    - presets in localStorage: save, load, delete, export, import, each checked by `/api/shorts/validate`;
+    - previews: a still and a draft clip;
+    - the render, with per-clip measured %, estimated time left, Skip, Cancel, MP4/SRT links and the ZIP.
+  - `static/studio.js`: the bridge takes several `onSource` listeners and gains `onClips`/`clips`/`marks`/`currentTime`.
+  - `static/ai.js`: tabs cover three panels.
 - [ ] Task 10, end-to-end verification and documentation.
 
 ### Changes Made
@@ -89,6 +101,10 @@ The owner sent the Phase 3 brief: an automatic short-video renderer on top of Cl
 | `82c6812` | feat | Track faces for face, speaker-focus and split-screen framing |
 | `40bb407` | feat | Decode logos in Python so FFmpeg still never parses an image |
 | `71ccbd8` | feat | Add the Auto Shorts render manager and API |
+| `e717985` | docs | Update journal |
+| `780b3ac` | feat | Add the Auto Shorts tab to Clip Studio |
+| `bd4d05e` | docs | Describe Auto Shorts: implementation notes, presets reference and README |
+| `40cf9c9` | test | Render in the Docker checks |
 
 ### Test Results
 
@@ -161,6 +177,23 @@ The owner sent the Phase 3 brief: an automatic short-video renderer on top of Cl
   - The tests caught two real bugs, both fixed:
     - captions with `enabled: false` were still burned in;
     - a clip end past the video was clamped instead of refused (Clip Studio refuses it).
+- **Whole suite at `71ccbd8` (before the UI): 1217 passed, 3 skipped, 8 deselected** (163 s). The skips are the OpenCV cross-check (no `cv2` in `.venv`) and the two existing ones.
+- **Task 9:**
+  - `tests/unit/test_page.py`: 19 passed, adding the shorts markup, labels, ARIA, pinned copy, routes, script order and the Tailwind source.
+  - **Browser walkthrough** (Playwright with Chromium) against SaveMe run natively on port 8077, with a 64 s video: a public-domain portrait moving slowly, plus a `say` talk.
+    - Upload, two clips, the Auto Shorts tab. A reload restored the tab and settings.
+    - **Transcribe this video** ran real Whisper `base` in about 6 s. The status then read "Captions use the transcript's word timing (en)".
+    - The editor showed 18 word-timed cues. Editing the first to `Using an AI {\b1}` rendered as literal "USING AN AI (/B1)": escaped, no override applied.
+    - **Preview frame:** 540×960 with "Framing: Face tracking", and the cue matching the moment (checked by eye).
+    - **Render 2 shorts** on VideoToolbox. It showed "Rendering 48 % · about 0:02 left (estimate)", "Finding faces 11 %→83 %" for clip 2, then 1080×1920 for both and a ZIP link.
+    - Downloads: H.264 High, `yuv420p`, 25 fps, AAC LC 48 kHz stereo, exactly 20.000 s, with the right `Content-Disposition` name. The ZIP held 2 entries, and `testzip` passed.
+    - Presets: save, load, and same-name replacement. A tampered preset (`color: "red"`) gave "This preset can't be used: spec.captions.color is not valid".
+    - Keyboard: ArrowRight/ArrowLeft wrap across the three tabs.
+    - **Phone 375 px, dark:** `scrollWidth` 375, and no control under 36 px.
+    - Console: the only error was a 400 from validating the tampered preset. `/api/shorts/validate` now answers `{valid: false}` with 200, and it was re-checked with no error.
+  - Bugs the walkthrough found, all fixed before the UI commit:
+    - the bridge's `clips()`/`marks()` divided seconds by 1000;
+    - the validate console error above.
 
 ### Key Decisions
 
