@@ -15,11 +15,13 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 | `b899daf` | docs | Add Clip Studio phase 1 design |
 | `b040d4d` | docs | Add Clip Studio phase 1 implementation plan |
 | `7adb750` | refactor | Move local media helpers to `app/mediafile.py` and report duration |
+| `46f9878` | feat | Add a worker probe mode that checks and remuxes uploaded videos |
 
 ### Test Results
 
 - Baseline on `main` (`bea4549`): `.venv/bin/pytest -q` gave 471 passed, 2 skipped, 7 deselected (82 s).
 - Task 1 (`7adb750`): 475 passed, 2 skipped, 7 deselected.
+- Task 2 (`46f9878`): 495 passed, 2 skipped, 7 deselected. The new probe tests cover MP4 kept, MKV and TS remuxed to MP4, WebM, audio-only (`no_video`), random bytes (`unreadable_media`), a source outside the folder or symlinked (`internal`), and the container mapping.
 
 ### Key Decisions
 
@@ -34,7 +36,7 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 
 ### Pending Work
 
-- Tasks 2–10 of the plan (Task 1 done).
+- Tasks 3–10 of the plan (Tasks 1–2 done).
 
 ### Handoff
 
