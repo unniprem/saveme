@@ -14,6 +14,7 @@ that run after the guard is installed, never at module import time.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -28,7 +29,7 @@ from urllib.parse import urlsplit
 
 from app.cover import cover_opener, embed_cover, fetch_cover
 from app.errors import BLOCKED_MARKER, AppError, classify_ytdlp_error, too_large_message
-from app.mediafile import prepare_upload, probe, remux_to_mp4
+from app.mediafile import cut, prepare_upload, probe, remux_to_mp4
 from app.netguard import BlockedAddressError, check_url_syntax, install_connect_guard
 
 if TYPE_CHECKING:
@@ -48,6 +49,8 @@ _READ_BLOCK = 1024 * 1024
 # near 85 MiB, ffmpeg near 2 MiB.
 WORKER_MEMORY_BYTES = 1024 * 1024 * 1024
 _MISSING_TRACK = {"video": "no_video", "audio": "no_audio", "m4a": "no_audio"}
+# Containers a clip can be cut from and delivered in (a source is always one of these).
+_CLIP_EXTS = frozenset({"mp4", "mkv", "webm"})
 
 
 class _StderrLogger:
@@ -505,6 +508,47 @@ def run_probe(req: dict, emit: Callable[[dict], None]) -> dict:
     return result
 
 
+def _seconds(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return float(value)
+
+
+def _clip_args(req: dict) -> tuple[Path, Path, float, float, bool, int]:
+    workdir, source = _workdir(req), _local_file(req, "source")
+    start, end = _seconds(req.get("start")), _seconds(req.get("end"))
+    keep_tags, max_bytes = req.get("keep_tags"), req.get("max_bytes")
+    ext = source.suffix[1:]
+    if (not _MEDIA_NAME.fullmatch(source.name) or ext not in _CLIP_EXTS
+            or os.path.realpath(source.parent) == os.path.realpath(workdir)
+            or start is None or end is None or not 0 <= start < end
+            or type(keep_tags) is not bool or type(max_bytes) is not int or max_bytes <= 0):
+        print("worker: malformed clip request", file=sys.stderr)
+        raise AppError("internal")
+    return source, workdir / f"media.{ext}", start, end, keep_tags, max_bytes
+
+
+def run_clip(req: dict, emit: Callable[[dict], None]) -> dict:
+    """Cut req["start"]..req["end"] of the ready source req["source"] (another job's
+    media.<ext>) into req["workdir"] as media.<same ext>, emitting progress events
+    (spec §6.5). On failure the workdir is left empty."""
+    source, dst, start, end, keep_tags, max_bytes = _clip_args(req)
+
+    def progress(percent: float | None, written: int | None) -> None:
+        emit({"event": "progress", "detail": "Cutting the clip",
+              "percent": None if percent is None else round(percent, 1),
+              "downloaded_bytes": written, "total_bytes": None})
+
+    try:
+        cut(source, dst, start=start, end=end, keep_tags=keep_tags, max_bytes=max_bytes,
+            on_progress=progress)
+    except BaseException:
+        _clear(dst.parent)
+        raise
+    _clear(dst.parent, keep=dst.name)
+    return {"file": dst.name, "ext": dst.suffix[1:]}
+
+
 def _read_request(stdin: TextIO) -> dict:
     try:
         req = json.loads(stdin.read())
@@ -564,6 +608,8 @@ def serve(stdin: TextIO, out: TextIO) -> int:
             data = run_download({**req, "url": _url(req)}, emit)
         elif mode == "probe":
             data = run_probe(req, emit)
+        elif mode == "clip":
+            data = run_clip(req, emit)
         else:
             print(f"worker: unknown mode {mode!r}", file=sys.stderr)
             raise AppError("internal")
