@@ -2,6 +2,85 @@
 
 ---
 
+## 2026-11-24 14:23 IST — Session: Phase 3, Auto Shorts & Reels
+
+### Summary
+
+The owner sent the Phase 3 brief: an automatic short-video renderer on top of Clip Studio and AI Highlights. It covers 9:16/16:9/1:1/4:5 output, smart reframing (center, face, speaker, split-screen, blurred background, original), word-timed burned-in subtitles in six styles with Malayalam support, templates, optional branding, batch rendering with a ZIP, and an Auto Shorts tab. It is built in small tested commits on `feature/auto-shorts`, with this journal updated after every task. The brief was taken as a go-ahead without a question round, and design calls are under Key Decisions.
+
+**Status: Task 1 (audit and design) done. Task 2 next.**
+
+### Progress by task
+
+- [x] **Task 1, audit and design.**
+  - Phase 2 is fully merged: `main` = `origin/main` = `2edc86b`, and `feature/ai-clipping` (`fa43b51`) is its ancestor.
+  - Two older branches aren't merged into `main`: `feature/download-queue` and `feature/security-hardening`. Their unmerged commits change only the journal and a design document, with no code, so nothing was integrated.
+  - `feature/auto-shorts` was cut from `2edc86b`.
+  - No `OPENROUTER_API_KEY` exists here, so OpenRouter is still checked only through its mocked suite. Auto Shorts doesn't call it.
+  - `docs/AUTO_SHORTS_DESIGN.md` holds the audit, architecture, FFmpeg build/licensing/security review, reframing, subtitles, templates, API, lifecycle, limits and test plan.
+- [ ] Task 2, FFmpeg encoders and rendering infrastructure.
+- [ ] Task 3, aspect ratios, layouts and templates.
+- [ ] Task 4, subtitle generation and timing.
+- [ ] Task 5, subtitle styles and preview.
+- [ ] Task 6, smart crop and face tracking.
+- [ ] Task 7, branding and preset management.
+- [ ] Task 8, batch rendering integration.
+- [ ] Task 9, UI.
+- [ ] Task 10, end-to-end verification and documentation.
+
+### Changes Made
+
+| Commit    | Type | Description |
+| --------- | ---- | ----------- |
+| (next)    | docs | Add the Auto Shorts design |
+
+### Test Results
+
+- **Baseline on `feature/auto-shorts` before any change: 932 passed, 2 skipped, 8 deselected** (108 s). This equals the end of Phase 2.
+- **Encoder benchmark** on this M2 (8 GB): 30 s of 1080×1920 at 30 fps cropped from 1080p, 2 threads, `/usr/bin/time -l`:
+
+  | Encoder | Time | Peak RSS | Size |
+  | --- | --- | --- | --- |
+  | x264 `ultrafast` | 2.8 s | 162 MB | 31.5 MB |
+  | x264 `veryfast` | 5.9 s | 308 MB | 11.2 MB |
+  | x264 `faster` | 7.9 s | 376 MB | 11.6 MB |
+  | x264 `medium` | 11.1 s | 508 MB | 11.7 MB |
+  | VideoToolbox 8 Mb/s | 4.8 s | 183 MB | 28.1 MB |
+
+  All x264 runs were at CRF 21.
+
+### Key Decisions
+
+- **Face detection is YuNet (OpenCV Zoo, MIT, 232 KB ONNX) run on ONNX Runtime**, which faster-whisper already ships, not the `opencv-python-headless` or MediaPipe packages:
+  - The OpenCV wheels are 36–64 MB and bundle a second, unhardened FFmpeg.
+  - MediaPipe pulls in jax, matplotlib and the GUI OpenCV.
+  - Everything else OpenCV would do (resize, grey, differences) is done by the hardened FFmpeg or NumPy.
+  - An opt-in test compares the decoding with `cv2.FaceDetectorYN` when OpenCV is present.
+- **libx264 (GPL), not OpenH264.** OpenH264's patent cover applies only to Cisco's binaries. It is also Constrained Baseline only, with weak rate control. The image's FFmpeg becomes GPL-2.0+. SaveMe stays MIT, because FFmpeg is a separate program. Publishing the image needs a GPL source offer, which the design notes.
+- **A separate renderer worker and manager**, as with the transcriber:
+  - the worker gets a memory cap sized for x264 (the download worker's 1 GiB cap can't be raised), a deny-all connect guard and nice 10;
+  - the manager has its own slot, so renders never take download slots;
+  - clips render one at a time, one worker run each.
+- **Subtitles via libass (ASS files SaveMe writes)**, not `drawtext`. That gives HarfBuzz shaping for Malayalam, outlines and boxes, and word highlighting. User text is escaped before it enters ASS, and no user text ever reaches a filtergraph.
+- **Word timestamps in the transcriber** (`WHISPER_WORD_TIMESTAMPS`, default on) as an optional field. Older cached transcripts stay valid, with estimated word timing.
+- **Fonts come from Debian packages** (Roboto Apache-2.0, DejaVu, Manjari OFL-1.1). No font files are committed.
+- **Presets live in the browser** (localStorage plus JSON export/import), and every render request is validated as untrusted.
+
+### Issues Encountered
+
+- None so far.
+
+### Pending Work
+
+- Tasks 2–10.
+
+### Handoff
+
+- Branch `feature/auto-shorts`. Read `docs/AUTO_SHORTS_DESIGN.md` first; the task list is above.
+- Tests: `.venv/bin/pytest -q`, with real FFmpeg/ffprobe on `PATH` (Homebrew 8.0.1 here, which has libx264, libass with HarfBuzz and VideoToolbox).
+
+---
+
 ## 2026-11-24 13:29 IST — Session: Phase 2, AI smart clipping (OpenRouter)
 
 ### Summary
