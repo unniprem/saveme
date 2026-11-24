@@ -17,6 +17,7 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 | `7adb750` | refactor | Move local media helpers to `app/mediafile.py` and report duration |
 | `46f9878` | feat | Add a worker probe mode that checks and remuxes uploaded videos |
 | `f7bcebd` | feat | Add a worker clip mode that cuts by stream copy with progress |
+| `06424ea` | feat | Keep clip sources in the job manager with close, idle expiry and a cap |
 
 ### Test Results
 
@@ -24,12 +25,14 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 - Task 1 (`7adb750`): 475 passed, 2 skipped, 7 deselected.
 - Task 2 (`46f9878`): 495 passed, 2 skipped, 7 deselected. The new probe tests cover MP4 kept, MKV and TS remuxed to MP4, WebM, audio-only (`no_video`), random bytes (`unreadable_media`), a source outside the folder or symlinked (`internal`), and the container mapping.
 - Task 3 (`f7bcebd`): 511 passed, 2 skipped, 7 deselected. A 3.3–7.3 s cut of a 10 s video (keyframe every second) shows 102 frames (4.08 s at 25 fps), its first shown frame is at 0, and its audio is 4.01 s long.
+- Task 4 (`06424ea`): 526 passed, 2 skipped, 7 deselected. 15 new source tests: link source to ready, progress and failure, separate ID spaces, not delivered or counted as a ready file, not evicted for disk room, idle expiry and touch, close in each state, cap replace and busy, queue places, and `MAX_CLIP_SOURCES` bounds.
 
 ### Key Decisions
 
 - **Cuts are stream copy, not re-encodes.** The Docker FFmpeg has no video encoder and only one video decoder, by design. A test cut with FFmpeg 8 shows the keyframe lead-in hidden by an MP4 edit list: a 7.0 s start on a video with keyframes every 5 s showed its first frame at 0.000. So browsers, QuickTime and VLC start exactly where the owner chose, and the build stays as it is. Re-encoding (and with it vertical reframing and burned-in subtitles) is left to the phase that needs an encoder.
 - **Sources and clips are new kinds of job in `JobManager`.** That way they share the queue, slots, disk budget, sweep and shutdown, and no limit is copied or bypassed.
 - **Uploads are raw `application/octet-stream` bodies with a `Content-Length`.** Only this path skips the Guard's 64 KiB read. Host, Origin, degraded mode, the size cap, the disk check and the timeouts still apply, and no form parser is added.
+- **A source is closed only by the owner, idle time or the source cap, never to make disk room.** Evicting it would pull the video out from under someone mid-edit, so a job that doesn't fit gets `disk_full` instead, as today. The cap (`MAX_CLIP_SOURCES`, default 2) replaces the least recently used idle source.
 - **Clips cut from uploads carry no metadata,** because phones write location and device details into videos. Clips cut from links keep title, artist and date, and chapters are dropped because their times would be wrong.
 
 ### Issues Encountered
@@ -39,7 +42,7 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 
 ### Pending Work
 
-- Tasks 4–10 of the plan (Tasks 1–3 done).
+- Tasks 5–10 of the plan (Tasks 1–4 done).
 
 ### Handoff
 
