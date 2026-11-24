@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Docker smoke test: build and start the compose service, wait until it is healthy, then
-# check the API basics and the image hardening.
+# check the API basics (AI Highlights included) and the image hardening.
 #
 #   scripts/docker-smoke.sh
 #
@@ -103,6 +103,17 @@ case "$view" in
   *'"code":"unreadable_media"'*) ;;
   *) fail "expected the probe to refuse random bytes as unreadable_media, got: $view" ;;
 esac
+
+echo "==> AI Highlights: status answers, and the configured Whisper model is in the image, offline"
+ai="$(curl -sS --noproxy '*' --max-time 10 "$BASE/api/ai/status")" || fail "GET /api/ai/status: request failed"
+case "$ai" in
+  *'"available":true'*) ;;
+  *) fail "GET /api/ai/status returned: ${ai:0:300}" ;;
+esac
+case "$ai" in *sk-or-*) fail "GET /api/ai/status shows an API key" ;; esac
+in_container sh -c 'python -m app.whisper_models --list | grep -qx "${WHISPER_MODEL:-base}  installed"' \
+  || fail "the Whisper model ${WHISPER_MODEL:-base} isn't installed in the image"
+in_container sh -c 'test "$HF_HUB_OFFLINE" = 1' || fail "HF_HUB_OFFLINE isn't 1 in the container"
 
 echo "==> runs as uid 10001"
 uid="$(in_container id -u)" || fail "id -u failed in the container"
