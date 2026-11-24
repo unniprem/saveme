@@ -68,7 +68,7 @@ SaveMe sits in between: yt-dlp's reach, behind a one-page interface, running on 
 - **Cancel** a download and **resume** it within 5 minutes, even after a page reload
 - A bounded queue, with limits on file size, job time and disk use
 - Automatic cleanup: files are deleted after you save them, or after a timeout
-- **Clip Studio**: open a link or a video from your computer, preview it, mark a start and an end, and export just that part. Cutting runs on the server with no re-encoding, with progress and **Cancel**
+- **Clip Studio**: open a link or a video from your computer, preview it, mark a start and an end, and export just that part as MP4. Or collect up to 20 parts in a clip list and export them all as one ZIP. Cutting runs on the server with no re-encoding, with progress and **Cancel**
 - Light and dark mode, and a layout that works on a phone
 - No database, accounts, cookies, analytics or external services
 
@@ -200,12 +200,15 @@ Clip Studio cuts a part out of a video. It's the first step toward automatic cli
 1. **Open a video.** After **Fetch**, pick a video quality and choose **Clip**. Or choose **Clip a video from your computer** under the link field to upload a file. Uploads take MP4, MOV, MKV, WebM, TS, FLV and AVI files up to `MAX_FILE_SIZE_MB`.
 2. **Mark the part you want.** Drag the two handles on the timeline, type a start and an end (`65.5`, `1:05.5` or `1:02:05`), or play the video and choose **Set to playhead**. The `I` and `O` keys set the start and end at the playhead. **Play clip** plays just your selection.
 3. **Export clip.** The clip is cut on the server, with progress and **Cancel**, and saved like a download, named like `Talk (clip 1m05s-1m40.5s).mp4`. Then mark another part, or choose **Close**.
+4. **Or build a clip list.** **Add to list** keeps the current start and end, up to 20 clips. The list is sorted by start, and adding the same part twice is refused. **Load** puts a clip back in the editor to preview, adjust or export alone, and **Remove** drops it. **Export N clips as ZIP** cuts them all in one job, with one progress bar ("Cutting clip 2 of 5") and **Cancel**. It saves one file, named like `Talk (5 clips).zip`, that holds `01 Talk (clip 0m05s-0m12.5s).mp4`, `02 …` and so on. The list stays until you remove its clips or choose **Close**, and a page reload keeps it.
 
 **How cutting works.** Clips are cut without re-encoding (a stream copy), so they keep the original quality and are quick to make. A video can only start at a keyframe, so the clip carries the stretch from the keyframe before your start, hidden by an MP4 edit list. Browsers, QuickTime, VLC and most phones honour it and start exactly where you chose. A few players ignore edit lists and show that stretch too: at most the gap between two keyframes, usually a few seconds. MKV and WebM have no edit lists, so a clip cut from one (a file that couldn't be converted to MP4) always shows that stretch. Clips from links keep the title, artist and date tags; clips from your own files carry no tags or metadata from them (phones write the location into videos). Chapters are left out of clips because their times would be wrong.
 
-**Preview.** If your browser can't play a video (some HEVC or MKV files), the studio says so; the timeline and typed times still work, and the export is unaffected.
+**Preview.** If your browser can't play a video (some HEVC or MKV files), the studio says so; the timeline and typed times still work, and the export is unaffected. If it can't play the file at all, **Set to playhead**, **Play clip** and the `I`/`O` keys are turned off, because the playhead can't move.
 
-**What's kept, and for how long.** The video you're clipping stays on the server while the studio is open. It's deleted when you choose **Close**, after `JOB_TTL_MINUTES` without use (an open, visible tab counts as use), when you open more than `MAX_CLIP_SOURCES` videos (the least recently used goes first), or when SaveMe restarts. Exported clips are deleted once saved, like downloads.
+**Size.** A clip, or a whole ZIP, must stay under `MAX_FILE_SIZE_MB`. A ZIP needs room for two files while it's made (the ZIP and the clip being added), like a download, so at the smallest disk budget a ZIP may be refused while single clips still work.
+
+**What's kept, and for how long.** The video you're clipping stays on the server while the studio is open. It's deleted when you choose **Close**, after `JOB_TTL_MINUTES` without use (an open, visible tab counts as use), when you open more than `MAX_CLIP_SOURCES` videos (the least recently used goes first), or when SaveMe restarts. Exported clips and ZIPs are deleted once saved, like downloads.
 
 ## Supported sites
 
@@ -266,6 +269,7 @@ docker compose up -d
 | Stuck on "Downloading video track (1 of 2)" | Many sites, YouTube included, send video and audio as separate tracks, which are joined at the end. At 1080p or Best the video track alone can be several hundred MB. The MB count under the bar shows it's moving; choose **Cancel** to stop. |
 | "Busy" or disk full | Finished files take space until saved or expired. Lower `MAX_READY_FILES` or `JOB_TTL_MINUTES`, or raise `MAX_TOTAL_DISK_MB` if the disk allows. |
 | Clip Studio says "Your browser can't preview this video" | The browser can't decode it (often HEVC or MKV). Type the start and end instead; the clip is cut the same way. |
+| "These clips add up to more than the … limit" | A ZIP must stay under `MAX_FILE_SIZE_MB`. Export fewer or shorter clips (or export them one at a time), or raise the limit. |
 | A clip starts a little early in one app | That app ignores the MP4 edit list that hides the keyframe lead-in. See [How cutting works](#clip-studio). |
 | Port 8000 is already in use | Set `SAVEME_PORT` in `.env` to a free port, then run `docker compose up -d`. |
 
@@ -287,6 +291,8 @@ SaveMe fetches whatever URL it's given, so it's designed so that a link can't be
 
 **Uploads have limits of their own.** The Clip Studio upload (`POST /api/sources/upload`) is the only request whose body isn't capped at 64 KB. It must be the raw file (`application/octet-stream`) with a `Content-Length` no larger than `MAX_FILE_SIZE_MB`. Before a byte is written, it must fit the queue, `MAX_CLIP_SOURCES` and the disk budget. It's cut off after 60 seconds without data or `MAX_JOB_SECONDS` in all, and anything it wrote is removed. The Host and Origin checks apply as for every other request. An uploaded file is opened only by ffprobe and FFmpeg inside a worker process, with the same memory cap and local-files-only wrappers as downloads; the build's few demuxers limit what can be opened at all. Cutting is a stream copy in a worker too, so the FFmpeg build gains nothing for it.
 
+**A ZIP of clips is built from names the server chose.** Its entries are named from the checked times and the source title, through the same file-name cleaning as downloads, and the worker refuses any name with a folder part, a control or Windows-forbidden character, or a leading dot. Python's own `zipfile` writes it inside the worker, uncompressed, so nothing new is added to the image. `zip` is not one of the types a download can be delivered as, so a link to a `.zip` file still can't come out of the downloader.
+
 **Files never carry their source link.** The page address and any `comment` tag the source file arrived with are blanked before tagging. The only addition to the FFmpeg build for tags is the `ffmetadata` demuxer, which reads the chapter list.
 
 **One bad link fails only its own job.** A worker reads at most 16 MB from any page, manifest or API response (media downloads aren't affected). Each worker process, including the Deno and FFmpeg it starts, is limited to 1 GB of memory, so a hostile page can't use up the memory the rest of the app shares. The memory limit applies in the Docker image; macOS doesn't allow it, so a native macOS run goes without. The API also caps request bodies at 64 KB, counts link lookups against the inspection and queue limits, and accepts a POST only from the page's own origin.
@@ -307,7 +313,7 @@ Browser ──▶ FastAPI server ──▶ worker process ──▶ FFmpeg ─�
             and runs the queue   connection checked    only
 ```
 
-The server never fetches a remote URL itself; every network request happens in a guarded worker. Clip Studio's probing and cutting run in the same kind of worker, on local files only. Job state lives in memory and files live in `TEMP_DIR`, so nothing is kept across restarts. Any files left behind by a crash are cleaned up on the next start.
+The server never fetches a remote URL itself; every network request happens in a guarded worker. Clip Studio's probing, cutting and ZIP building run in the same kind of worker, on local files only. Job state lives in memory and files live in `TEMP_DIR`, so nothing is kept across restarts. Any files left behind by a crash are cleaned up on the next start.
 
 **Stack:** Python 3.12, FastAPI, Uvicorn, yt-dlp, FFmpeg (minimal build), Deno, Tailwind CSS v4 and vanilla JavaScript.
 

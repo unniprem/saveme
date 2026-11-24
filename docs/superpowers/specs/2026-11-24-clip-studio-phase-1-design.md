@@ -23,7 +23,7 @@ Phase 1 is the manual foundation the later phases build on. You load a video fro
 
 - Re-encoding: frame-exact cuts in every player, vertical (9:16) reframing, burned-in subtitles, resizing. These need an H.264 encoder in the FFmpeg build (§7).
 - Transcripts, AI highlight suggestions, titles, covers and captions.
-- Joining several ranges into one file, or exporting several clips at once (one export runs at a time per open studio; separate studios can run in parallel through the queue).
+- Joining several ranges into one file, or exporting several clips at once (one export runs at a time per open studio; separate studios can run in parallel through the queue). *Update:* a clip list exported as one ZIP was added later in Phase 1. See [`2026-11-24-clip-studio-batch-export-design.md`](2026-11-24-clip-studio-batch-export-design.md).
 - Audio-only clips (MP3/M4A), and a thumbnail filmstrip on the timeline (that needs a server-side video decoder).
 - Keeping a source after a restart, or sharing it between browsers.
 
@@ -191,7 +191,7 @@ Local-media helpers move to a new module, `app/mediafile.py`:
 ## 7. Open for later phases
 
 - An H.264 encoder (libx264 or OpenH264) in the build would unlock frame-exact cuts, 9:16 reframing and burned-in subtitles. It needs its own security and licensing review.
-- Speech-to-text with a local model, AI highlight suggestions with a local LLM, a clip list (several ranges per source), and audio-only clips.
+- Speech-to-text with a local model, AI highlight suggestions with a local LLM, and audio-only clips. (The clip list is done: see the batch export design.)
 
 ## 8. Left to the builder
 
