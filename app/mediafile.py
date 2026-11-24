@@ -16,7 +16,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.errors import AppError, size_text, too_large_message
+from app.errors import AppError, size_text
 from app.filenames import media_type_for
 
 WRAPPER_DIR = Path(__file__).resolve().parent / "bin"
@@ -191,7 +191,8 @@ def cut(src: Path, dst: Path, *, start: float, end: float, keep_tags: bool, max_
         errors.seek(0)
         tail = stderr_tail(errors.read())
     if dst.is_file() and dst.stat().st_size >= max_bytes:
-        raise AppError("too_large", too_large_message(max_bytes))
+        raise AppError("too_large", f"This clip is larger than the {size_text(max_bytes)} limit. "
+                       "Choose a shorter part.")
     if proc.returncode != 0:
         print(f"worker: clip failed (rc={proc.returncode}): {tail}", file=sys.stderr)
         raise AppError("clip_failed")
