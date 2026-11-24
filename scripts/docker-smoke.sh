@@ -111,7 +111,7 @@ case "$ai" in
   *) fail "GET /api/ai/status returned: ${ai:0:300}" ;;
 esac
 case "$ai" in *sk-or-*) fail "GET /api/ai/status shows an API key" ;; esac
-in_container sh -c 'python -m app.whisper_models --list | grep -qx "${WHISPER_MODEL:-base}  installed"' \
+in_container sh -c 'python -m app.whisper_models --list | grep -x "${WHISPER_MODEL:-base}  installed" >/dev/null' \
   || fail "the Whisper model ${WHISPER_MODEL:-base} isn't installed in the image"
 in_container sh -c 'test "$HF_HUB_OFFLINE" = 1' || fail "HF_HUB_OFFLINE isn't 1 in the container"
 
