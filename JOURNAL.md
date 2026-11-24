@@ -8,7 +8,7 @@
 
 The owner sent the Phase 3 brief: an automatic short-video renderer on top of Clip Studio and AI Highlights. It covers 9:16/16:9/1:1/4:5 output, smart reframing (center, face, speaker, split-screen, blurred background, original), word-timed burned-in subtitles in six styles with Malayalam support, templates, optional branding, batch rendering with a ZIP, and an Auto Shorts tab. It is built in small tested commits on `feature/auto-shorts`, with this journal updated after every task. The brief was taken as a go-ahead without a question round, and design calls are under Key Decisions.
 
-**Status: Tasks 1–4 done. The image rebuild verifying Task 2's FFmpeg fix is running. Task 5 (styles and preview) is next.**
+**Status: Tasks 1–8 done (backend complete, tested with the real renderer). Task 9 (the Auto Shorts tab) is next, then Task 10 (end-to-end checks, docs).**
 
 ### Progress by task
 
@@ -40,10 +40,36 @@ The owner sent the Phase 3 brief: an automatic short-video renderer on top of Cl
     - clip words, timed or estimated by grapheme length;
     - segmentation, balanced lines and fitting chars to the frame;
     - SRT, and ASS with per-word highlight events, safe-area placement, the Malayalam family, title bar, watermark and escaping.
-- [ ] Task 5, subtitle styles and preview.
-- [ ] Task 6, smart crop and face tracking.
-- [ ] Task 7, branding and preset management.
-- [ ] Task 8, batch rendering integration.
+- [x] **Task 5, subtitle styles and preview.** All 6 styles were rendered and checked by eye on a contact sheet. `test_caption_render.py` checks every style's look (boxes, highlight colours) and that the options (colour, size, position) change the output. The preview still is the renderer's `frame` kind; its API is in Task 8.
+- [x] **Task 6, smart crop and face tracking.**
+  - `app/faces.py`:
+    - YuNet (vendored `app/models/face_detection_yunet_2023mar.onnx`, MIT, SHA-256 pinned) on ONNX Runtime, with a NumPy port of OpenCV's decoding and NMS;
+    - one FFmpeg decode per range: frames at `RENDER_ANALYSIS_FPS`, letterboxed to 640, plus 64×36 grey frames at the source rate for scene cuts;
+    - track linking, and mouth-patch motion.
+  - The planner:
+    - group framing with hysteresis, else the primary face;
+    - speaker focus by mouth motion during transcript speech;
+    - split panels for the 2 main tracks;
+    - a dead zone, median+average smoothing, a speed cap (0.6 window/s), a keep-in clamp for the followed box, 0.6 s eased subject switches, jumps only at cuts, and hold-then-ease when faces are lost;
+    - RDP simplification, then a flat FFmpeg expression.
+  - Fixtures: two public-domain NASA portraits (`tests/fixtures/faces`).
+  - `onnxruntime` and `numpy` are now listed in `requirements.in` (same pinned versions).
+- [x] **Task 7, branding and presets (server side).**
+  - Logo (PNG) uploads are decoded by `app/png.py`, a strict pure-Python PNG decoder, in the renderer worker. FFmpeg gets raw RGBA (`rawvideo`), so **FFmpeg still never parses an image**, the Phase 1 invariant `test_packaging` enforces. The image build has no `png` decoder or PNG demuxer.
+  - Watermark and title bar are ASS events; brand colour drives padding, title bar and default highlight.
+  - Intro/outro are uploaded, probed (≤ 15 s) and joined with `concat`.
+  - `POST /api/shorts/validate` checks a saved or imported preset. The presets themselves live in the browser (Task 9).
+- [x] **Task 8, batch rendering integration.**
+  - `app/render_jobs.py` `RenderManager`:
+    - its own slot (`RENDER_MAX_CONCURRENT_JOBS`) and queue bound;
+    - holds the source, and reserves disk per clip;
+    - clips run one at a time in their own worker runs;
+    - analysis is cached per range;
+    - captions come from the cached transcript or edited cues, sent as data (the worker writes the ASS at the real canvas size);
+    - per-clip and batch cancel; previews have their own slot, and the newest wins;
+    - assets, an on-demand ZIP, and pruning (4 renders and 4 previews per source, 50 records).
+  - `app/render_routes.py`: 13 routes. Render, preview and asset routes read their own bodies (2 MiB JSON cap, 2 MB logo, 100 MB intro/outro).
+  - Wired into `app/main.py`: `_Runtime.render`, lifespan, `OWN_BODY_PATHS`, and `RENDER_*` loaded separately (a bad value turns off only Auto Shorts).
 - [ ] Task 9, UI.
 - [ ] Task 10, end-to-end verification and documentation.
 
@@ -57,6 +83,12 @@ The owner sent the Phase 3 brief: an automatic short-video renderer on top of Cl
 | `2216fd2` | feat | Store word timestamps, moved onto the speech itself |
 | `a0ccb60` | feat | Generate word-timed captions as SRT and ASS |
 | `50ec5b5` | build | Add H.264, AAC, libass, dav1d and rendering filters to the image's FFmpeg |
+| `de8233a` | docs | Update journal |
+| `b511c4a` | test | Check every caption style and its options in rendered frames |
+| `c7c4bb7` | fix | Keep word timestamps out of the transcript API response |
+| `82c6812` | feat | Track faces for face, speaker-focus and split-screen framing |
+| `40bb407` | feat | Decode logos in Python so FFmpeg still never parses an image |
+| `71ccbd8` | feat | Add the Auto Shorts render manager and API |
 
 ### Test Results
 
@@ -110,6 +142,25 @@ The owner sent the Phase 3 brief: an automatic short-video renderer on top of Cl
   - Stills checked by eye (`$CLAUDE_JOB_DIR/tmp/r1/stills/`):
     - Bold Creator: the word highlight, outline and watermark.
     - Malayalam news template: correct conjuncts and chillu, the box style, the brand-colour title bar and the blurred background.
+- **Image check after the first rebuild** (`saveme:auto-shorts`): **597 passed, 3 failed**. The logo test passed.
+  - `test_ai_api` failed because the transcript API now carried `words: null`. Fixed in `c7c4bb7`, which leaves words out of that response.
+  - Two ink thresholds were calibrated on macOS fonts; Docker's Roboto and Manjari draw thinner. There were no glyph failures, and the thresholds are lowered.
+- **Task 5:** `test_caption_render.py` grew to 11 tests, all passed.
+- **Task 6:**
+  - `tests/integration/test_faces.py`: 24 passed, 1 skipped. The skip is the OpenCV cross-check; run in a scratch venv with `opencv-python-headless` 5.1, it **passed**: same faces and scores as `cv2.FaceDetectorYN`, boxes within 1 px.
+  - YuNet on the fixtures: the Apollo 11 crew photo gives 3 faces and each portrait 1 (scores 0.92–0.94).
+  - The cut is found at exactly 2.0 s, and mouth motion separates the speakers (about 67 vs 0, then 53 vs 0).
+  - Renders were checked by finding the faces again in the output frames: a moving face stays within 20–80 % of the width, the split puts one person per panel, speaker focus moves to the right person after the switch, and the window jumps exactly at the cut.
+  - The tests found two real problems, fixed before the commit:
+    - a 0.35 window/s speed cap couldn't follow a face moving 160 px/s (now 0.6, plus the keep-in clamp);
+    - speaker switches took about 4 s (now an eased 0.6 s move).
+  - **Speed:** analysing 30 s of 1080p took 2.4 s, peaking at 114 MB RSS.
+- **Task 7:** `tests/unit/test_png.py`: 23 passed. The decoder matches FFmpeg's own decode on every colour type and filter (8-bit identical; 16-bit within 1 level). It refuses bad CRCs, interlacing, over 2048 px, bad filters, palette overruns, truncation, and a 50 MB decompression bomb (without inflating it). Speed: 1024² Paeth decodes in 0.7 s, 2048² mixed in 0.6 s.
+- **Task 8:** `tests/integration/test_render_api.py`: **29 passed**. It covers options/unavailable/config error, validate, captions (none, words, estimated), clips run in order with the resolved spec, analysis cached per range, captions off/edited/missing, branding-only overlays, a failed clip not stopping the batch, cancelling a render and one clip, a source close, one render per source and the queue bound, downloads unaffected while rendering, refused requests, the body cap, the Origin check, disk full, ZIP contents (`testzip`, order, stored MP4s), previews (still, draft, newest wins), logo upload and use, unsafe assets, and intro/outro.
+  - The two **acceptance tests** use the real renderer: a highlight becomes a captioned 9:16 MP4 (H.264/AAC/yuv420p, 4 s, caption ink while the word is said), and two highlights become a ZIP of two valid MP4s.
+  - The tests caught two real bugs, both fixed:
+    - captions with `enabled: false` were still burned in;
+    - a clip end past the video was clamped instead of refused (Clip Studio refuses it).
 
 ### Key Decisions
 
@@ -131,6 +182,11 @@ The owner sent the Phase 3 brief: an automatic short-video renderer on top of Cl
 - **Captions are positioned with `\an`+`\pos`** inside the platform's safe area (9:16 keeps the bottom 20–22 % and right 12–14 % clear). A template's offset applies only at its own position, and the result is clamped to the safe area.
 - **The filtergraph is passed as a file (`-/filter_complex graph.txt`)**, and FFmpeg runs with its cwd in the work folder. The `ass` filter then reads `subs.ass` by a fixed relative name, so no path is ever escaped into a graph.
 - **`fps=…:start_time=0`** holds the first decoded frame from t = 0. Video and audio both start at 0, and crop paths and captions use the clip's own time.
+- **The worker writes the ASS.** Only it knows the real canvas: with "source aspect" the size depends on the probed video. The manager sends cues and a caption plan as data, segmented for the spec's size (or a narrow 1080×1920 stand-in, which only shortens lines).
+- **Logos are decoded in Python, not by FFmpeg.** Phase 1 made "FFmpeg never reads an image" an invariant, enforced by a packaging test, so a ~150-line strict PNG decoder in the memory-capped worker beats enabling FFmpeg's PNG decoder.
+- **Speaker switches are eased (0.6 s), not cut.** The brief asks for no sudden framing jumps. Only real scene cuts jump.
+- **Renders keep files in the source's folder**, like AI results: they end with the source, at most 4 finished renders per source. The ZIP is built on demand from the finished clips, so a cancelled batch still exports what finished.
+- **FFmpeg capability detection is cached per FFmpeg/PATH**, so starting test apps doesn't spawn FFmpeg each time.
 
 ### Issues Encountered
 
@@ -140,13 +196,23 @@ The owner sent the Phase 3 brief: an automatic short-video renderer on top of Cl
 
 ### Pending Work
 
-- Re-run `scripts/docker-ffmpeg-check.sh saveme:auto-shorts` on the rebuilt image (expect the logo test to pass).
-- Tasks 5–10.
+- Rebuild the image (FFmpeg flags changed again: no png/image_png_pipe, plus rawvideo) and re-run `scripts/docker-ffmpeg-check.sh`, extended with rendering cases.
+- Task 9 (UI) and Task 10 (Docker smoke, browser walkthrough, docs: `AUTO_SHORTS_IMPLEMENTATION.md`, `RENDERING_PRESETS.md`, README, design doc updates for the PNG change).
 
 ### Handoff
 
 - Branch `feature/auto-shorts`. Read `docs/AUTO_SHORTS_DESIGN.md` first; the task list is above.
 - Tests: `.venv/bin/pytest -q`, with real FFmpeg/ffprobe on `PATH` (Homebrew 8.0.1 here, which has libx264, libass with HarfBuzz and VideoToolbox).
+- Backend code map:
+  - `app/renderer.py`: worker modes render/analyze/asset;
+  - `app/render_graph.py`, `app/layouts.py`, `app/reframe.py`: geometry and filtergraphs;
+  - `app/faces.py`: analysis and tracked framing;
+  - `app/captions.py`, `app/caption_styles.py`: captions;
+  - `app/shorts_templates.py`, `app/render_spec.py`: presets and requests;
+  - `app/png.py`: logos;
+  - `app/encoders.py`: FFmpeg capabilities and encoder args;
+  - `app/render_jobs.py`, `app/render_routes.py`: manager and API.
+- Test helpers: `tests/support/render.py` (sources, ffprobe, pixels), `faces.py` (face videos), `speech.py` (timed speech), `renderstub.py` (`RendererStub`, `RealRenderRunner`, transcripts).
 
 ---
 
