@@ -261,7 +261,7 @@ class JobManager:
         """Download `url` at `quality` as a source to clip from."""
         self.ensure_queue_room()
         self._make_source_room()
-        if not self._make_room(count_active=False):
+        if not self._make_room(count_active=False, reserve=self._reserve):
             raise AppError("disk_full")
         job = self._new_job(url=url, output="video", quality=quality, kind="source", origin="link")
         self._start(job)
@@ -325,12 +325,17 @@ class JobManager:
         active jobs, because its bytes land before any slot is taken."""
         self.ensure_queue_room()
         self._make_source_room()
-        if not self._make_room(count_active=True):
+        if not self._make_room(count_active=True, reserve=self._reserve):
             raise AppError("disk_full")
         job = self._new_job(url="", output="video", quality="best", kind="source", origin="upload",
                             status="uploading", title=title or "Uploaded video")
         job.started_at = job.created_at
-        job.workdir.mkdir()
+        try:
+            job.workdir.mkdir()
+        except OSError:  # never keep a record that would hold a queue and cap place forever
+            del self._jobs[job.id]
+            logger.exception("source %s: can't create its folder", job.id)
+            raise AppError("internal") from None
         logger.info("source %s uploading", job.id)
         return job
 
@@ -356,7 +361,7 @@ class JobManager:
         if source.status != "ready" or source.file_path is None:
             raise AppError("source_not_ready")
         start, end = _clip_range(round(start, 3), round(end, 3), source.duration)
-        self._admit()
+        self._admit("clip")
         self.touch(source)
         job = self._new_job(url="", output="video", quality="best", kind="clip", source_id=source.id,
                             start=start, end=end, title=source.title)
@@ -426,7 +431,7 @@ class JobManager:
         if self._clock() >= job.resume_until:  # the sweep hasn't got to it yet
             self._end_resume_window(job)
             raise AppError("not_resumable")
-        self._admit()
+        self._admit(job.kind, job)  # its partial files count inside its reservation
         job.status = "queued"
         job.resume_until = None
         job.finished_at = None
@@ -514,21 +519,33 @@ class JobManager:
 
     # --- Disk budget ----------------------------------------------------------
 
-    def _make_room(self, *, count_active: bool) -> bool:
+    def _reserve_for(self, kind: str) -> int:
+        """Disk a job of this kind may need. A clip is a stream copy that -fs stops at
+        MAX_FILE_SIZE_MB; a download (two tracks, then their merge) or an upload (the file,
+        then its MP4 remux) may need two copies."""
+        return self._settings.max_file_bytes if kind == "clip" else self._reserve
+
+    def _make_room(self, *, count_active: bool, reserve: int, job: Job | None = None) -> bool:
         """True if one more job fits the disk budget. Unsaved ready files are
         evicted (oldest first, only as many as needed) only when that is enough.
 
         Projected use = TEMP_DIR usage outside active workdirs + this job's
-        reservation. At start (count_active) each active job adds max(its actual
-        usage, its reservation), so a partial download isn't counted twice. At
-        submit, active jobs are left out entirely: they're transient, and a
-        queued job is checked again when it starts.
+        reservation. `job`, when given, is the job about to start: what its folder
+        already holds (an upload, a resumed download's partial files) counts inside
+        its reservation, as max(held, reservation), not on top of it. At start
+        (count_active) each active job adds max(its actual usage, its reservation),
+        so a partial download isn't counted twice. At submit, active jobs are left
+        out entirely: they're transient, and a queued job is checked again when it
+        starts.
         """
         usage = self._disk_usage
-        active = [usage(j.workdir) for j in self._jobs.values() if j.status in _ACTIVE]
-        projected = max(0, usage(self._temp_dir) - sum(active)) + self._reserve
+        active = [(usage(j.workdir), self._reserve_for(j.kind))
+                  for j in self._jobs.values() if j.status in _ACTIVE and j is not job]
+        own = usage(job.workdir) if job is not None else 0
+        outside = usage(self._temp_dir) - sum(used for used, _ in active) - own
+        projected = max(0, outside) + max(own, reserve)
         if count_active:
-            projected += sum(max(used, self._reserve) for used in active)
+            projected += sum(max(used, held) for used, held in active)
         budget = self._settings.max_total_disk_bytes
         if projected <= budget:
             return True
@@ -551,10 +568,10 @@ class JobManager:
         if pending + reserved >= self._settings.max_active_jobs + self._settings.max_queued_jobs:
             raise AppError("busy")
 
-    def _admit(self) -> None:
+    def _admit(self, kind: str = "download", job: Job | None = None) -> None:
         """Raise busy when the queue is full, or disk_full when one more job can't fit."""
         self.ensure_queue_room()
-        if not self._make_room(count_active=False):
+        if not self._make_room(count_active=False, reserve=self._reserve_for(kind), job=job):
             raise AppError("disk_full")
 
     async def _acquire_slot(self, job: Job) -> None:
@@ -562,7 +579,7 @@ class JobManager:
         deadline = job.queued_at + self._settings.max_job_seconds
         while True:
             await self._slots.acquire()
-            if self._make_room(count_active=True):
+            if self._make_room(count_active=True, reserve=self._reserve_for(job.kind), job=job):
                 return
             self._slots.release()
             if self._clock() >= deadline:

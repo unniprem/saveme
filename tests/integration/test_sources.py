@@ -1,5 +1,6 @@
 """JobManager: Clip Studio sources (spec §6.1, §6.2), driven by StubRunner."""
 import dataclasses
+import shutil
 
 import pytest
 
@@ -457,3 +458,41 @@ async def test_upload_counts_against_the_source_cap(make_manager, settings):
     with pytest.raises(AppError) as ei:
         manager.open_link_source(URL, "best")
     assert code_of(ei) == "busy"
+
+
+# --- Final review fixes ---------------------------------------------------------
+
+def minimum_budget(temp_dir):
+    return load_settings({"TEMP_DIR": str(temp_dir), "MAX_FILE_SIZE_MB": "1", "MAX_TOTAL_DISK_MB": "2"})
+
+
+async def test_upload_at_the_minimum_budget_starts_its_check(make_manager, temp_dir):
+    runner = StubRunner()
+    manager = await make_manager(minimum_budget(temp_dir), run_worker=runner)  # real disk usage
+    source = manager.begin_upload("big")
+    (source.workdir / UPLOAD_NAME).write_bytes(b"\0" * (1024 * 1024))
+    manager.finish_upload(source)
+    # Its own file is inside its reservation, so the check it was admitted for can start.
+    await wait_until(lambda: any(c.workdir == source.workdir for c in runner.calls), timeout=3)
+
+
+async def test_clip_at_the_minimum_budget(make_manager, temp_dir):
+    runner = StubRunner()
+    manager = await make_manager(minimum_budget(temp_dir), run_worker=runner)
+    source = manager.open_link_source(URL, "best")
+    call = await started(runner, source)
+    (call.workdir / "media.mp4").write_bytes(b"\0" * (1024 * 1024 - 4096))
+    call.finish({"file": "media.mp4", "ext": "mp4", "title": "T", "duration": 10.0, "notice": None})
+    await wait_until(lambda: source.status == "ready")
+    clip = manager.submit_clip(source.id, 0, 5)  # a clip reserves MAX_FILE_SIZE_MB (its -fs cap)
+    await started(runner, clip)
+
+
+async def test_upload_whose_folder_cant_be_made_leaves_nothing(make_manager, settings, temp_dir):
+    manager = await make_manager(dataclasses.replace(settings, max_clip_sources=1), run_worker=StubRunner())
+    shutil.rmtree(temp_dir)
+    with pytest.raises(AppError) as ei:
+        manager.begin_upload("x")
+    assert code_of(ei) == "internal"
+    temp_dir.mkdir()
+    manager.begin_upload("y")  # the failed upload holds no queue or source-cap place
