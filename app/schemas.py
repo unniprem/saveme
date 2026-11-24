@@ -2,6 +2,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.mediafile import MAX_BATCH_CLIPS
+
 Output = Literal["video", "audio", "m4a"]
 Quality = Literal["best", "1080", "720", "480"]
 # A time in a video: a JSON number (never a string or a boolean), finite, 0 or more.
@@ -36,3 +38,11 @@ class ClipRequest(BaseModel):
 
     start: Seconds
     end: Seconds
+
+
+class BatchRequest(BaseModel):
+    """Several ranges of one source, exported together as one ZIP."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    clips: Annotated[list[ClipRequest], Field(min_length=1, max_length=MAX_BATCH_CLIPS)]
