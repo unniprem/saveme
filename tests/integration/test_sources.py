@@ -659,3 +659,16 @@ async def test_batch_reserves_two_files_of_disk(make_manager, temp_dir):
         manager.submit_batch(source.id, [(0, 5)])
     assert code_of(ei) == "disk_full"
     manager.submit_clip(source.id, 0, 5)  # a single clip still does
+
+
+async def test_a_range_of_exactly_the_minimum_is_accepted(make_manager):
+    """Lengths are compared in whole milliseconds: 1.2 - 1.1 is 0.0999… as a float."""
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    source = await ready_source(manager, runner)
+    clip = manager.submit_clip(source.id, 1.1, 1.2)
+    assert (clip.start, clip.end) == (1.1, 1.2)
+    assert manager.submit_batch(source.id, [(1.1, 1.2), (2.3, 2.4)]).ranges == ((1.1, 1.2), (2.3, 2.4))
+    with pytest.raises(AppError) as ei:
+        manager.submit_clip(source.id, 1.1, 1.1994)  # 99 ms once rounded to milliseconds
+    assert ei.value.message == "A clip must be at least 0.1 seconds long."

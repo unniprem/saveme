@@ -142,6 +142,9 @@
   }
 
   const ms = (seconds) => Math.round(seconds * 1000) / 1000;
+  // At least MIN_CLIP apart, counted in whole milliseconds as the server does (as floats,
+  // 1.2 - 1.1 is just under 0.1).
+  const longEnough = (start, end) => Math.round(end * 1000) - Math.round(start * 1000) >= Math.round(MIN_CLIP * 1000);
   const announce = (text) => setText(el.announcer, text);
 
   // A source created for a studio that has since closed: end it on the server too.
@@ -469,7 +472,7 @@
     if (duration) marks.end = Math.min(marks.end, duration);
     if (duration) {
       list = list.map((c) => ({ start: c.start, end: Math.min(c.end, ms(duration)) }))
-        .filter((c) => c.end - c.start >= MIN_CLIP);
+        .filter((c) => longEnough(c.start, c.end));
     }
     store();
     show(el.studioLoading, false);
@@ -536,7 +539,7 @@
     if (document.activeElement !== el.clipStart) el.clipStart.value = fmtTime(marks.start);
     if (document.activeElement !== el.clipEnd) el.clipEnd.value = fmtTime(marks.end);
     setText(el.clipLength, fmtTime(marks.end - marks.start));
-    el.exportClip.disabled = !(marks.end - marks.start >= MIN_CLIP) || exportRunning();
+    el.exportClip.disabled = !longEnough(marks.start, marks.end) || exportRunning();
     el.exportZip.disabled = list.length === 0 || exportRunning();
   }
 
@@ -557,8 +560,8 @@
     const input = which === "start" ? el.clipStart : el.clipEnd;
     const value = parseTime(input.value);
     let problem = value === null ? MSG.badTime : "";
-    if (!problem && which === "start" && value > marks.end - MIN_CLIP) problem = MSG.startAfterEnd;
-    if (!problem && which === "end" && value < marks.start + MIN_CLIP) problem = MSG.endBeforeStart;
+    if (!problem && which === "start" && !longEnough(value, marks.end)) problem = MSG.startAfterEnd;
+    if (!problem && which === "end" && !longEnough(marks.start, value)) problem = MSG.endBeforeStart;
     if (!problem && duration && value > duration) problem = `The video is only ${fmtTime(duration)} long.`;
     if (problem) {
       input.setAttribute("aria-invalid", "true");
@@ -658,7 +661,7 @@
   const rangeText = (c) => `${fmtTime(c.start)} to ${fmtTime(c.end)}`;
 
   function addToList() {
-    if (state !== "ready" || !(marks.end - marks.start >= MIN_CLIP)) return;
+    if (state !== "ready" || !longEnough(marks.start, marks.end)) return;
     const item = { start: ms(marks.start), end: ms(marks.end) };
     let problem = "";
     if (list.some((c) => c.start === item.start && c.end === item.end)) problem = MSG.inList;

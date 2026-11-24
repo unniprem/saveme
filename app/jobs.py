@@ -173,7 +173,7 @@ def _clip_range(start: float, end: float, duration: float | None) -> tuple[float
         if end > duration + END_TOLERANCE_SECONDS:
             raise invalid("The end can't be after the end of the video.")
         end = min(end, duration)
-    if end - start < MIN_CLIP_SECONDS:
+    if round(end * 1000) - round(start * 1000) < round(MIN_CLIP_SECONDS * 1000):  # whole ms, as the page
         raise invalid("A clip must be at least 0.1 seconds long.")
     return start, end
 
