@@ -2,6 +2,45 @@
 
 ---
 
+## 2026-11-24 06:58 IST — Session: Clip Studio, Phase 1 (manual clipping)
+
+### Summary
+
+The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [AutoClip](https://github.com/zhouxiaoka/autoclip)-style tool: load a video, preview it, pick a start and end, cut it on the server with FFmpeg as a cancellable job with progress, export it, and clean up after. The existing downloader, UI conventions, URL protections, limits and tests must stay, and there must be no React, no database and no paid services. They chose to accept videos both from links and from their own computer. Work is on `feature/clip-studio`, following the design (`docs/superpowers/specs/2026-11-24-clip-studio-phase-1-design.md`) and plan (`docs/superpowers/plans/2026-11-24-clip-studio-phase-1.md`), one task at a time, with a journal update after each task.
+
+### Changes Made
+
+| Commit    | Type | Description |
+| --------- | ---- | ----------- |
+| `b899daf` | docs | Add Clip Studio phase 1 design |
+| `b040d4d` | docs | Add Clip Studio phase 1 implementation plan |
+
+### Test Results
+
+- Baseline on `main` (`bea4549`): `.venv/bin/pytest -q` gave 471 passed, 2 skipped, 7 deselected (82 s).
+
+### Key Decisions
+
+- **Cuts are stream copy, not re-encodes.** The Docker FFmpeg has no video encoder and only one video decoder, by design. A test cut with FFmpeg 8 shows the keyframe lead-in hidden by an MP4 edit list: a 7.0 s start on a video with keyframes every 5 s showed its first frame at 0.000. So browsers, QuickTime and VLC start exactly where the owner chose, and the build stays as it is. Re-encoding (and with it vertical reframing and burned-in subtitles) is left to the phase that needs an encoder.
+- **Sources and clips are new kinds of job in `JobManager`.** That way they share the queue, slots, disk budget, sweep and shutdown, and no limit is copied or bypassed.
+- **Uploads are raw `application/octet-stream` bodies with a `Content-Length`.** Only this path skips the Guard's 64 KiB read. Host, Origin, degraded mode, the size cap, the disk check and the timeouts still apply, and no form parser is added.
+- **Clips cut from uploads carry no metadata,** because phones write location and device details into videos. Clips cut from links keep title, artist and date, and chapters are dropped because their times would be wrong.
+
+### Issues Encountered
+
+- None yet.
+
+### Pending Work
+
+- Tasks 1–10 of the plan.
+
+### Handoff
+
+- Read the plan, then `.superpowers/sdd/2026-11-24-clip-studio-phase-1/progress.md` (git-ignored ledger). Tasks with a `Task N: complete` line are done; resume at the first one without.
+- Tests: `.venv/bin/pytest -q`. Real FFmpeg and ffprobe must be on `PATH` (Homebrew on this Mac).
+
+---
+
 ## 2026-11-23 19:21 IST — Session: File tags, cover art and M4A audio
 
 ### Summary
