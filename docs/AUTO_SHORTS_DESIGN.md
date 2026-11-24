@@ -145,9 +145,13 @@ Docker on macOS can't reach VideoToolbox (the Linux VM has no Apple media engine
 VAAPI/NVENC/QSV is enabled. Those would need device passthrough, which `cap_drop: ALL` and
 the threat model rule out.
 
-**Size.** Measured after the build (see the journal). Expected: about 5 MB of shared libraries
-(x264, libass, freetype, harfbuzz with glib/graphite2, fribidi, fontconfig, dav1d), about 9 MB
-of fonts, and a slightly larger static FFmpeg.
+**Size (measured).** `saveme:auto-shorts` is 770 MB, against 738 MB for the Phase 2 image (+32 MB). That
+covers the shared libraries (x264, libass, freetype, harfbuzz, fribidi, fontconfig, dav1d), the fonts, a larger
+static FFmpeg and the 232 KB face model. No new Python package was added.
+
+**Memory (measured in the container, 2 GiB `mem_limit`, 2 CPUs).** A High-quality 1080×1920 face-tracked render
+of 40 s ran at the same time as a Whisper `base` transcription of a 64 s video. The container peaked at 965 MiB:
+the render took 33.7 s and the transcription 16.7 s. The default limit is enough.
 
 ### 3.2 Security review of the new attack surface
 

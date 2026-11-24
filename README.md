@@ -84,7 +84,7 @@ SaveMe sits in between: yt-dlp's reach, behind a one-page interface, running on 
 |---|---|
 | **macOS or Windows** | [Docker Desktop](https://www.docker.com/products/docker-desktop/) (a current version) |
 | **Linux** | Docker Engine 25 or newer and the Docker Compose v2 plugin |
-| **Disk** | About 350 MB for the image, plus room for the files you download |
+| **Disk** | About 800 MB for the image (770 MB measured: FFmpeg, Deno, the Whisper `base` model, caption fonts), plus room for the files you download |
 | **Network** | Internet access during the build and when downloading |
 
 Docker Engine 25 is the minimum because the Compose health check uses `start_interval`. Check what you have with `docker version` and `docker compose version`.
