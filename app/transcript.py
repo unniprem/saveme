@@ -210,7 +210,7 @@ def load_transcript(path: Path) -> Transcript | None:
 
 # --- subtitles ----------------------------------------------------------------------------
 
-_TIME = re.compile(r"(?:(\d+):)?(\d{1,2}):(\d{1,2})[.,](\d{1,3})")
+_TIME = re.compile(r"(?:(\d{1,5}):)?(\d{1,2}):(\d{1,2})[.,](\d{1,3})")  # at most 99999 hours
 _TIMING = re.compile(r"^\s*(\S+)\s+-->\s+(\S+)")
 _TAG = re.compile(r"<[^>]*>")
 _ASS_TAG = re.compile(r"\{\\[^}]*\}")
@@ -278,8 +278,9 @@ def parse_subtitles(data: bytes, *, filename: str | None, duration: float | None
             if start >= duration:
                 continue
             end = min(end, duration)
-        if end > start:
-            segments.append(Segment(start=round(start, 3), end=round(end, 3), text=body, language=tagged))
+        start, end = round(start, 3), round(end, 3)  # compared as stored: an end pulled back
+        if end > start:                               # to the duration can round onto the start
+            segments.append(Segment(start=start, end=end, text=body, language=tagged))
     if not segments:
         raise _invalid_subtitles()
     if len(segments) > MAX_SEGMENTS:

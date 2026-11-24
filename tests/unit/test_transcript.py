@@ -227,3 +227,17 @@ def test_imported_subtitles_are_reused_whatever_the_language():
     subs = parse_subtitles(SRT.encode(), filename="a.srt", duration=60.0, language="auto")
     assert reusable(subs, language="ml", retranscribe=False)
     assert not reusable(subs, language="auto", retranscribe=True)
+
+
+def test_absurd_hours_are_not_a_time():
+    huge = "9" * 5000
+    data = f"1\n{huge}:00:01,000 --> {huge}:00:02,000\nx\n\n2\n00:00:01,000 --> 00:00:02,000\nok\n".encode()
+    t = parse_subtitles(data, filename="a.srt", duration=None, language="auto")
+    assert [s.text for s in t.segments] == ["ok"]
+
+
+def test_a_cue_that_rounds_to_nothing_at_the_end_is_dropped():
+    data = ("1\n00:00:10,000 --> 00:00:20,000\nkept\n\n"
+            "2\n00:00:59,999 --> 00:01:05,000\nrounds away\n").encode()
+    t = parse_subtitles(data, filename="a.srt", duration=59.9994, language="auto")
+    assert [s.text for s in t.segments] == ["kept"]
