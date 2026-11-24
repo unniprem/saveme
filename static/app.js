@@ -12,14 +12,16 @@
 "use strict";
 
 (() => {
+  const {
+    JOB_ID_RE, MSG_BAD_REPLY, isNum, str, fmtMB, fmtDuration, httpUrl, setText, show, setLine,
+    ApiError, api,
+  } = window.SaveMe; // common.js
   const STORE_KEY = "saveme.job";
   const POLL_MS = 1000;
   const RETRY_MS = 2000;
   const MAX_POLL_FAILURES = 30;
   const DELIVERY_WAIT_MS = 60000;
-  const JOB_ID_RE = /^[A-Za-z0-9_-]{22}$/;
   const ACTIVE = ["queued", "downloading", "converting"];
-  const MB = 1024 * 1024;
   const AUDIO = "audio"; // the MP3 format choice; video choices are "video:<quality id>"
   const M4A = "m4a"; // the original-AAC M4A choice, offered only when the source has known AAC audio
   const VIDEO_PREFIX = "video:";
@@ -31,10 +33,9 @@
     noAudio: "This media has no audio track.",
     noVideo: "This media has no video track.",
     emptyUrl: "Paste a link first.",
-    offline: "Can't reach SaveMe. Check that it's running, then try again.",
     retrying: "Waiting for SaveMe to respond. Retrying…",
     gaveUp: "Can't reach SaveMe. Check that it's running, then reload this page to pick the download back up.",
-    badReply: "SaveMe sent an unexpected reply. Please try again.",
+    badReply: MSG_BAD_REPLY,
     jobFailed: "The download failed. Please try again.",
     expiredTtl: "This file expired before it was saved. Please start again.",
     expiredEvicted: "This file expired early to free up server space. Please start again.",
@@ -86,46 +87,7 @@
   let resumeTimer = 0; // ticks the "Kept on the server for …" countdown
   let jobError = ""; // a failed Cancel or Resume, shown on the panel until the next try
 
-  // ---- small helpers ------------------------------------------------------------------
-
-  const isNum = (v) => typeof v === "number" && Number.isFinite(v);
-  const str = (v) => (typeof v === "string" ? v.trim() : "");
-  const fmtMB = (bytes) => `${(bytes / MB).toFixed(1)} MB`;
-
-  function fmtDuration(seconds) {
-    const s = Math.max(0, Math.round(seconds));
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const pad = (n) => String(n).padStart(2, "0");
-    return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
-  }
-
-  function httpUrl(value) {
-    if (typeof value !== "string") return null;
-    try {
-      const u = new URL(value);
-      return u.protocol === "http:" || u.protocol === "https:" ? u.href : null;
-    } catch {
-      return null;
-    }
-  }
-
-  function setText(node, text) {
-    const value = text == null ? "" : String(text);
-    if (node.textContent !== value) node.textContent = value;
-  }
-
-  function show(node, visible) {
-    node.hidden = !visible;
-  }
-
-  // A text line that is hidden when empty; tone "error" turns it red (data-[tone=error]: classes).
-  function setLine(node, text, tone) {
-    setText(node, text);
-    show(node, Boolean(text));
-    if (tone) node.dataset.tone = tone;
-    else delete node.dataset.tone;
-  }
+  // ---- small helpers (the generic ones are in common.js) ---------------------------------
 
   // The visible status line under the link field (aria-live).
   function say(text, tone) {
@@ -178,48 +140,6 @@
     }
     clearJob();
     return null;
-  }
-
-  // ---- API ------------------------------------------------------------------------------
-
-  class ApiError extends Error {
-    constructor(status, code, message) {
-      super(message);
-      this.status = status;
-      this.code = code;
-    }
-  }
-
-  // GET when body is undefined, otherwise POST JSON. Errors carry the server's message.
-  async function api(path, body) {
-    const init = { cache: "no-store", headers: { Accept: "application/json" } };
-    if (body !== undefined) {
-      init.method = "POST";
-      init.headers["Content-Type"] = "application/json";
-      init.body = JSON.stringify(body);
-    }
-    let res;
-    try {
-      res = await fetch(path, init);
-    } catch {
-      throw new ApiError(0, "network", MSG.offline);
-    }
-    let data = null;
-    try {
-      data = await res.json();
-    } catch {
-      // Not JSON; handled below.
-    }
-    if (!res.ok) {
-      const err = data && typeof data === "object" && data.error && typeof data.error === "object" ? data.error : {};
-      throw new ApiError(
-        res.status,
-        str(err.code) || `http_${res.status}`,
-        str(err.message) || `Something went wrong (HTTP ${res.status}). Please try again.`,
-      );
-    }
-    if (!data || typeof data !== "object") throw new ApiError(res.status, "bad_response", MSG.badReply);
-    return data;
   }
 
   // ---- state ----------------------------------------------------------------------------

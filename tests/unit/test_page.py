@@ -66,12 +66,26 @@ def test_footer_copy_is_exact():
     assert FOOTER in _html()
 
 
-def test_references_built_css_and_deferred_app_js():
+SCRIPTS = ["common.js", "app.js"]  # deferred, so they run in this order
+
+
+def test_references_built_css_and_deferred_scripts():
     tags = _parsed().tags
     assert any(t == "link" and a.get("rel") == "stylesheet" and a.get("href") == "/static/dist/styles.css"
                for t, a in tags)
     scripts = [a for t, a in tags if t == "script"]
-    assert scripts == [{"src": "/static/app.js", "defer": None}]
+    assert scripts == [{"src": f"/static/{name}", "defer": None} for name in SCRIPTS]
+    for name in SCRIPTS:
+        assert (STATIC / name).is_file(), name
+
+
+def test_shared_helpers_come_from_common_js():
+    common = (STATIC / "common.js").read_text(encoding="utf-8")
+    assert "window.SaveMe = Object.freeze(" in common
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "window.SaveMe" in app
+    for helper in ("async function api(", "class ApiError", "function fmtDuration("):
+        assert helper in common and helper not in app, helper
 
 
 def test_no_inline_script_style_or_handlers():
@@ -125,11 +139,14 @@ def test_app_js_carries_pinned_copy():
     assert "M4A audio (original)" in js
 
 
-def test_app_js_never_injects_html():
-    js = (STATIC / "app.js").read_text(encoding="utf-8")
-    for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function",
-                "setAttribute(\"style\"", "setAttribute('style'", "cssText"):
-        assert bad not in js, bad
+def test_static_js_never_injects_html():
+    scripts = sorted(STATIC.glob("*.js"))
+    assert [p.name for p in scripts] == sorted(SCRIPTS)
+    for path in scripts:
+        js = path.read_text(encoding="utf-8")
+        for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(",
+                    "new Function", "setAttribute(\"style\"", "setAttribute('style'", "cssText"):
+            assert bad not in js, (path.name, bad)
 
 
 def test_job_panel_has_cancel_and_resume_buttons():
