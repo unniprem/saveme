@@ -72,7 +72,9 @@
   let estimateTimer = 0;
   let estimateSeq = 0;
   let edits = {}; // highlight id -> [start, end] as adjusted by the user
-  let selected = new Set();
+  let selected = new Set(); // the ticked moments: these are made into shorts
+  let pickedFor = ""; // the analysis whose moments the ticks and edits belong to
+  let making = false; // shorts are being made (shorts.js): Find moments waits
   let transcript = null; // { segments, language, origin } of the source
 
   const announce = (text) => setText(el.announcer, text);
@@ -130,7 +132,7 @@
     if (!source) return;
     try {
       sessionStorage.setItem(STORE_KEY, JSON.stringify({
-        sourceId: source.id, analysisId, readyId, tab: currentTab(),
+        sourceId: source.id, analysisId, readyId, pickedFor, tab: currentTab(),
         form: formState(), edits, selected: [...selected],
       }));
     } catch {
@@ -175,10 +177,10 @@
     running = false;
     edits = {};
     selected = new Set();
+    pickedFor = "";
     transcript = null;
     show(el.aiProgress, false);
     show(el.aiResults, false);
-    delete el.aiCards.dataset.analysis;
     setLine(el.aiFormMsg, "");
     setLine(el.aiTestMsg, "");
     setLine(el.aiSubsMsg, "");
@@ -195,6 +197,7 @@
       selected = new Set(Array.isArray(saved.selected) ? saved.selected.filter((s) => typeof s === "string") : []);
       if (typeof saved.analysisId === "string" && JOB_ID_RE.test(saved.analysisId)) analysisId = saved.analysisId;
       if (typeof saved.readyId === "string" && JOB_ID_RE.test(saved.readyId)) readyId = saved.readyId;
+      if (typeof saved.pickedFor === "string" && JOB_ID_RE.test(saved.pickedFor)) pickedFor = saved.pickedFor;
       const tab = OLD_TABS[saved.tab] || saved.tab;
       selectTab(TABS.includes(tab) ? tab : "manual");
     } else {
@@ -202,6 +205,7 @@
       selectTab("manual");
     }
     const g = gen;
+    publish();
     loadStatus(g);
     loadTranscript(g);
     restoreRuns(g);
@@ -347,7 +351,7 @@
   function paintButtons() {
     const available = Boolean(status && status.available);
     const configured = available && status.configured;
-    el.aiStart.disabled = !source || running || !configured;
+    el.aiStart.disabled = !source || running || making || !configured;
     el.aiTranscribe.disabled = !source || running || !available;
     el.aiSubsFile.disabled = !source || running || !available;
     el.aiRetranscribe.disabled = running;
@@ -557,18 +561,35 @@
     return { start: h.start, end: h.end };
   }
 
+  // A view's moments that can be shown, in rank order.
+  function momentsOf(v) {
+    return (v && Array.isArray(v.candidates) ? v.candidates : []).filter(
+      (h) => h && typeof h.id === "string" && isNum(h.start) && isNum(h.end) && h.end > h.start);
+  }
+
+  function moments() {
+    return momentsOf(shown);
+  }
+
+  // Tell shorts.js which moments are on screen and which are ticked, with their (edited) times and titles.
+  function publish() {
+    const picks = shown ? moments().filter((h) => selected.has(h.id)).map((h) => ({ ...rangeOf(h), title: str(h.title) })) : [];
+    bridge.setMoments({ shown: Boolean(shown), picks });
+  }
+
   function paintResults(v, onlyTranscript) {
     if (onlyTranscript) {
       show(el.aiResults, false);
+      publish();
       return;
     }
-    if (el.aiCards.dataset.analysis && el.aiCards.dataset.analysis !== str(v.analysis_id)) {
-      edits = {}; // edits and choices belong to the highlights they were made on
-      selected = new Set();
+    const highlights = momentsOf(v);
+    if (str(v.analysis_id) !== pickedFor) { // new moments: all ticked, and the old edits don't apply to them
+      pickedFor = str(v.analysis_id);
+      edits = {};
+      selected = new Set(highlights.map((h) => h.id));
+      store();
     }
-    el.aiCards.dataset.analysis = str(v.analysis_id);
-    const highlights = (Array.isArray(v.candidates) ? v.candidates : []).filter(
-      (h) => h && typeof h.id === "string" && isNum(h.start) && isNum(h.end) && h.end > h.start);
     show(el.aiResults, true);
     setText(el.aiResultsCount, highlights.length ? count(highlights.length, "highlight", "highlights") : "");
     const usage = v.usage;
@@ -586,10 +607,7 @@
     selected = new Set([...selected].filter((id) => highlights.some((h) => h.id === id)));
     el.aiCards.replaceChildren(...highlights.map((h, i) => card(h, i + 1)));
     paintSelectAll();
-  }
-
-  function moments() {
-    return shown && Array.isArray(shown.candidates) ? shown.candidates : [];
+    publish();
   }
 
   // One button that selects every moment, or none once they're all selected.
@@ -640,6 +658,7 @@
       else selected.delete(h.id);
       paintSelectAll();
       store();
+      publish();
     });
     const heading = node("div", "min-w-0 flex-1");
     const meta = node("p", "flex flex-wrap items-center gap-2 text-xs text-ink-600 dark:text-ink-400");
@@ -705,6 +724,7 @@
       msg.hidden = true;
       edits[h.id] = [Math.round(next.start * 1000) / 1000, Math.round(Math.min(next.end, top) * 1000) / 1000];
       store();
+      publish();
       input.value = fmtTime(edits[h.id][which === "start" ? 0 : 1]);
       paintTimes();
       announce(`Highlight ${n} now ${fmtTime(edits[h.id][0])} to ${fmtTime(edits[h.id][1])}.`);
@@ -767,6 +787,7 @@
     for (const box of el.aiCards.querySelectorAll("input[type=checkbox]")) box.checked = on;
     paintSelectAll();
     store();
+    publish();
     announce(on ? "All moments selected." : "No moments selected.");
   }
 
@@ -898,5 +919,9 @@
   el.aiSearch.addEventListener("input", filterTranscript);
   el.aiSubsFile.addEventListener("change", importSubtitles);
   paintButtons();
+  bridge.onMaking((on) => {
+    making = on;
+    paintButtons();
+  });
   bridge.onSource(onSource);
 })();

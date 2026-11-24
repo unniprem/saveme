@@ -33,7 +33,8 @@
   const POSITIONS = [["", "Template default"], ["bottom", "Bottom"], ["middle", "Middle"], ["top", "Top"]];
   const HIGHLIGHTS = [["none", "None"], ["color", "Colour the word"], ["box", "Box behind the word"]];
   const MSG = {
-    noClips: "Select at least one clip to render.",
+    noClips: "Tick at least one moment or clip to make shorts.",
+    tooMany: "You can make up to 20 shorts at once.",
     loading: "Checking Auto Shorts…",
     offline: "Can't reach SaveMe. Check that it's running, then try again.",
     lost: "This render is no longer on the server. Render again.",
@@ -66,7 +67,7 @@
     "shorts-render-msg", "shorts-render", "shorts-render-label", "shorts-progress", "shorts-progress-spin",
     "shorts-progress-status", "shorts-progress-percent", "shorts-progress-bar", "shorts-progress-fill",
     "shorts-results", "shorts-zip", "shorts-cancel", "shorts-nocaps", "shorts-nocaps-msg", "shorts-nocaps-go",
-    "announcer",
+    "make-pick", "announcer",
   ]) {
     el[id.replace(/^shorts-/, "").replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = document.getElementById(id);
   }
@@ -74,8 +75,11 @@
   let options = null; // GET /api/shorts/options
   let source = null; // { id, title, duration } while the studio has a ready video
   let gen = 0; // bumped when the source changes, so late replies are ignored
-  let clips = []; // the studio's clip list, in seconds
-  let selected = new Set(); // clip keys
+  let clips = []; // the studio's clip list (cut by hand in Manual), in seconds
+  let selected = new Set(); // the ticked hand-cut clips' keys
+  let moments = { shown: false, picks: [] }; // from ai.js: the moments on screen and the ticked ones
+  let starting = false; // a Make request is on its way to the server
+  let making = false; // what the bridge was last told
   let edits = {}; // clip key -> edited cues [{start, end, text, speaker}]
   let editing = ""; // the clip key open in the caption editor
   let assets = {}; // kind -> { id, name } uploaded for this source
@@ -96,6 +100,22 @@
   const keyOf = (c) => `${Math.round(c.start * 1000)}-${Math.round(c.end * 1000)}`;
   const base = () => `/api/sources/${encodeURIComponent(source.id)}`;
   const byId = (list, id) => (list || []).find((x) => x.id === id);
+  const maxShorts = () => (options && options.limits && isNum(options.limits.max_clips) ? options.limits.max_clips : 20);
+
+  // A message under Make. paint() owns the notices it puts there (and clears them); say() is for the rest.
+  function say(text, tone) {
+    delete el.renderMsg.dataset.notice;
+    setLine(el.renderMsg, text, tone);
+  }
+
+  function notice(text, tone) {
+    if (text) {
+      setLine(el.renderMsg, text, tone);
+      el.renderMsg.dataset.notice = "1";
+    } else if (el.renderMsg.dataset.notice) {
+      say("");
+    }
+  }
 
   // ---- form helpers ---------------------------------------------------------------------------
 
@@ -296,13 +316,15 @@
     assets = {};
     renderId = "";
     renderView = null;
+    starting = false;
+    making = false; // the bridge resets it for a new video, before telling us about the video
     previewId = "";
     captionInfo = null;
     transcribing = "";
     show(el.editor, false);
     show(el.progress, false);
     show(el.preview, false);
-    setLine(el.renderMsg, "");
+    say("");
     setLine(el.previewMsg, "");
     setText(el.introName, "");
     setText(el.outroName, "");
@@ -318,7 +340,8 @@
   function restore() {
     const saved = stored(source.id);
     if (!saved) {
-      selected = new Set(clips.map(keyOf));
+      selected = new Set(); // clips cut by hand start unticked: they may be for a plain ZIP
+      renderClips();
       refreshCaptions();
       return;
     }
@@ -335,14 +358,13 @@
       renderId = saved.renderId;
       poll(gen);
     }
+    renderClips();
     refreshCaptions();
     outputs();
   }
 
   function onClips(list) {
-    const before = new Set(clips.map(keyOf));
     clips = list.slice();
-    for (const c of clips) if (!before.has(keyOf(c))) selected.add(keyOf(c)); // new rows start selected
     const keys = new Set(clips.map(keyOf));
     selected = new Set([...selected].filter((k) => keys.has(k)));
     renderClips();
@@ -350,8 +372,32 @@
     store();
   }
 
+  function onMoments(state) {
+    moments = state;
+    renderClips(); // the preview picker follows the picks
+    paint();
+    refreshCaptions();
+  }
+
+  // What Make makes: the picked moments in rank order, then the ticked clips cut by hand. A clip with a
+  // moment's exact range is made once, with the moment's title.
   function chosen() {
-    return clips.filter((c) => selected.has(keyOf(c)));
+    const seen = new Set();
+    const list = [];
+    for (const c of [...moments.picks, ...clips.filter((x) => selected.has(keyOf(x)))]) {
+      const key = keyOf(c);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      list.push(c);
+    }
+    return list;
+  }
+
+  // A short's name in the preview picker: its moment's title, or the clip's number in Manual's list.
+  function nameOf(c) {
+    if (c.title) return c.title;
+    const at = clips.findIndex((x) => keyOf(x) === keyOf(c));
+    return `Clip ${at + 1}`;
   }
 
   function renderClips() {
@@ -368,6 +414,7 @@
       box.addEventListener("change", () => {
         if (box.checked) selected.add(key);
         else selected.delete(key);
+        renderClips();
         paint();
         store();
         refreshCaptions();
@@ -399,8 +446,9 @@
     el.clips.replaceChildren(...rows);
     show(el.hand, clips.length > 0);
     const pick = el.previewPick.value;
-    fill(el.previewPick, clips.map((c, i) => [keyOf(c), `Clip ${i + 1} · ${fmtTime(c.start)} – ${fmtTime(c.end)}`]));
-    if (clips.some((c) => keyOf(c) === pick)) el.previewPick.value = pick;
+    const list = chosen();
+    fill(el.previewPick, list.map((c) => [keyOf(c), `${nameOf(c)} · ${fmtTime(c.start)} – ${fmtTime(c.end)}`]));
+    if (list.some((c) => keyOf(c) === pick)) el.previewPick.value = pick;
     outputs();
   }
 
@@ -838,7 +886,8 @@
   // ---- preview ------------------------------------------------------------------------------------------
 
   function previewClip() {
-    return clips.find((c) => keyOf(c) === el.previewPick.value) || chosen()[0] || clips[0] || null;
+    const list = chosen();
+    return list.find((c) => keyOf(c) === el.previewPick.value) || list[0] || null;
   }
 
   function previewAt(clip) {
@@ -848,7 +897,7 @@
   async function startPreview(kind) {
     const clip = previewClip();
     if (!source || !clip) {
-      setLine(el.previewMsg, "Add a clip first.", "error");
+      setLine(el.previewMsg, "Tick a moment or a clip first.", "error");
       return;
     }
     const g = gen;
@@ -903,6 +952,7 @@
 
   function clipBody(c) {
     const body = { start: c.start, end: c.end };
+    if (c.title) body.title = c.title;
     const cues = edits[keyOf(c)];
     if (cues) body.cues = cues;
     const manual = manualFrame();
@@ -913,12 +963,15 @@
   async function startRender() {
     const list = chosen();
     if (!source || !list.length) {
-      setLine(el.renderMsg, MSG.noClips, "error");
+      say(MSG.noClips, "error");
       return;
     }
+    if (list.length > maxShorts()) return;
     const g = gen;
+    starting = true;
     el.render.disabled = true;
-    setLine(el.renderMsg, "");
+    say("");
+    paint();
     try {
       await ensureLogo();
       const r = await api(`${base()}/renders`, { clips: list.map(clipBody), spec: spec() });
@@ -932,8 +985,9 @@
       announce(`Rendering ${list.length} short${list.length === 1 ? "" : "s"}.`);
       poll(g);
     } catch (err) {
-      setLine(el.renderMsg, err.message, "error");
+      if (g === gen) say(err.message, "error");
     } finally {
+      starting = false;
       paint();
     }
   }
@@ -949,14 +1003,14 @@
         renderId = "";
         renderView = null;
         store();
-        setLine(el.renderMsg, MSG.lost, "error");
+        say(MSG.lost, "error");
         show(el.progress, false);
         paint();
         return;
       }
       failures += 1;
       if (failures >= MAX_POLL_FAILURES) {
-        setLine(el.renderMsg, MSG.offline, "error");
+        say(MSG.offline, "error");
         return;
       }
     }
@@ -984,6 +1038,7 @@
 
   function paintProgress() {
     const view = renderView;
+    syncMaking();
     show(el.progress, Boolean(view));
     if (!view) return;
     const pending = RENDER_PENDING.includes(view.status);
@@ -1050,7 +1105,7 @@
       renderView = await api(`/api/renders/${encodeURIComponent(renderId)}/cancel`, {});
       paintProgress();
     } catch (err) {
-      setLine(el.renderMsg, err.message, "error");
+      say(err.message, "error");
     } finally {
       el.cancel.disabled = false;
       paint();
@@ -1062,20 +1117,41 @@
       renderView = await api(`/api/renders/${encodeURIComponent(renderId)}/clips/${number}/cancel`, {});
       paintProgress();
     } catch (err) {
-      setLine(el.renderMsg, err.message, "error");
+      say(err.message, "error");
     }
   }
 
   // ---- buttons -------------------------------------------------------------------------------------------
 
+  // Shorts are being made: a Make on its way, or a render that hasn't ended (or whose state is still
+  // being fetched after a reload).
+  function isMaking() {
+    return Boolean(source) && (starting || (Boolean(renderId) && (!renderView || RENDER_PENDING.includes(renderView.status))));
+  }
+
+  function syncMaking() {
+    const now = isMaking();
+    if (now !== making) {
+      making = now;
+      bridge.setMaking(now);
+    }
+  }
+
   function paint() {
     const ready = Boolean(options && options.available && source);
-    const busy = Boolean(renderView && RENDER_PENDING.includes(renderView.status));
-    const count = chosen().length;
-    el.render.disabled = !ready || busy || count === 0;
+    const busy = isMaking();
+    const list = chosen();
+    const count = list.length;
+    const tooMany = count > maxShorts();
+    show(el.makePick, Boolean(source) && (moments.shown || clips.length > 0));
+    el.render.disabled = !ready || busy || count === 0 || tooMany;
     setText(el.renderLabel, count ? `Make ${count} short${count === 1 ? "" : "s"}` : "Make shorts");
-    for (const b of [el.previewFrame, el.previewClip]) b.disabled = !ready || clips.length === 0;
+    if (options && !options.available) notice((options.error && str(options.error.message)) || "Making shorts isn't available.", "error");
+    else if (tooMany) notice(MSG.tooMany.replace("20", String(maxShorts())), "error");
+    else notice("");
+    for (const b of [el.previewFrame, el.previewClip]) b.disabled = !ready || count === 0;
     el.transcribe.disabled = !source || Boolean(transcribing);
+    syncMaking();
   }
 
   // ---- wiring ---------------------------------------------------------------------------------------------
@@ -1123,5 +1199,6 @@
   paint();
   bridge.onSource(onSource);
   bridge.onClips(onClips);
+  bridge.onMoments(onMoments);
   loadOptions();
 })();

@@ -118,6 +118,14 @@
   let closedCallback = () => {};
   const sourceCallbacks = []; // ai.js, shorts.js: told about the ready source, or null when there is none
   const clipCallbacks = []; // shorts.js: told when the clip list changes
+  // The Make shorts handoff: ai.js publishes the moments on screen and the ticked ones (picks), shorts.js
+  // makes them; shorts.js says when shorts are being made, so ai.js holds Find moments meanwhile. Both
+  // belong to the open video and reset when it changes or closes.
+  let moments = { shown: false, picks: [] };
+  let making = false;
+  let notifiedId = ""; // the source the callbacks were last told about
+  const momentCallbacks = [];
+  const makingCallbacks = [];
 
   // ---- small helpers --------------------------------------------------------------------
 
@@ -1000,11 +1008,42 @@
     if (g === gen && exportJob && exportJob.id === id) applyExport(view, g);
   }
 
-  // ---- bridge for ai.js -------------------------------------------------------------------
+  // ---- bridge for ai.js and shorts.js ------------------------------------------------------
 
   function notifySource() {
     const info = state === "ready" && source ? { id: source.id, title: source.title, duration } : null;
+    const id = info ? info.id : "";
+    if (id !== notifiedId) { // another video, or none: its moments and making don't carry over
+      notifiedId = id;
+      setMoments({ shown: false, picks: [] });
+      setMaking(false);
+    }
     for (const callback of sourceCallbacks) callback(info ? { ...info } : null);
+  }
+
+  const momentsCopy = () => ({ shown: moments.shown, picks: moments.picks.map((p) => ({ ...p })) });
+
+  // Replace the moments state. Times are rounded to whole milliseconds; a range shorter than MIN_CLIP
+  // or past the end of the video is dropped (an end within 50 ms of it is clamped, as the cards allow).
+  function setMoments(next) {
+    const top = duration > 0 ? ms(duration) : Infinity;
+    const picks = [];
+    for (const p of next && Array.isArray(next.picks) ? next.picks : []) {
+      if (!p || !isNum(p.start) || !isNum(p.end)) continue;
+      const start = ms(Math.max(0, p.start));
+      if (p.end > top + 0.05) continue;
+      const end = ms(Math.min(p.end, top));
+      if (!longEnough(start, end)) continue;
+      picks.push({ start, end, title: String(p.title || "").slice(0, 120) });
+    }
+    moments = { shown: Boolean(next && next.shown), picks };
+    for (const callback of momentCallbacks) callback(momentsCopy());
+  }
+
+  function setMaking(on) {
+    if (making === Boolean(on)) return;
+    making = Boolean(on);
+    for (const callback of makingCallbacks) callback(making);
   }
 
   // The clip list (seconds, rounded to whole milliseconds), for shorts.js.
@@ -1085,6 +1124,18 @@
       if (typeof callback !== "function") return;
       clipCallbacks.push(callback);
       callback(clips());
+    },
+    setMoments,
+    onMoments(callback) {
+      if (typeof callback !== "function") return;
+      momentCallbacks.push(callback);
+      callback(momentsCopy());
+    },
+    setMaking,
+    onMaking(callback) {
+      if (typeof callback !== "function") return;
+      makingCallbacks.push(callback);
+      callback(making);
     },
     clips,
     marks: () => ({ start: marks.start, end: marks.end }),

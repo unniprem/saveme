@@ -281,6 +281,7 @@ def test_make_shorts_markup():
     assert order == sorted(order)
     tag, more = by_id["make-more"]
     assert tag == "details" and "open" not in more
+    assert "hidden" in by_id["make-pick"][1]  # shown once there are moments or clips cut by hand
     radios = [a for t, a in tags if t == "input" and a.get("name") == "make-platform"]
     assert [a.get("type") for a in radios] == ["radio"] * 3
     assert [a.get("value") for a in radios] == ["youtube_shorts", "instagram_reels", "tiktok"]
@@ -324,6 +325,17 @@ def test_make_shorts_copy_is_pinned():
     assert "window.SaveMeStudioBridge" in ai and "sessionStorage" in ai
     studio = (STATIC / "studio.js").read_text(encoding="utf-8")
     assert "window.SaveMeStudioBridge = Object.freeze(" in studio
+
+
+def test_moments_handoff_is_wired():
+    studio = (STATIC / "studio.js").read_text(encoding="utf-8")
+    ai = (STATIC / "ai.js").read_text(encoding="utf-8")
+    shorts = (STATIC / "shorts.js").read_text(encoding="utf-8")
+    for name in ("setMoments(", "onMoments(callback)", "setMaking(", "onMaking(callback)"):
+        assert name in studio, name
+    assert "bridge.setMoments(" in ai and "bridge.onMaking(" in ai
+    assert "bridge.onMoments(" in shorts and "bridge.setMaking(" in shorts
+    assert "You can make up to 20 shorts at once." in shorts
 
 
 SHORTS_IDS = [
