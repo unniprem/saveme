@@ -8,7 +8,7 @@
 
 The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with local faster-whisper transcription and OpenRouter as the only AI provider, built test-first in small commits on `feature/ai-clipping`, with this journal updated after every task. The brief was taken as a go-ahead without a question round; design calls are under Key Decisions.
 
-**Status: in progress.** Tasks 1–6 (audit, design, transcription, OpenRouter client, highlight engine, job integration) are done. The backend is complete. The UI (Task 7) is next.
+**Status: in progress.** Tasks 1–7 (backend and UI) are done. Integration testing (Task 8) is next.
 
 ### Progress by task
 
@@ -18,7 +18,7 @@ The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with lo
 - [x] **Task 4, OpenRouter.** `AiSettings`/`load_ai_settings` in `app/config.py` (separate from the download settings; the key is kept out of `repr` and errors), `.env.example` documents every AI variable, `app/openrouter.py` (catalogue and capability check, pricing tiers, chat completions, retries, key check, `UsageMeter`), and 9 new error codes.
 - [x] **Task 5, highlight engine.** `app/highlights.py`: chunks (≤ 6,000 estimated tokens, ≤ 20 min, overlap max(60 s, max clip length)), prompts, strict JSON schema, per-item pydantic validation, snapping and length rules, dedupe (> 30 % of the shorter clip), ranking, estimates, and `analyze()` with the spend guard. Also `tests/network/test_openrouter_live.py` (opt-in, needs a key).
 - [x] **Task 6, job integration.** `JobManager` hooks: `hold_source`/`release_source`, `add_source_listener` and `make_room`. `app/ai_jobs.py` `AiManager` runs the stages with its own semaphore. `app/ai_routes.py` adds the routes. `app/main.py` wires them in, lets the subtitle import read its own body, and gives AI fields their own validation messages.
-- [ ] Task 7, UI
+- [x] **Task 7, UI.** A Manual / AI Highlights tab switch in Clip Studio (`static/index.html`) and `static/ai.js`. `window.SaveMeStudioBridge` in `static/studio.js` lets the AI tab reuse the editor, clip list and export. The design is in §11 of the design doc.
 - [ ] Task 8, integration testing
 - [ ] Task 9, docs and review
 
@@ -40,6 +40,8 @@ The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with lo
 | `300e5bf` | feat | Let an analysis hold a source and hear when it ends |
 | `a2a6ec9` | feat | Run AI Highlights analyses as their own job lifecycle |
 | `dba2550` | feat | Add the AI Highlights API routes |
+| `16d59eb` | fix | Answer a missing transcript with null instead of 404 |
+| `a4134c3` | feat | Add the AI Highlights tab to Clip Studio |
 
 ### Test Results
 
@@ -51,6 +53,24 @@ The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with lo
 
 - Task 6: `tests/integration/test_source_holds.py` 10 passed, `tests/integration/test_ai_jobs.py` 32 passed, `tests/integration/test_ai_api.py` 27 passed. Each failed first on the missing method, module or route. `test_ai_api.py` runs the acceptance flow in-process: source, then analysis, then highlights, then one clip and a 2-clip ZIP through the Phase 1 routes, then a second analysis that reuses the transcript.
 - **Whole suite at `dba2550`: 908 passed, 2 skipped, 8 deselected (109 s).** The baseline was 673 passed, and every Phase 1 and downloader test still passes.
+
+- Task 7: `tests/unit/test_page.py` 17 passed. The new AI markup and copy tests failed first. Real-browser walkthrough `check-ai.js` (installed Chrome, Playwright) against `serve_ai.py`, both in `$CLAUDE_JOB_DIR/tmp/dev/ai/`. It runs the **real transcriber** (Whisper `base`, Homebrew FFmpeg) on a 100 s `say`-generated talk, with a **simulated OpenRouter**, because no key exists here. It showed:
+  - **Desktop 1200 px, light:**
+    - ArrowRight switches to the AI tab. The estimate reads "about $0.0007, at most $0.0013, from the video's length".
+    - Find highlights moved focus to the progress panel, and stages advanced with real percentages. Ready took 11–25 s.
+    - 3 cards. A bad end time showed "Type a time like 1:05 or 65.5." with `aria-invalid`. Preview played from 0:05.7. Load into editor switched to Manual with the marks set and focus on Start.
+    - Add selected put 3 rows in the list; a second press said "3 were already in it". The ZIP held 3 entries, and Export on a card saved one clip.
+    - Transcript search "electric" found 3 lines, and clicking a time seeked to 57.6 s.
+    - Regenerating skipped extracting and transcribing. Cancelling a re-transcription showed where it stopped and kept the earlier highlights.
+    - Subtitle import worked, and a reload restored the AI tab with its highlights.
+  - **Phone 375 px, dark:** `scrollWidth` 375, card buttons 40 px.
+  - **No key** (second server): the setup message shows, Find highlights and Test connection are disabled, and Transcribe only is enabled.
+  - Screenshots are in `$CLAUDE_JOB_DIR/tmp/dev/ai/shots/`. Console errors: none in the final run.
+- Issues the walkthrough found, now fixed before the UI commit:
+  - a reload lost the AI state;
+  - a 404 console error came from the "any transcript yet?" probe (`16d59eb`);
+  - stopped runs didn't show where they stopped;
+  - a cancelled run hid the earlier highlights.
 
 ### Key Decisions
 
@@ -67,6 +87,9 @@ The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with lo
 - **PyAV is installed (a faster-whisper dependency) but never given media.** Audio is decoded by the hardened FFmpeg wrapper.
 - **Retries:** network errors, timeouts, 408, 429, 5xx and errors inside a 200 are retried 3 times (1 s, 2 s, 4 s plus jitter, or `Retry-After` up to 60 s). 401, 402 and other 4xx fail at once. OpenRouter's own messages are shown only for "refused" (4xx), cleaned and scrubbed of the key. A 401's message is never shown.
 - **Usage:** OpenRouter returns `usage.cost` by default (the docs say `usage: {include: true}` is deprecated), so it isn't requested. A call without a reported cost is priced from tokens × catalogue price, and the total is then labelled an estimate.
+- **Find highlights is `type="button"`**, like every studio button except Fetch. Enter in a number field never starts a paid run.
+- **No transcript yet is `200 {"transcript": null}`**, not a 404, because the page asks every time a video opens.
+- **The AI tab drives the existing editor through a small bridge** (`loadRange`, `addRanges`, `exportRange`, `seek`). Highlights become ordinary clip-list rows and exports, with no second export path.
 - **`provider.data_collection: "deny"` by default**, so transcripts only go to providers that don't store or train on prompts.
 
 ### Issues Encountered
