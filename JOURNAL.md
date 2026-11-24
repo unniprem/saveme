@@ -18,6 +18,7 @@ The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merg
 | `6900fb9` | feat | Add a worker batch mode that cuts several clips into one ZIP |
 | `4f7554c` | feat | Run batch exports as a job kind in the job manager |
 | `3665971` | feat | Add the batch export route for Clip Studio |
+| `cdf75e7` | feat | Add a clip list and ZIP export to Clip Studio |
 
 ### Test Results
 
@@ -43,6 +44,16 @@ The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merg
   - 409 before the source is ready, 404 for a job ID, 403 for a foreign Origin;
   - cancel through `/api/jobs/{id}/cancel` with no resume and no folder left;
   - `max_batch_clips` in `/api/studio`.
+- `cdf75e7`: `tests/unit/test_page.py` gave 15 passed (new IDs, copy, the hidden list, and the `/batch` call are pinned). Then a real-browser check (`check-zip.js` against `serve.py`, both in `$CLAUDE_JOB_DIR/tmp/dev/`, in the installed Google Chrome). No console errors or warnings, and it showed:
+  - **Desktop 1200 px, light, from a link:**
+    - Three ranges added out of order, then listed sorted. A repeat was refused with "This part is already in the clip list."
+    - Load put 0:03.3–0:07.3 back in the fields and moved the video to 3.3 s. Remove moved focus to the next row's Remove.
+    - A reload restored 3 rows.
+    - **Export 3 clips as ZIP** auto-saved `long (3 clips).zip`. It holds `01 …`, `02 …` and `03 …` stored entries, all H.264+AAC, and the page read "ZIP saved".
+    - Cancel pressed right after a second export read "Export cancelled. Nothing was kept on the server.", with no download.
+    - Close cleared `sessionStorage`.
+  - **Phone 375 px, dark, from an uploaded `Beach day.mp4`:** two clips listed, row buttons 40 px tall, `scrollWidth` 375 (no horizontal scroll), and `Beach day (2 clips).zip` saved with both entries.
+  - Screenshots are in `$CLAUDE_JOB_DIR/tmp/dev/shots/zip-*.png`. Row times are kept unbroken (`whitespace-nowrap`) after the first phone screenshot split "· 0:02.0".
 
 ### Key Decisions
 
@@ -51,6 +62,8 @@ The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merg
 - **`zip` is not a download media type.** `ZIP_MEDIA_TYPE` is separate from `_MEDIA_TYPES`, so a link to a `.zip` file still can't be delivered by the downloader.
 - **Entry names come from the server and are checked again in the worker.** They're numbered (`01 <title> (clip …).mp4`) so they sort in list order and stay unique. `is_plain_filename` refuses separators, control and Windows-forbidden characters, leading dots, over 255 bytes, and repeats (case-insensitive).
 - **The batch's size limit covers the whole ZIP.** Each cut's `-fs` is the room left, with 1 KiB counted per entry for headers, and the finished ZIP is checked again.
+- **The list lives in the page, not on the server.** It's kept in `sessionStorage` with the marks, sorted by start so the ZIP follows the video. Duplicates are refused in the page. The server would accept them, and numbering keeps their names apart.
+- **A refused ZIP request shows its error in the export area under the list,** next to the button that was pressed, not in the message line under the editor.
 - **A batch reserves `2 × MAX_FILE_SIZE_MB`, like a download.** The ZIP and the part being added sit on disk together. At the smallest allowed budget, with a source open, a batch gets `disk_full` while single clips still work. That's accepted, and the test documents it.
 
 ### Issues Encountered
@@ -59,7 +72,7 @@ The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merg
 
 ### Pending Work
 
-- Remaining tasks: the page's clip list and ZIP export, the cheap deferred minors, docs, full verification.
+- Remaining tasks: the cheap deferred minors, docs, full verification.
 
 ### Handoff
 
