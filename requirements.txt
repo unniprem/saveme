@@ -66,10 +66,13 @@ mutagen==1.48.1
     # via yt-dlp
 numpy==2.5.5
     # via
+    #   -r requirements.in
     #   ctranslate2
     #   onnxruntime
 onnxruntime==1.32.0
-    # via faster-whisper
+    # via
+    #   -r requirements.in
+    #   faster-whisper
 opentelemetry-api==1.45.2
     # via fastapi
 packaging==26.4
