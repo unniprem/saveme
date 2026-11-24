@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import math
+import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 class ConfigError(Exception):
@@ -103,4 +106,96 @@ def load_settings(env: Mapping[str, str]) -> Settings:
         temp_dir=temp_dir,
         log_level=log_level,
         allowed_hosts=hosts,
+    )
+
+
+# --- AI Highlights ---------------------------------------------------------------------------
+# Loaded apart from Settings: an invalid AI value turns off AI Highlights only, never downloads
+# or manual clipping. A blank OPENROUTER_API_KEY isn't an error: analysis is off, transcription
+# still works.
+
+DEFAULT_OPENROUTER_MODEL = "anthropic/claude-haiku-5.5"
+DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+_MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._:-]+")
+_KEY = re.compile(r"[\x21-\x7e]{1,512}")  # visible ASCII, no spaces
+
+
+@dataclass(frozen=True)
+class AiSettings:
+    openrouter_api_key: str = field(repr=False)
+    openrouter_model: str
+    openrouter_base_url: str
+    openrouter_data_collection: str  # deny | allow
+    ai_max_clips: int
+    ai_max_concurrent_jobs: int
+    ai_max_cost_usd_per_job: float
+    ai_max_source_minutes: int
+    ai_max_job_seconds: int
+    whisper_model: str
+    whisper_cpu_threads: int
+
+    @property
+    def configured(self) -> bool:
+        """True when an OpenRouter key is set (analysis can run)."""
+        return bool(self.openrouter_api_key)
+
+
+def _usd(env: Mapping[str, str], var: str, default: float, lo: float, hi: float) -> float:
+    raw = _get(env, var)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ConfigError(var, f"must be a number of US dollars, got {raw!r}") from None
+    if not math.isfinite(value) or not lo <= value <= hi:
+        raise ConfigError(var, f"must be between {lo} and {hi}")
+    return value
+
+
+def _base_url(env: Mapping[str, str]) -> str:
+    raw = _get(env, "OPENROUTER_BASE_URL")
+    if raw is None:
+        return DEFAULT_OPENROUTER_BASE_URL
+    try:
+        parts = urlsplit(raw)
+        host = parts.hostname
+    except ValueError:
+        host = None
+    if (parts.scheme != "https" or not host or parts.username is not None
+            or parts.password is not None or parts.query or parts.fragment):
+        raise ConfigError("OPENROUTER_BASE_URL",
+                          "must be an https:// URL with no login, query or fragment")
+    return raw.rstrip("/")
+
+
+def load_ai_settings(env: Mapping[str, str]) -> AiSettings:
+    from app.mediafile import MAX_BATCH_CLIPS
+    from app.transcript import WHISPER_MODELS
+
+    key = _get(env, "OPENROUTER_API_KEY") or ""
+    if key and not _KEY.fullmatch(key):
+        # Never echo the value: it is a secret.
+        raise ConfigError("OPENROUTER_API_KEY", "must be the key as OpenRouter shows it, with no spaces")
+    model = _get(env, "OPENROUTER_MODEL") or DEFAULT_OPENROUTER_MODEL
+    if len(model) > 128 or not _MODEL_ID.fullmatch(model):
+        raise ConfigError("OPENROUTER_MODEL", "must be an OpenRouter model id like author/model")
+    collection = (_get(env, "OPENROUTER_DATA_COLLECTION") or "deny").lower()
+    if collection not in ("deny", "allow"):
+        raise ConfigError("OPENROUTER_DATA_COLLECTION", "must be deny or allow")
+    whisper = _get(env, "WHISPER_MODEL") or "base"
+    if whisper not in WHISPER_MODELS:
+        raise ConfigError("WHISPER_MODEL", f"must be one of {', '.join(WHISPER_MODELS)}")
+    return AiSettings(
+        openrouter_api_key=key,
+        openrouter_model=model,
+        openrouter_base_url=_base_url(env),
+        openrouter_data_collection=collection,
+        ai_max_clips=_int(env, "AI_MAX_CLIPS", 10, 1, MAX_BATCH_CLIPS),
+        ai_max_concurrent_jobs=_int(env, "AI_MAX_CONCURRENT_JOBS", 1, 1, 4),
+        ai_max_cost_usd_per_job=_usd(env, "AI_MAX_COST_USD_PER_JOB", 0.25, 0.001, 100),
+        ai_max_source_minutes=_int(env, "AI_MAX_SOURCE_MINUTES", 180, 1, 1440),
+        ai_max_job_seconds=_int(env, "AI_MAX_JOB_SECONDS", 3600, 60, 86400),
+        whisper_model=whisper,
+        whisper_cpu_threads=_int(env, "WHISPER_CPU_THREADS", 2, 1, 16),
     )
