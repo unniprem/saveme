@@ -1,8 +1,8 @@
-// SaveMe AI Highlights: the second tab of Clip Studio. Transcribe the open video on the server
-// (locally, with faster-whisper), ask OpenRouter for highlights in the transcript, then review,
-// adjust, preview and keep them. Plain browser JavaScript; shared helpers come from common.js
-// (window.SaveMe), and the studio's editor, clip list and export from studio.js
-// (window.SaveMeStudioBridge). Text is set with textContent only: titles, summaries and
+// SaveMe Make shorts, finding moments: steps 1 and 2 of Clip Studio's Make shorts tab. Transcribe the
+// open video on the server (locally, with faster-whisper), ask OpenRouter for moments in the transcript,
+// then show them as cards to pick from. shorts.js makes the picked ones into shorts. Plain browser
+// JavaScript; shared helpers come from common.js (window.SaveMe), and the studio's editor and export from
+// studio.js (window.SaveMeStudioBridge). Text is set with textContent only: titles, summaries and
 // transcript lines come from an AI model and a video, so they are never treated as HTML.
 //
 // An analysis runs on the server (POST /api/sources/{id}/analyses) and is followed by polling
@@ -20,7 +20,6 @@
   const MAX_POLL_FAILURES = 30;
   const ESTIMATE_DELAY_MS = 400;
   const MAX_SUBTITLE_BYTES = 4 * 1024 * 1024;
-  const STAGES = ["preparing", "extracting", "transcribing", "analyzing", "ranking", "ready"];
   const PENDING = ["queued", "preparing", "extracting", "transcribing", "analyzing", "ranking"];
   const HEADLINE = {
     starting: "Starting…",
@@ -44,19 +43,18 @@
     badTime: "Type a time like 1:05 or 65.5.",
     startAfterEnd: "The start must be before the end.",
     exportBusy: "Another export is running. Wait for it to finish, or cancel it.",
-    noneSelected: "Select at least one highlight first.",
   };
 
   const el = {};
   for (const id of [
-    "tab-manual", "tab-ai", "tab-shorts", "manual-panel", "ai-panel", "shorts-panel", "ai-status", "ai-test", "ai-test-msg", "ai-form",
+    "tab-manual", "tab-make", "manual-panel", "make-panel", "ai-status", "ai-model", "ai-test", "ai-test-msg", "ai-form",
     "ai-instruction", "ai-min", "ai-max", "ai-count", "ai-min-score", "ai-language", "ai-retranscribe",
     "ai-start", "ai-transcribe", "ai-estimate", "ai-form-msg", "ai-progress", "ai-progress-spin",
     "ai-progress-status", "ai-progress-percent", "ai-progress-bar", "ai-progress-fill", "ai-progress-detail",
-    "ai-stages", "ai-cancel", "ai-results", "ai-results-count", "ai-usage", "ai-notice", "ai-error", "ai-bulk",
-    "ai-select-all", "ai-select-none", "ai-add-selected", "ai-cards-msg", "ai-cards", "ai-transcript",
+    "ai-cancel", "ai-results", "ai-results-count", "ai-usage", "ai-notice", "ai-error", "ai-select-all",
+    "make-no-moments", "ai-cards-msg", "ai-cards", "ai-transcript",
     "ai-transcript-summary", "ai-transcript-empty", "ai-transcript-body", "ai-search", "ai-search-count",
-    "ai-lines", "ai-subs-file", "ai-subs-msg", "studio-video", "announcer", "clip-start",
+    "ai-lines", "ai-subs-file", "ai-subs-msg", "studio-video", "announcer",
   ]) {
     el[id.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = document.getElementById(id);
   }
@@ -76,7 +74,6 @@
   let edits = {}; // highlight id -> [start, end] as adjusted by the user
   let selected = new Set();
   let transcript = null; // { segments, language, origin } of the source
-  let lastStage = ""; // the last stage seen running, to show where a run stopped
 
   const announce = (text) => setText(el.announcer, text);
   const fmtTime = (s) => bridge.fmtTime(s);
@@ -86,12 +83,12 @@
 
   // ---- tabs -------------------------------------------------------------------------------
 
-  // The studio's three tabs: Manual, AI Highlights and Auto Shorts (shorts.js fills the last).
-  const TABS = ["manual", "ai", "shorts"];
+  // The studio's two tabs: Manual and Make shorts (ai.js and shorts.js fill the second).
+  const TABS = ["manual", "make"];
+  const OLD_TABS = { ai: "make", shorts: "make" }; // the tab names stored before Make shorts
 
   function tabParts(name) {
-    return name === "manual" ? [el.tabManual, el.manualPanel] : name === "ai" ? [el.tabAi, el.aiPanel]
-      : [el.tabShorts, el.shortsPanel];
+    return name === "manual" ? [el.tabManual, el.manualPanel] : [el.tabMake, el.makePanel];
   }
 
   function currentTab() {
@@ -179,7 +176,6 @@
     edits = {};
     selected = new Set();
     transcript = null;
-    lastStage = "";
     show(el.aiProgress, false);
     show(el.aiResults, false);
     delete el.aiCards.dataset.analysis;
@@ -199,7 +195,8 @@
       selected = new Set(Array.isArray(saved.selected) ? saved.selected.filter((s) => typeof s === "string") : []);
       if (typeof saved.analysisId === "string" && JOB_ID_RE.test(saved.analysisId)) analysisId = saved.analysisId;
       if (typeof saved.readyId === "string" && JOB_ID_RE.test(saved.readyId)) readyId = saved.readyId;
-      selectTab(TABS.includes(saved.tab) ? saved.tab : "manual");
+      const tab = OLD_TABS[saved.tab] || saved.tab;
+      selectTab(TABS.includes(tab) ? tab : "manual");
     } else {
       unstore();
       selectTab("manual");
@@ -405,9 +402,8 @@
     const hadFocus = document.activeElement === button;
     running = true;
     setLine(el.aiFormMsg, "");
-    lastStage = "";
     paintButtons();
-    paintProgress({ status: "starting", skipped: [] });
+    paintProgress({ status: "starting" });
     if (hadFocus) el.aiProgress.focus(); // the button is now disabled: follow the progress instead
     let created;
     try {
@@ -536,11 +532,6 @@
     const pending = state === "starting" || PENDING.includes(state);
     const transcribeOnly = Boolean(v.options && v.options.transcribe_only);
     const headline = state === "ready" && transcribeOnly ? HEADLINE.transcribed : HEADLINE[state] || HEADLINE.queued;
-    const skipped = Array.isArray(v.skipped) ? v.skipped : [];
-    if (STAGES.includes(state) && state !== "ready") lastStage = state;
-    const stopped = state === "failed" || state === "cancelled";
-    // A stopped run shows the stages it finished and the one it stopped in.
-    const at = stopped ? STAGES.indexOf(lastStage) : STAGES.indexOf(state);
     const message = (v.error && str(v.error.message)) || "";
     show(el.aiProgress, true);
     setText(el.aiProgressStatus, headline);
@@ -554,20 +545,6 @@
     setText(el.aiProgressDetail, detail);
     show(el.aiProgressDetail, Boolean(detail));
     el.aiProgressDetail.dataset.tone = state === "failed" ? "error" : "";
-    for (const item of el.aiStages.querySelectorAll("[data-stage]")) {
-      const key = item.dataset.stage;
-      const index = STAGES.indexOf(key);
-      let mark = "pending";
-      let note = "";
-      if (transcribeOnly && (key === "analyzing" || key === "ranking")) [mark, note] = ["skipped", " (not needed)"];
-      else if (skipped.includes(key)) [mark, note] = ["skipped", " (saved transcript reused)"];
-      else if (state === "ready") [mark, note] = ["done", " (done)"];
-      else if (at >= 0 && index < at) [mark, note] = ["done", " (done)"];
-      else if (index === at && stopped) [mark, note] = state === "failed" ? ["failed", " (failed)"] : ["pending", " (stopped)"];
-      else if (index === at) [mark, note] = ["active", " (in progress)"];
-      item.dataset.state = mark;
-      setText(item.querySelector("[data-note]"), note);
-    }
     el.aiCancel.disabled = state === "starting";
     show(el.aiCancel, pending);
   }
@@ -604,10 +581,21 @@
     }
     setLine(el.aiNotice, str(v.notice));
     setLine(el.aiError, "");
-    show(el.aiBulk, highlights.length > 0);
+    show(el.aiSelectAll, highlights.length > 0);
     setLine(el.aiCardsMsg, "");
     selected = new Set([...selected].filter((id) => highlights.some((h) => h.id === id)));
     el.aiCards.replaceChildren(...highlights.map((h, i) => card(h, i + 1)));
+    paintSelectAll();
+  }
+
+  function moments() {
+    return shown && Array.isArray(shown.candidates) ? shown.candidates : [];
+  }
+
+  // One button that selects every moment, or none once they're all selected.
+  function paintSelectAll() {
+    const all = moments();
+    setText(el.aiSelectAll, all.length && all.every((h) => selected.has(h.id)) ? "Select none" : "Select all");
   }
 
   const BUTTON = "h-10 shrink-0 rounded-lg px-3 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 "
@@ -650,6 +638,7 @@
     check.addEventListener("change", () => {
       if (check.checked) selected.add(h.id);
       else selected.delete(h.id);
+      paintSelectAll();
       store();
     });
     const heading = node("div", "min-w-0 flex-1");
@@ -742,7 +731,6 @@
     const actions = node("div", "mt-3 flex flex-wrap gap-2");
     actions.append(
       button("Preview", `Preview highlight ${n}`, SOFT, () => preview(h)),
-      button("Load into editor", `Load highlight ${n} into the editor`, OUTLINE, () => loadIntoEditor(h, n)),
       button("Export", `Export highlight ${n} as a clip`, OUTLINE, () => exportOne(h, n)),
     );
     item.append(top, times, msg, body, actions);
@@ -762,14 +750,6 @@
     }
   }
 
-  function loadIntoEditor(h, n) {
-    const r = rangeOf(h);
-    if (!bridge.loadRange(r.start, r.end)) return;
-    selectTab("manual");
-    el.clipStart.focus();
-    announce(`Highlight ${n} loaded into the editor: ${fmtTime(r.start)} to ${fmtTime(r.end)}.`);
-  }
-
   function exportOne(h, n) {
     const r = rangeOf(h);
     if (bridge.isExporting() || !bridge.exportRange(r.start, r.end)) {
@@ -780,29 +760,14 @@
     setLine(el.aiCardsMsg, `Exporting highlight ${n}. Its progress shows under the clip list.`);
   }
 
-  function setAll(on) {
-    const highlights = shown && Array.isArray(shown.candidates) ? shown.candidates : [];
-    selected = new Set(on ? highlights.map((h) => h.id) : []);
+  function toggleAll() {
+    const all = moments();
+    const on = !(all.length && all.every((h) => selected.has(h.id)));
+    selected = new Set(on ? all.map((h) => h.id) : []);
     for (const box of el.aiCards.querySelectorAll("input[type=checkbox]")) box.checked = on;
+    paintSelectAll();
     store();
-    announce(on ? "All highlights selected." : "No highlights selected.");
-  }
-
-  function addSelected() {
-    const highlights = shown && Array.isArray(shown.candidates) ? shown.candidates : [];
-    const chosen = highlights.filter((h) => selected.has(h.id));
-    if (!chosen.length) {
-      setLine(el.aiCardsMsg, MSG.noneSelected, "error");
-      announce(MSG.noneSelected);
-      return;
-    }
-    const result = bridge.addRanges(chosen.map(rangeOf));
-    const parts = [result.added ? `Added ${count(result.added, "clip", "clips")} to the clip list.` : "No clips were added."];
-    if (result.duplicates) parts.push(`${count(result.duplicates, "was", "were")} already in it.`.replace(/^1 was/, "1 was").replace(/^(\d+) were/, "$1 were"));
-    if (result.full) parts.push(`${count(result.full, "clip", "clips")} didn't fit: the list holds up to ${result.max}.`);
-    const text = parts.join(" ");
-    setLine(el.aiCardsMsg, text, result.added ? "" : "error");
-    announce(text);
+    announce(on ? "All moments selected." : "No moments selected.");
   }
 
   // ---- transcript ------------------------------------------------------------------------------
@@ -929,9 +894,7 @@
       scheduleEstimate();
     });
   }
-  el.aiSelectAll.addEventListener("click", () => setAll(true));
-  el.aiSelectNone.addEventListener("click", () => setAll(false));
-  el.aiAddSelected.addEventListener("click", addSelected);
+  el.aiSelectAll.addEventListener("click", toggleAll);
   el.aiSearch.addEventListener("input", filterTranscript);
   el.aiSubsFile.addEventListener("change", importSubtitles);
   paintButtons();

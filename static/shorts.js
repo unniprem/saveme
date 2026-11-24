@@ -1,6 +1,7 @@
-// SaveMe Auto Shorts: the third tab of Clip Studio. Turn clips from the clip list (made in Manual or
-// AI Highlights) into finished short videos on this computer: reframed for a platform, captioned from
-// the transcript, optionally branded, and re-encoded as H.264 MP4. Plain browser JavaScript; shared
+// SaveMe Make shorts, making shorts: steps 2 and 3 of Clip Studio's Make shorts tab, and the Look,
+// Captions, Branding, Presets and Preview groups under More settings. Turn the picked moments (from ai.js)
+// and the ticked clips cut by hand in Manual into finished short videos on this computer: reframed for a
+// platform, captioned from the transcript, optionally branded, and re-encoded as H.264 MP4. Plain browser JavaScript; shared
 // helpers come from common.js (window.SaveMe), and the open video and clip list from studio.js
 // (window.SaveMeStudioBridge). Text is set with textContent only.
 //
@@ -47,7 +48,7 @@
 
   const el = {};
   for (const id of [
-    "shorts-panel", "shorts-status", "shorts-use-marks", "shorts-select-all", "shorts-clips-empty", "shorts-clips",
+    "shorts-status", "shorts-hand", "shorts-clips",
     "shorts-platform", "shorts-template", "shorts-template-desc", "shorts-quality", "shorts-fps", "shorts-layout",
     "shorts-margin", "shorts-margin-out", "shorts-manual", "shorts-manual-fields", "shorts-manual-x",
     "shorts-manual-x-out", "shorts-manual-y", "shorts-manual-y-out", "shorts-manual-zoom", "shorts-manual-zoom-out",
@@ -64,7 +65,8 @@
     "shorts-cues", "shorts-editor-msg", "shorts-cues-add", "shorts-cues-reset", "shorts-cues-done",
     "shorts-render-msg", "shorts-render", "shorts-render-label", "shorts-progress", "shorts-progress-spin",
     "shorts-progress-status", "shorts-progress-percent", "shorts-progress-bar", "shorts-progress-fill",
-    "shorts-results", "shorts-zip", "shorts-cancel", "announcer",
+    "shorts-results", "shorts-zip", "shorts-cancel", "shorts-nocaps", "shorts-nocaps-msg", "shorts-nocaps-go",
+    "announcer",
   ]) {
     el[id.replace(/^shorts-/, "").replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = document.getElementById(id);
   }
@@ -395,22 +397,11 @@
       return li;
     });
     el.clips.replaceChildren(...rows);
-    show(el.clipsEmpty, clips.length === 0);
+    show(el.hand, clips.length > 0);
     const pick = el.previewPick.value;
     fill(el.previewPick, clips.map((c, i) => [keyOf(c), `Clip ${i + 1} · ${fmtTime(c.start)} – ${fmtTime(c.end)}`]));
     if (clips.some((c) => keyOf(c) === pick)) el.previewPick.value = pick;
     outputs();
-  }
-
-  function useMarks() {
-    const m = bridge.marks();
-    const result = bridge.addRanges([m]);
-    if (result.added) announce(`Added ${fmtTime(m.start)} to ${fmtTime(m.end)} to the clip list.`);
-    else if (result.duplicates) {
-      selected.add(keyOf({ start: Math.round(m.start * 1000) / 1000, end: Math.round(m.end * 1000) / 1000 }));
-      renderClips();
-      announce("That part is already in the clip list; it's selected.");
-    } else setLine(el.renderMsg, "Mark a start and an end in the editor first (the list may also be full).", "error");
   }
 
   // ---- captions and transcript -------------------------------------------------------------------
@@ -1082,21 +1073,9 @@
     const busy = Boolean(renderView && RENDER_PENDING.includes(renderView.status));
     const count = chosen().length;
     el.render.disabled = !ready || busy || count === 0;
-    setText(el.renderLabel, count ? `Render ${count} short${count === 1 ? "" : "s"}` : "Render shorts");
+    setText(el.renderLabel, count ? `Make ${count} short${count === 1 ? "" : "s"}` : "Make shorts");
     for (const b of [el.previewFrame, el.previewClip]) b.disabled = !ready || clips.length === 0;
-    el.useMarks.disabled = !source;
-    el.selectAll.disabled = !clips.length;
-    setText(el.selectAll, clips.length && count === clips.length ? "Select none" : "Select all");
     el.transcribe.disabled = !source || Boolean(transcribing);
-  }
-
-  function toggleAll() {
-    if (chosen().length === clips.length) selected = new Set();
-    else selected = new Set(clips.map(keyOf));
-    renderClips();
-    paint();
-    store();
-    refreshCaptions();
   }
 
   // ---- wiring ---------------------------------------------------------------------------------------------
@@ -1123,8 +1102,6 @@
     input.addEventListener("change", changed);
   }
   for (const input of [el.platform, el.words, el.size]) input.addEventListener("change", refreshCaptions);
-  el.useMarks.addEventListener("click", useMarks);
-  el.selectAll.addEventListener("click", toggleAll);
   el.transcribe.addEventListener("click", transcribe);
   el.cuesAdd.addEventListener("click", editorAdd);
   el.cuesReset.addEventListener("click", editorReset);
