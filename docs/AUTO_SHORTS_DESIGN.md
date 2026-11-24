@@ -1,6 +1,6 @@
 # Auto Shorts & Reels (Phase 3) — Design
 
-Status: being implemented on `feature/auto-shorts`. Date: 2026-11-24. The code map is in
+Status: implemented on `feature/auto-shorts` (2026-11-24). Where the build differs from the first draft of this design, this text has been updated to match. The code map is in
 [AUTO_SHORTS_IMPLEMENTATION.md](AUTO_SHORTS_IMPLEMENTATION.md), and every preset value is in
 [RENDERING_PRESETS.md](RENDERING_PRESETS.md).
 
@@ -64,7 +64,7 @@ to spare.
 ```
 Browser: Clip Studio "Auto Shorts" tab (static/shorts.js)
   │  GET  /api/shorts/options                    templates, platforms, styles, encoders, limits
-  │  GET  /api/sources/{id}/shorts/captions      cues for a range (from the cached transcript)
+  │  POST /api/sources/{id}/shorts/captions      cues for a range (from the cached transcript)
   │  POST /api/sources/{id}/shorts/assets        logo PNG / intro / outro upload
   │  POST /api/sources/{id}/shorts/previews      a preview still (JPEG) or low-res clip
   │  POST /api/sources/{id}/renders              render 1..20 clips
@@ -84,7 +84,7 @@ Renderer worker: python -m app.renderer   (RLIMIT_DATA cap, nice 10, deny-all co
   render  : app/reframe.py crop path → app/render_graph.py filtergraph → FFmpeg (libx264 or
             VideoToolbox) → MP4, checked with ffprobe
   frame   : the same graph for one frame → JPEG preview
-  asset   : probe a logo/intro/outro upload
+  asset   : decode a logo PNG to raw RGBA (app/png.py); probe an intro/outro upload
 ```
 
 Files: `<source folder>/render/` holds `analysis/<key>.json` (cached face analysis),
@@ -114,8 +114,8 @@ looks at top-level `TEMP_DIR` entries, so it never touches them.
 | swscale (drop `--disable-swscale`) | `scale`, pixel-format conversion. | LGPL |
 | `--enable-libass` (+ libfreetype, fribidi, harfbuzz, fontconfig via Debian) | Burned-in ASS subtitles with complex-script shaping (Malayalam). | ISC, FTL, LGPL, MIT |
 | `--enable-libdav1d`, decoder `libdav1d` | AV1 sources (uploads; some sites). | BSD-2 |
-| decoders `h264, hevc, vp8, vp9, png` | Decoding sources (vp9 was already there) and the logo. | LGPL |
-| encoder `mjpeg`, muxer `image2`, demuxer `png_pipe` | JPEG preview stills; a single-image logo input (`png_pipe` reads exactly one image and has no file-pattern logic, unlike `image2` as a demuxer). | LGPL |
+| decoders `h264, hevc, vp8, vp9`, and `rawvideo` with its demuxer | Decoding sources (vp9 was already there). The logo arrives as raw RGBA. | LGPL |
+| encoders `mjpeg` and `rawvideo`, muxers `image2` and `rawvideo` | JPEG preview stills; raw frames piped to the face detector. | LGPL |
 | filters | `crop, scale, pad, setsar, fps, format, split, overlay, vstack, boxblur, eq, colorchannelmixer, ass, trim, atrim, setpts, asetpts, concat, color, anullsrc, apad, aresample, aformat, anull, null, settb` | LGPL (+ GPL for some) |
 
 Nothing network-related changes: `--disable-network` stays, the only protocols are still `file`
@@ -165,9 +165,12 @@ of fonts, and a slightly larger static FFmpeg.
    (`clean_text`) and ASS-escaped: `{`, `}` and `\` can't open override blocks or form `\N`/`\h`.
    Font selection uses installed system fonts, or `RENDER_FONTS_DIR`, a path validated at startup
    to contain only safe characters.
-4. **Uploads (logo, intro, outro)** have their own small size caps and Content-Type check. The
-   logo's PNG signature and IHDR (dimensions ≤ 4096) are checked in the API process before FFmpeg
-   sees it. Video assets are probed by the renderer worker like a source upload.
+4. **Uploads (logo, intro, outro)** have their own small size caps and Content-Type check.
+   - **FFmpeg never parses an image, as in Phase 1.** The logo's PNG signature and IHDR (≤ 2048 px a
+     side) are checked in the API process. `app/png.py`, a strict decoder (CRCs, bounded inflate, no
+     interlacing), then decodes it inside the renderer worker into raw RGBA. FFmpeg reads that as
+     `rawvideo`. The build has no `png` decoder or PNG demuxer, and the FFmpeg check asserts it.
+   - Video assets are probed by the renderer worker like a source upload.
 5. **Request bodies.** Render requests may carry edited captions for 20 clips, which can be over
    the Guard's 64 KiB cap. The render route reads its own body with a 2 MiB cap, like the subtitle
    import, then validates it strictly (`extra="forbid"`, bounded lists and strings).
@@ -378,7 +381,7 @@ and `branding` slots (logo corner, title bar).
 
 Branding is **off by default**, and SaveMe never adds its own watermark. Optional:
 
-- a **logo** (PNG, ≤ 2 MB, ≤ 4096 px), in a corner, at 5–40 % of the width, 10–100 % opacity;
+- a **logo** (PNG, ≤ 2 MB, ≤ 2048 px a side, not interlaced), in a corner, at 5–40 % of the width, 10–100 % opacity;
 - a **watermark text** (≤ 60 characters, drawn by libass in a corner);
 - a **title bar** (`news_commentary`: the clip's title over a brand-colour band);
 - a **brand colour** (`#RRGGBB`), used for the padding, the title bar and the default highlight;
@@ -389,7 +392,7 @@ Branding is **off by default**, and SaveMe never adds its own watermark. Optiona
 **Saved presets are local**: the browser keeps them (`localStorage`, `saveme.shorts.presets.v1`,
 at most 20, with the logo as a data URL of ≤ 512 KB). They can be exported to and imported from
 a JSON file. The server never stores presets. It validates every render request as untrusted,
-so a tampered preset can only produce a refused request. Intro and outro files aren't saved in
+so a tampered preset can only produce a refused request. Import checks each preset with `POST /api/shorts/validate`, which answers `{valid: false, error}` (HTTP 200) for a bad one. Intro and outro files aren't saved in
 presets (too large for browser storage). A preset remembers that it had them, and asks for
 them again.
 
@@ -401,7 +404,8 @@ Errors use the standard `{"error": {"code", "message"}}` shape.
 | Route | Body / query | Answer |
 | --- | --- | --- |
 | `GET /api/shorts/options` | — | `{available, error, encoder: {name, hardware}, templates[], platforms[], qualities[], styles[], fonts[], limits{}}` |
-| `GET /api/sources/{id}/shorts/captions` | `start, end, style?` | `{captions: null}` with no transcript, else `{timing, language, cues:[{start,end,text,words:[…]}]}` |
+| `POST /api/sources/{id}/shorts/captions` | `{start, end, spec}` | `{captions: null}` with no transcript, else `{timing, language, origin, has_words, cues:[{start,end,text,words:[…]}]}` |
+| `POST /api/shorts/validate` | `{spec}` | `{valid: true, spec}` or `{valid: false, error}` |
 | `POST /api/sources/{id}/shorts/assets?kind=logo\|intro\|outro` | raw bytes | `{asset_id, kind, width, height, duration}` |
 | `POST /api/sources/{id}/shorts/previews` | `{clip:{start,end}, spec, at, kind: "frame"\|"clip"}` | 202 `{preview_id}` |
 | `GET /api/shorts/previews/{id}` | — | `{status, stage, progress_percent, error}` |

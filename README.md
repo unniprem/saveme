@@ -33,6 +33,7 @@ SaveMe is a small web app that runs in Docker on your computer. It puts a simple
 - [Usage](#usage)
 - [Clip Studio](#clip-studio)
 - [AI Highlights](#ai-highlights)
+- [Auto Shorts](#auto-shorts)
 - [Supported sites](#supported-sites)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
@@ -71,6 +72,7 @@ SaveMe sits in between: yt-dlp's reach, behind a one-page interface, running on 
 - Automatic cleanup: files are deleted after you save them, or after a timeout
 - **Clip Studio**: open a link or a video from your computer, preview it, mark a start and an end, and export just that part as MP4. Or collect up to 20 parts in a clip list and export them all as one ZIP. Cutting runs on the server with no re-encoding, with progress and **Cancel**
 - **AI Highlights** in Clip Studio: the video is transcribed on your computer (faster-whisper, many languages including English and Malayalam), and an AI model reached through [OpenRouter](https://openrouter.ai) suggests ranked, editable clips. You can steer it with an instruction ("find the three funniest moments"). Only the transcript text is sent, never the audio or video, and the cost is shown before and after each run
+- **Auto Shorts** in Clip Studio: render clips as finished vertical (9:16), portrait (4:5), square or landscape videos on your computer. Framing can be face tracking, speaker focus, split-screen, blurred background or the original, and captions are word-timed from the transcript in six styles (Malayalam included). Optional logo, watermark and intro/outro. Download each MP4 or one ZIP
 - Light and dark mode, and a layout that works on a phone
 - No database, accounts, cookies or analytics. The only external service is OpenRouter, and only when you use AI Highlights with your own key
 
@@ -232,6 +234,34 @@ The **AI Highlights** tab in Clip Studio finds the parts of a video worth clippi
 
 **Limits.** A clip starts and ends on Whisper's segment boundaries (with a little lead-in and tail), so it may need a touch in the editor. If fewer moments fit your request than you asked for, you get fewer, never filler. One analysis runs at a time (`AI_MAX_CONCURRENT_JOBS`), apart from downloads, which keep their own slots. Videos up to `AI_MAX_SOURCE_MINUTES` (3 hours) are accepted. Results and transcripts live with the open video and are deleted with it.
 
+## Auto Shorts
+
+The **Auto Shorts** tab in Clip Studio turns clips into finished short videos for YouTube Shorts, Instagram Reels, TikTok and other formats. Everything runs on your computer: no video or audio is uploaded anywhere, and Auto Shorts never calls OpenRouter.
+
+1. **Pick clips.** Rows of the clip list (added in **Manual**, or from **AI Highlights**) appear with checkboxes. **Use current marks** adds the editor's marks.
+2. **Choose a platform and a template.** Platforms set the size and keep captions clear of each app's buttons. The six templates are Talking head, Two-person interview, Podcast split-screen, Educational explanation, News commentary, and Full frame with blurred background. Quality is **Draft** (fast, half size), **Standard** or **High**, and the frame rate can stay the video's own or be set.
+3. **Framing.**
+   - **Face tracking** follows the faces smoothly, with a dead zone and a speed limit, jumping only at scene cuts.
+   - **Speaker focus** prefers the face whose mouth moves while someone speaks. It is a best effort: SaveMe doesn't identify voices.
+   - The other modes are **Split-screen**, **Blurred background**, **Original framing** and **Center crop**.
+   - With no face, a template falls back to centre or blur. You can also set the framing by hand.
+4. **Captions** come from the video's transcript. **Transcribe this video** makes one on this computer if there isn't one.
+   - New transcripts store when each word is spoken, so captions highlight words in time with the speech. Older transcripts and imported subtitles get evenly shared word timing.
+   - There are six styles: Clean Minimal, Bold Creator, Karaoke Highlight, Podcast Classic, Cinematic and High Contrast. Size, colours, position, capitals and words per caption can be changed.
+   - **Edit captions** fixes any word or time for one clip.
+   - Captions can be burned in, saved as SRT files too, or left out.
+5. **Branding** is off unless you add it: a PNG logo, a watermark text, a brand colour, a title bar, and an intro or outro of up to 15 seconds. SaveMe never adds a watermark of its own.
+6. **Preview** a frame exactly as it will render, or a quick half-size draft of the clip.
+7. **Render.** Clips render one at a time. Each shows its stage, a percentage measured as FFmpeg encodes it, and an estimate of the time left. **Skip** cancels one clip, and **Cancel** the rest of the batch; finished shorts stay. Download each MP4 (and SRT), or **Download all (ZIP)**.
+
+**Presets** save the current settings in this browser (the logo too, if it's small), and can be exported to a JSON file and imported elsewhere. They are checked by the server before use.
+
+**Speed.** Measured on an Apple M2 with 8 GB, for 30 s of 1080×1920: Standard (x264 `veryfast`) took about 6 seconds and High (`medium`) 11. Face tracking analysed 30 s of 1080p in 2.4 seconds. A native macOS run encodes with the Mac's video hardware (VideoToolbox) when FFmpeg has it, and falls back to software if that fails; Docker always uses x264. One render runs at a time (`RENDER_MAX_CONCURRENT_JOBS`), apart from downloads, which keep their own slots.
+
+**Fonts.** The Docker image uses Roboto, DejaVu and Manjari (for Malayalam), all freely licensed, installed from Debian. A native run uses your system's fonts. See [docs/RENDERING_PRESETS.md](docs/RENDERING_PRESETS.md) for every preset, and [docs/AUTO_SHORTS_DESIGN.md](docs/AUTO_SHORTS_DESIGN.md) for how it works.
+
+**Limits.** HDR video is converted without tone mapping, so it looks flat. Old MPEG-4 Part 2 (AVI) videos can be clipped but not rendered. Shorts are deleted with the open video, and each video keeps its 4 latest renders.
+
 ## Supported sites
 
 SaveMe works with sites [yt-dlp supports](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md), with the limits below. Only the first two rows have been checked end to end.
@@ -352,6 +382,14 @@ SaveMe fetches whatever URL it's given, so it's designed so that a link can't be
 
 **AI Highlights keeps your media local.** Transcription runs in its own worker process, whose connection guard refuses every connection Python makes. Models load from the image only: Hugging Face is set offline, and a model folder must be complete before it loads, so no library falls back to downloading. The OpenRouter key isn't passed to any worker process. Its memory is capped by model size, and it runs at a lower priority than downloads. Audio is decoded by the hardened FFmpeg wrapper; the only additions to the FFmpeg build are a PCM encoder and the WAV format for the transcriber's input. faster-whisper installs PyAV, which bundles its own FFmpeg, but SaveMe never gives it a file. Only transcript text and your instruction go to OpenRouter, over HTTPS, from the server (never the browser), and the key never leaves the server. Everything the model sends back is treated as untrusted. It is checked against a strict schema, it can only pick segment numbers from the part of the transcript it was shown, and its text is cleaned, capped and shown as plain text. The times, lengths, number of clips and scores are enforced by the server, so neither an instruction nor text inside a video can change what SaveMe does beyond choosing clips. Subtitle imports have their own route, capped at 4 MB, with the usual Host and Origin checks.
 
+**Auto Shorts renders in a sandbox of its own.**
+- Rendering runs in its own worker process, with a memory cap (`RENDER_MAX_MEMORY_MB`), a lower priority than downloads, and a connection guard that refuses every connection.
+- The FFmpeg build gains what rendering needs: x264, AAC, libass, and decoders for H.264, HEVC, VP8 and AV1. Still no network protocols, no file-opening demuxers and no image decoders.
+- A logo is decoded by a small, strict PNG decoder in that worker and handed to FFmpeg as raw pixels, so FFmpeg still never reads an image.
+- No text you type, and no transcript text, reaches FFmpeg's command line or filter graph. Captions, titles and watermarks are written to a subtitle file with every character that could start a formatting command replaced.
+- Render, preview and upload requests have size caps of their own: 2 MB of JSON, a 2 MB logo, and intros/outros of 100 MB and 15 seconds. The usual Host and Origin checks apply.
+- With x264 the image's FFmpeg is GPL-licensed. SaveMe stays MIT because it only runs FFmpeg. If you publish the image, offer the source of its GPL parts (the Dockerfile pins exactly which).
+
 **Files never carry their source link.** The page address and any `comment` tag the source file arrived with are blanked before tagging. The only addition to the FFmpeg build for tags is the `ffmetadata` demuxer, which reads the chapter list.
 
 **One bad link fails only its own job.** A worker reads at most 16 MB from any page, manifest or API response (media downloads aren't affected). Each worker process, including the Deno and FFmpeg it starts, is limited to 1 GB of memory, so a hostile page can't use up the memory the rest of the app shares. The memory limit applies in the Docker image; macOS doesn't allow it, so a native macOS run goes without. The API also caps request bodies at 64 KB, counts link lookups against the inspection and queue limits, and accepts a POST only from the page's own origin.
@@ -372,20 +410,22 @@ Browser ──▶ FastAPI server ──▶ worker process ──▶ FFmpeg ─�
             and runs the queue   connection checked    only
 ```
 
-The server never fetches a remote URL itself; every network request happens in a guarded worker. Clip Studio's probing, cutting and ZIP building run in the same kind of worker, on local files only. AI Highlights adds a transcriber worker (faster-whisper, no network at all). The one outside call the server makes itself is to OpenRouter, with transcript text only. See [docs/AI_CLIPPING_DESIGN.md](docs/AI_CLIPPING_DESIGN.md). Job state lives in memory and files live in `TEMP_DIR`, so nothing is kept across restarts. Any files left behind by a crash are cleaned up on the next start.
+The server never fetches a remote URL itself; every network request happens in a guarded worker. Clip Studio's probing, cutting and ZIP building run in the same kind of worker, on local files only. AI Highlights adds a transcriber worker (faster-whisper, no network at all), and Auto Shorts a renderer worker (FFmpeg and a small face detector, no network at all). The one outside call the server makes itself is to OpenRouter, with transcript text only. See [docs/AI_CLIPPING_DESIGN.md](docs/AI_CLIPPING_DESIGN.md). Job state lives in memory and files live in `TEMP_DIR`, so nothing is kept across restarts. Any files left behind by a crash are cleaned up on the next start.
 
-**Stack:** Python 3.12, FastAPI, Uvicorn, yt-dlp, FFmpeg (minimal build), Deno, faster-whisper, httpx (OpenRouter), Tailwind CSS v4 and vanilla JavaScript.
+**Stack:** Python 3.12, FastAPI, Uvicorn, yt-dlp, FFmpeg (minimal build, with x264 and libass for Auto Shorts), Deno, faster-whisper, ONNX Runtime (YuNet face detection), httpx (OpenRouter), Tailwind CSS v4 and vanilla JavaScript.
 
 ### Project layout
 
 ```text
-app/          FastAPI app, job manager, workers (download, transcriber), network guard, settings,
-              OpenRouter client and highlight engine
+app/          FastAPI app, job manager, workers (download, transcriber, renderer), network guard,
+              settings, OpenRouter client, highlight engine, and the Auto Shorts renderer, framing,
+              captions and presets
+app/models/   the YuNet face-detection model (MIT, from OpenCV Zoo)
 app/bin/      ffmpeg/ffprobe wrappers that allow local files only
 static/       the page: HTML, JavaScript, Tailwind source and brand assets
 scripts/      CSS build, Docker smoke test and FFmpeg check
 tests/        unit, integration and opt-in real-site tests
-docs/         design specs, implementation notes and OpenRouter setup
+docs/         design specs, implementation notes, OpenRouter setup and rendering presets
 ```
 
 ### Run without Docker
