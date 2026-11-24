@@ -66,7 +66,7 @@ def test_footer_copy_is_exact():
     assert FOOTER in _html()
 
 
-SCRIPTS = ["common.js", "studio.js", "app.js"]  # deferred, so they run in this order
+SCRIPTS = ["common.js", "studio.js", "ai.js", "app.js"]  # deferred, so they run in this order
 
 
 def test_references_built_css_and_deferred_scripts():
@@ -218,5 +218,64 @@ def test_studio_copy_is_pinned():
 
 def test_tailwind_scans_every_page_file():
     css = (STATIC / "src" / "input.css").read_text(encoding="utf-8")
-    for name in ("index.html", "app.js", "studio.js"):
+    for name in ("index.html", "app.js", "studio.js", "ai.js"):
         assert f'@source "../{name}";' in css, name
+
+
+AI_IDS = [
+    "studio-tabs", "tab-manual", "tab-ai", "manual-panel", "ai-panel",
+    "ai-status", "ai-test", "ai-test-msg", "ai-privacy",
+    "ai-form", "ai-instruction", "ai-min", "ai-max", "ai-count", "ai-min-score", "ai-language",
+    "ai-retranscribe", "ai-start", "ai-transcribe", "ai-estimate", "ai-form-msg",
+    "ai-progress", "ai-stages", "ai-progress-status", "ai-progress-percent", "ai-progress-bar",
+    "ai-progress-fill", "ai-progress-detail", "ai-cancel",
+    "ai-results", "ai-results-title", "ai-usage", "ai-notice", "ai-error", "ai-select-all",
+    "ai-select-none", "ai-add-selected", "ai-cards",
+    "ai-transcript", "ai-transcript-summary", "ai-search", "ai-search-count", "ai-lines",
+    "ai-subs-file", "ai-subs-msg",
+]
+AI_COPY = [
+    "Transcription runs on this computer. To find highlights, SaveMe sends the transcript text "
+    "(never the audio or video) to OpenRouter, which passes it to the AI model.",
+    "Scores are the AI's editorial judgement of each moment, not a prediction of views.",
+    "Add selected to clip list",
+]
+
+
+def test_ai_highlights_markup():
+    by_id = {a["id"]: (t, a) for t, a in _parsed().tags if a.get("id")}
+    for name in AI_IDS:
+        assert name in by_id, name
+    tag, tabs = by_id["studio-tabs"]
+    assert tabs.get("role") == "tablist" and tabs.get("aria-label")
+    for tab, panel in (("tab-manual", "manual-panel"), ("tab-ai", "ai-panel")):
+        tag, attrs = by_id[tab]
+        assert tag == "button" and attrs.get("role") == "tab" and attrs.get("aria-controls") == panel
+        assert by_id[panel][1].get("role") == "tabpanel" and by_id[panel][1].get("aria-labelledby") == tab
+    assert by_id["tab-manual"][1].get("aria-selected") == "true"
+    assert by_id["tab-ai"][1].get("aria-selected") == "false" and "hidden" in by_id["ai-panel"][1]
+    labels = {a.get("for") for t, a in _parsed().tags if t == "label"}
+    for name in ("ai-instruction", "ai-min", "ai-max", "ai-count", "ai-min-score", "ai-language",
+                 "ai-retranscribe", "ai-search", "ai-subs-file"):
+        assert name in labels, name
+    assert by_id["ai-instruction"][0] == "textarea" and by_id["ai-instruction"][1].get("maxlength") == "500"
+    assert by_id["ai-subs-file"][1].get("type") == "file" and ".srt" in by_id["ai-subs-file"][1]["accept"]
+    assert by_id["ai-cards"][0] == "ol" and by_id["ai-cards"][1].get("aria-labelledby") == "ai-results-title"
+    assert by_id["ai-progress-bar"][1].get("role") == "progressbar"
+    for name in ("ai-progress", "ai-results"):  # follow progress when a button disables itself
+        assert by_id[name][1].get("tabindex") == "-1", name
+    for name in ("ai-form-msg", "ai-test-msg", "ai-subs-msg"):
+        assert by_id[name][1].get("aria-live") == "polite", name
+    assert by_id["ai-transcript"][0] == "details"
+
+
+def test_ai_copy_is_pinned():
+    page, ai = _html(), (STATIC / "ai.js").read_text(encoding="utf-8")
+    for text in AI_COPY:
+        assert text in page or text in ai, text
+    for route in ("/api/ai/status", "/api/ai/test", "/analyses/estimate", "/analyses`", "/transcript",
+                  "/cancel`"):
+        assert route in ai, route
+    assert "window.SaveMeStudioBridge" in ai and "sessionStorage" in ai
+    studio = (STATIC / "studio.js").read_text(encoding="utf-8")
+    assert "window.SaveMeStudioBridge = Object.freeze(" in studio
