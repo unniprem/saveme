@@ -84,6 +84,7 @@
   let pollTimer = 0;
   let failures = 0;
   let previewId = "";
+  let previewSeq = 0; // the newest preview request, so a late reply for an older one is ignored
   let previewTimer = 0;
   let transcribing = "";
   let captionInfo = null;
@@ -303,6 +304,11 @@
     setLine(el.previewMsg, "");
     setText(el.introName, "");
     setText(el.outroName, "");
+    if (!logoData) { // a large logo isn't kept in the page: it has to be added again for another video
+      logoName = "";
+      setText(el.logoName, "");
+      show(el.logoRemove, false);
+    }
     if (source && options) restore();
     paint();
   }
@@ -682,11 +688,24 @@
     outputs();
   }
 
-  // A logo from a preset is uploaded again for this video when needed.
+  // A data URL as a Blob, decoded here: fetch() can't read data: URLs under the page's CSP (connect-src 'self').
+  function dataUrlBlob(url) {
+    const comma = url.indexOf(",");
+    const bin = atob(url.slice(comma + 1));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type: "image/png" });
+  }
+
+  // A logo from a preset (or from another video) is uploaded again for this video when needed.
   async function ensureLogo() {
     if (assets.logo || !logoData || !source) return;
-    const blob = await (await fetch(logoData)).blob();
-    await upload("logo", blob, logoName || "logo.png");
+    try {
+      await upload("logo", dataUrlBlob(logoData), logoName || "logo.png");
+    } catch (err) {
+      setLine(el.brandingMsg, `The logo couldn't be added: ${err.message}`, "error");
+      throw err;
+    }
   }
 
   // ---- presets (this browser only) ----------------------------------------------------------------------
@@ -842,16 +861,19 @@
       return;
     }
     const g = gen;
+    const seq = ++previewSeq;
     clearTimeout(previewTimer);
+    previewId = "";
     setLine(el.previewMsg, kind === "frame" ? "Making the preview…" : "Rendering a draft (half size)…");
     try {
       await ensureLogo();
       const body = { clip: clipBody(clip), spec: spec(), kind, at: Math.round(previewAt(clip) * 1000) / 1000 };
       const r = await api(`${base()}/shorts/previews`, body);
+      if (g !== gen || seq !== previewSeq) return; // a newer preview was asked for meanwhile
       previewId = r.preview_id;
       pollPreview(g, previewId, kind);
     } catch (err) {
-      setLine(el.previewMsg, err.message, "error");
+      if (seq === previewSeq) setLine(el.previewMsg, err.message, "error");
     }
   }
 
