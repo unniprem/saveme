@@ -1,6 +1,7 @@
 """Clip Studio HTTP API: sources, preview and clips (spec §6.3), in-process with StudioStub."""
 import asyncio
 import json
+import re
 import socket
 import time
 from pathlib import Path
@@ -304,6 +305,19 @@ def raw_upload(port: int, declared: int, body: bytes) -> socket.socket:
     return raw
 
 
+def read_reply(raw: socket.socket) -> bytes:
+    """The whole HTTP reply, headers and Content-Length body (one recv() may return only the
+    headers)."""
+    reply = b""
+    while chunk := raw.recv(65536):
+        reply += chunk
+        head, sep, body = reply.partition(b"\r\n\r\n")
+        length = re.search(rb"(?im)^content-length:\s*(\d+)", head)
+        if sep and length and len(body) >= int(length[1]):
+            break
+    return reply
+
+
 def wait_for(predicate, timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     while not predicate():
@@ -329,7 +343,7 @@ def test_upload_idle_timeout(temp_dir):
     app = make_app(settings, run_worker=StudioStub(), upload_idle_seconds=0.3)
     with live_server(app) as port:
         with raw_upload(port, 100_000, b"\0" * 1000) as raw:
-            reply = raw.recv(65536)  # nothing more is sent
+            reply = read_reply(raw)  # nothing more is sent
         assert reply.startswith(b"HTTP/1.1 504"), reply[:100]
         assert b'"code":"timeout"' in reply
         wait_for(lambda: job_dirs(temp_dir) == [])
@@ -345,7 +359,7 @@ def test_upload_closed_mid_transfer(temp_dir):
             r = http.post(f"/api/sources/{source_id}/close", json={})
             assert r.json()["status"] == "expired"
             raw.sendall(b"\0" * 2000)
-            reply = raw.recv(65536)
+            reply = read_reply(raw)
         assert reply.startswith(b"HTTP/1.1 404"), reply[:100]
         assert b'"code":"source_not_found"' in reply
         wait_for(lambda: job_dirs(temp_dir) == [])
