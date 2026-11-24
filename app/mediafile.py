@@ -1,4 +1,5 @@
-"""Local media files: probing, remuxing and (for Clip Studio) cutting.
+"""Local media files: probing, remuxing, (for Clip Studio) cutting, and (for AI Highlights)
+extracting audio for transcription.
 
 Runs only inside the worker subprocess, and only on files in a job folder. Every
 ffmpeg/ffprobe call goes through the app/bin wrappers, which pin
@@ -26,6 +27,9 @@ _PROBE_TIMEOUT = 60
 # Most clips one batch (one ZIP) may hold.
 MAX_BATCH_CLIPS = 20
 BATCH_NAME = "media.zip"
+# 16 kHz mono 16-bit PCM, what Whisper takes: bytes of WAV per second of audio.
+WAV_RATE = 16000
+WAV_BYTES_PER_SECOND = 2 * WAV_RATE
 # Bytes a ZIP spends on one entry besides its data: local header, central directory record
 # and ZIP64 extras, each holding the name (at most 255 bytes). Counted against the size limit.
 _ZIP_ENTRY_OVERHEAD = 1024
@@ -258,3 +262,42 @@ def cut_batch(src: Path, workdir: Path, clips: Sequence[tuple[float, float, str]
     if archive.stat().st_size >= max_bytes:
         raise too_large()
     return archive
+
+
+def extract_audio(src: Path, dst: Path, *, duration: float | None, max_bytes: int,
+                  on_progress: Callable[[float | None], None]) -> None:
+    """Decode the first audio stream of `src` to `dst` as 16 kHz mono 16-bit WAV, the input
+    Whisper takes. on_progress(percent or None) is called as ffmpeg reports (about twice a
+    second, and 100 at the end). Raises video_too_long when the WAV reaches `max_bytes` (the
+    audio is longer than allowed) and transcription_failed when ffmpeg can't decode it."""
+    cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", str(src),
+           "-map", "0:a:0", "-vn", "-sn", "-dn", "-map_metadata", "-1", "-ac", "1",
+           "-ar", str(WAV_RATE), "-c:a", "pcm_s16le", "-fs", str(max_bytes), "-f", "wav",
+           "-progress", "pipe:1", "-nostats", str(dst)]
+    with tempfile.TemporaryFile() as errors:
+        try:
+            proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=errors, text=True)
+        except OSError as exc:
+            print(f"worker: audio extraction failed: {exc!r}", file=sys.stderr)
+            raise AppError("transcription_failed") from None
+        with proc:
+            out_us = None
+            for line in proc.stdout:
+                key, _, value = line.strip().partition("=")
+                if key == "out_time_us":
+                    out_us = _progress_int(value)
+                elif key == "progress":
+                    if value == "end":
+                        on_progress(100.0)
+                    elif duration and out_us is not None:
+                        on_progress(min(100.0, out_us / 1e6 * 100 / duration))
+                    else:
+                        on_progress(None)
+        errors.seek(0)
+        tail = stderr_tail(errors.read())
+    if dst.is_file() and dst.stat().st_size >= max_bytes:
+        raise AppError("video_too_long", "This video's audio is longer than AI Highlights allows.")
+    if proc.returncode != 0 or not dst.is_file():
+        print(f"worker: audio extraction failed (rc={proc.returncode}): {tail}", file=sys.stderr)
+        raise AppError("transcription_failed")

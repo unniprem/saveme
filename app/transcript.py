@@ -34,6 +34,11 @@ AUTO = "auto"
 # A segment may end this far past the stated duration (rounding between probes and decoders).
 _END_TOLERANCE = 0.001
 
+# faster-whisper's model names (faster_whisper.utils.available_models()).
+WHISPER_MODELS = ("tiny.en", "tiny", "base.en", "base", "small.en", "small", "medium.en", "medium",
+                  "large-v1", "large-v2", "large-v3", "large", "distil-large-v2", "distil-medium.en",
+                  "distil-small.en", "distil-large-v3", "distil-large-v3.5", "large-v3-turbo", "turbo")
+
 # Whisper's languages (faster_whisper.tokenizer._LANGUAGE_CODES), with English names.
 WHISPER_LANGUAGES: dict[str, str] = {
     "af": "Afrikaans", "am": "Amharic", "ar": "Arabic", "as": "Assamese", "az": "Azerbaijani",
