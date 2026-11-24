@@ -128,7 +128,7 @@ async def test_highlights_become_clips_and_a_zip(client, server, stub):
     assert view["usage"]["calls"] == 1 and view["usage"]["cost_reported"] is True
     assert stub.calls[-1]["mode"] == "transcribe"
     # The transcript is readable and searchable in the page.
-    transcript = (await client.get(f"/api/sources/{source_id}/transcript")).json()
+    transcript = (await client.get(f"/api/sources/{source_id}/transcript")).json()["transcript"]
     assert transcript["origin"] == "whisper" and len(transcript["segments"]) == 60
     assert transcript["segments"][0] == {"start": 0.0, "end": 5.0, "text": "words at 0", "language": "en"}
     # One highlight exported as a clip, both as a ZIP, through the Phase 1 routes.
@@ -214,8 +214,9 @@ async def test_unknown_ids(client):
     r = await client.post(f"/api/sources/{'x' * 22}/analyses", json={})
     assert r.status_code == 404 and r.json()["error"]["code"] == "source_not_found"
     source_id = await ready_source(client)
+    # No transcript yet is a normal state the page asks about, not an error.
     r = await client.get(f"/api/sources/{source_id}/transcript")
-    assert r.status_code == 404 and r.json() == error_body("transcript_not_found")
+    assert r.status_code == 200 and r.json() == {"transcript": None}
 
 
 # --- subtitle import ----------------------------------------------------------------------------
@@ -230,7 +231,7 @@ async def test_import_subtitles(client, server):
                           headers=subtitle_headers(**{"X-SaveMe-Filename": "talk.srt"}))
     assert r.status_code == 200, r.text
     assert r.json() == {"origin": "subtitles", "language": "en", "segments": 2, "duration": 300.0}
-    transcript = (await client.get(f"/api/sources/{source_id}/transcript")).json()
+    transcript = (await client.get(f"/api/sources/{source_id}/transcript")).json()["transcript"]
     assert transcript["origin"] == "subtitles" and transcript["segments"][1]["text"] == "More talk"
     server.chat.append(clips_answer((0, 1, 90)))
     r = await client.post(f"/api/sources/{source_id}/analyses", json={"min_seconds": 20, "max_seconds": 90})

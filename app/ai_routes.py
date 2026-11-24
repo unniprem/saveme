@@ -6,7 +6,7 @@ POST /api/sources/{id}/analyses/estimate     cost estimate for a request
 POST /api/sources/{id}/analyses              start an analysis (202)
 GET  /api/analyses/{id}                      follow it: stage, progress, highlights, usage
 POST /api/analyses/{id}/cancel               cancel it
-GET  /api/sources/{id}/transcript            the cached transcript
+GET  /api/sources/{id}/transcript            the cached transcript (null if none yet)
 POST /api/sources/{id}/transcript            import an SRT/WebVTT file as the transcript
 
 The subtitle import is, with the video upload, one of the two routes whose body the Guard
@@ -92,7 +92,14 @@ def add_ai_routes(router: APIRouter, ai: Callable[[], AiManager], *, idle_second
 
     @router.get("/sources/{source_id}/transcript")
     async def transcript(source_id: str):
-        return ai().transcript(source_id).model_dump()
+        """{"transcript": <transcript>}, or {"transcript": null} while there is none (a state the
+        page asks about whenever a video opens, so not an error)."""
+        try:
+            return {"transcript": ai().transcript(source_id).model_dump()}
+        except AppError as exc:
+            if exc.code != "transcript_not_found":
+                raise
+            return {"transcript": None}
 
     @router.post("/sources/{source_id}/transcript")
     async def import_transcript(source_id: str, request: Request, language: str = AUTO):
