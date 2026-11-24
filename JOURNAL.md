@@ -16,6 +16,7 @@ The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merg
 | --------- | ---- | ----------- |
 | `938a3ff` | docs | Add clip list and ZIP export design for Clip Studio |
 | `6900fb9` | feat | Add a worker batch mode that cuts several clips into one ZIP |
+| `4f7554c` | feat | Run batch exports as a job kind in the job manager |
 
 ### Test Results
 
@@ -27,6 +28,14 @@ The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merg
   - `too_large` when each clip fits but the ZIP doesn't;
   - 21 malformed requests refused as `internal`, including names with `/`, `\`, `:`, NUL, a leading dot, the wrong extension, 300 bytes, or a repeat;
   - a failing second cut reported as "Couldn't cut clip 2" (in-process).
+- `4f7554c`: `test_sources.py` plus `test_jobs.py` gave 94 passed. The 10 new batch manager tests failed first (no `submit_batch`). They cover:
+  - the request with numbered entry names, then progress, the ZIP name and type, one-shot delivery, and the source staying ready;
+  - errors naming the clip, and 0 or 21 clips refused;
+  - end clamping and needing a ready source;
+  - cancel (no resume, folder gone), closing the source cancelling it, and the source not expiring while a batch is pending;
+  - upload batches dropping tags;
+  - a download that returns a ZIP failing as `internal`, and a batch returning an MP4 too;
+  - the 2× reservation (`disk_full` at the smallest budget while a single clip still fits).
 
 ### Key Decisions
 
@@ -35,6 +44,7 @@ The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merg
 - **`zip` is not a download media type.** `ZIP_MEDIA_TYPE` is separate from `_MEDIA_TYPES`, so a link to a `.zip` file still can't be delivered by the downloader.
 - **Entry names come from the server and are checked again in the worker.** They're numbered (`01 <title> (clip …).mp4`) so they sort in list order and stay unique. `is_plain_filename` refuses separators, control and Windows-forbidden characters, leading dots, over 255 bytes, and repeats (case-insensitive).
 - **The batch's size limit covers the whole ZIP.** Each cut's `-fs` is the room left, with 1 KiB counted per entry for headers, and the finished ZIP is checked again.
+- **A batch reserves `2 × MAX_FILE_SIZE_MB`, like a download.** The ZIP and the part being added sit on disk together. At the smallest allowed budget, with a source open, a batch gets `disk_full` while single clips still work. That's accepted, and the test documents it.
 
 ### Issues Encountered
 
@@ -42,7 +52,7 @@ The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merg
 
 ### Pending Work
 
-- Remaining tasks: the `batch` job kind in `JobManager`, the `POST /api/sources/{id}/batch` route, the page's clip list and ZIP export, the cheap deferred minors, docs, full verification.
+- Remaining tasks: the `POST /api/sources/{id}/batch` route, the page's clip list and ZIP export, the cheap deferred minors, docs, full verification.
 
 ### Handoff
 
