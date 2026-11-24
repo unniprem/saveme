@@ -81,7 +81,9 @@
   let starting = false; // a Make request is on its way to the server
   let making = false; // what the bridge was last told
   let edits = {}; // clip key -> edited cues [{start, end, text, speaker}]
-  let editing = ""; // the clip key open in the caption editor
+  let editing = ""; // the key of the range open in the caption editor
+  let editingRange = null; // that range, { start, end }
+  let editingLabel = ""; // what it is: "moment 2", "clip 1"
   let assets = {}; // kind -> { id, name } uploaded for this source
   let logoData = ""; // the logo as a data URL (kept in presets when small enough)
   let logoName = "";
@@ -313,6 +315,8 @@
     selected = new Set();
     edits = {};
     editing = "";
+    editingRange = null;
+    editingLabel = "";
     assets = {};
     renderId = "";
     renderView = null;
@@ -400,17 +404,64 @@
     return `Clip ${at + 1}`;
   }
 
+  const SOFT = "h-10 shrink-0 rounded-lg bg-brand-50 px-3 text-sm font-semibold text-brand-700 hover:bg-brand-100 "
+    + "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed "
+    + "disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:hover:bg-white/15 dark:focus-visible:outline-brand-400";
+  const OUTLINE = "h-10 shrink-0 rounded-lg border border-ink-300 px-3 text-sm font-semibold text-ink-700 "
+    + "hover:border-brand-700/50 hover:text-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 "
+    + "focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:border-ink-700 dark:text-ink-200 "
+    + "dark:hover:border-brand-400/60 dark:hover:text-brand-300 dark:focus-visible:outline-brand-400";
+  const SUMMARY = "inline-flex h-10 cursor-pointer list-none items-center gap-1.5 rounded-lg px-2 text-sm font-semibold "
+    + "text-ink-700 hover:text-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 "
+    + "dark:text-ink-300 dark:hover:text-brand-300 dark:focus-visible:outline-brand-400 [&::-webkit-details-marker]:hidden";
+  const BADGE = "rounded-md bg-brand-50 px-1.5 py-0.5 font-semibold text-brand-700 dark:bg-white/10 dark:text-ink-50";
+
+  function node(tag, className, text) {
+    const n = document.createElement(tag);
+    if (className) n.className = className;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  }
+
+  function button(text, label, className, onClick) {
+    const b = node("button", className, text);
+    b.type = "button";
+    b.setAttribute("aria-label", label);
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  function chevron() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("class", "size-4 shrink-0 transition-transform group-open:rotate-180 motion-reduce:transition-none");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", "m6 9 6 6 6-6");
+    svg.append(path);
+    return svg;
+  }
+
+  // "Captions edited" on every card (the moment cards are ai.js's) whose range has edited captions.
+  function paintBadges() {
+    for (const badge of document.querySelectorAll("[data-captions-key]")) show(badge, Boolean(edits[badge.dataset.captionsKey]));
+  }
+
+  // The clips cut by hand in Manual, as cards like the moments': tick box, "Clip N", times and Play, with
+  // only Edit captions behind More (their times are changed in Manual, where the list lives).
   function renderClips() {
     const rows = clips.map((c, i) => {
       const key = keyOf(c);
-      const li = document.createElement("li");
-      li.className = "flex flex-wrap items-center gap-x-3 gap-y-1 py-2";
-      const label = document.createElement("label");
-      label.className = "flex min-w-0 flex-1 items-center gap-2 text-sm tabular-nums text-ink-900 dark:text-ink-50";
-      const box = document.createElement("input");
+      const n = i + 1;
+      const li = node("li", "rounded-xl border border-ink-200 p-3 sm:p-4 dark:border-ink-800");
+      const top = node("div", "flex items-start gap-3");
+      const box = node("input", "mt-1 size-4 shrink-0 accent-brand-700 dark:accent-brand-400");
       box.type = "checkbox";
-      box.className = "size-4 accent-brand-700 dark:accent-brand-400";
       box.checked = selected.has(key);
+      box.setAttribute("aria-label", `Make clip ${n} into a short`);
       box.addEventListener("change", () => {
         if (box.checked) selected.add(key);
         else selected.delete(key);
@@ -419,28 +470,26 @@
         store();
         refreshCaptions();
       });
-      const text = document.createElement("span");
-      text.textContent = `Clip ${i + 1} · ${fmtTime(c.start)} – ${fmtTime(c.end)} · ${fmtTime(c.end - c.start)}`;
-      label.append(box, text);
-      const actions = document.createElement("span");
-      actions.className = "flex items-center gap-2";
-      if (edits[key]) {
-        const badge = document.createElement("span");
-        badge.className = "rounded-md bg-brand-50 px-1.5 py-0.5 text-xs font-semibold text-brand-700 dark:bg-white/10 dark:text-ink-50";
-        badge.textContent = "Captions edited";
-        actions.append(badge);
-      }
-      const edit = document.createElement("button");
-      edit.type = "button";
-      edit.className = "h-9 rounded-lg bg-brand-50 px-3 text-sm font-semibold text-brand-700 hover:bg-brand-100 "
-        + "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:opacity-60 "
-        + "dark:bg-white/10 dark:text-ink-50 dark:hover:bg-white/15 dark:focus-visible:outline-brand-400";
-      edit.textContent = "Edit captions";
-      edit.setAttribute("aria-label", `Edit captions of clip ${i + 1}`);
-      edit.disabled = !options || !options.available;
-      edit.addEventListener("click", () => openEditor(c, i + 1));
-      actions.append(edit);
-      li.append(label, actions);
+      const face = node("div", "min-w-0 flex-1");
+      const when = node("p", "mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs tabular-nums text-ink-600 dark:text-ink-400");
+      const badge = node("span", BADGE, "Captions edited");
+      badge.dataset.captionsKey = key;
+      badge.hidden = !edits[key];
+      when.append(node("span", "", `${fmtTime(c.start)} – ${fmtTime(c.end)} · ${fmtTime(c.end - c.start)}`), badge);
+      face.append(node("h4", "font-semibold", `Clip ${n}`), when);
+      top.append(box, face);
+      const actions = node("div", "mt-2 flex flex-wrap items-center gap-2 pl-7");
+      actions.append(button("▶ Play", `Play clip ${n}`, SOFT, () => {
+        if (bridge.loadRange(c.start, c.end, true)) announce(`Playing ${fmtTime(c.start)} to ${fmtTime(c.end)}.`);
+      }));
+      const more = node("details", "group mt-1 pl-7");
+      const summary = node("summary", SUMMARY);
+      summary.setAttribute("aria-label", `More about clip ${n}`);
+      summary.append(node("span", "", "More"), chevron());
+      const inside = node("div", "mt-2 flex flex-wrap gap-2");
+      inside.append(button("Edit captions", `Edit the captions of clip ${n}`, OUTLINE, () => editCaptions(c, `clip ${n}`)));
+      more.append(summary, inside);
+      li.append(top, actions, more);
       return li;
     });
     el.clips.replaceChildren(...rows);
@@ -548,11 +597,23 @@
     return li;
   }
 
-  async function openEditor(clip, number) {
+  // Open the caption editor for a moment or a clip (ai.js calls this through window.SaveMeShorts).
+  function editCaptions(range, label) {
+    if (!source || !range || !isNum(range.start) || !isNum(range.end) || range.end <= range.start) return;
+    if (!options || !options.available) {
+      say(options ? (options.error && str(options.error.message)) || "Making shorts isn't available." : MSG.loading, "error");
+      return;
+    }
+    openEditor({ start: range.start, end: range.end }, String(label || "this short"));
+  }
+
+  async function openEditor(clip, label) {
     if (!source) return;
     const g = gen;
     editing = keyOf(clip);
-    setText(el.editorTitle, `Captions for clip ${number} (${fmtTime(clip.start)} – ${fmtTime(clip.end)})`);
+    editingRange = clip;
+    editingLabel = label;
+    setText(el.editorTitle, `Captions for ${label} (${fmtTime(clip.start)} – ${fmtTime(clip.end)})`);
     setLine(el.editorMsg, "");
     show(el.editor, true);
     let cues = edits[editing];
@@ -561,7 +622,7 @@
       setText(el.editorTiming, "Loading…");
       try {
         const data = await api(`${base()}/shorts/captions`, { start: clip.start, end: clip.end, spec: spec() });
-        if (g !== gen) return;
+        if (g !== gen || keyOf(clip) !== editing) return; // another editor was opened meanwhile
         if (!data.captions) {
           setText(el.editorTiming, "");
           setLine(el.editorMsg, MSG.noTranscript, "error");
@@ -617,17 +678,16 @@
     }
     edits[editing] = cues;
     show(el.editor, false);
-    renderClips();
+    paintBadges();
     store();
-    announce("Captions saved for this clip.");
+    announce(`Captions saved for ${editingLabel}.`);
   }
 
   function editorReset() {
     delete edits[editing];
-    const clip = clips.find((c) => keyOf(c) === editing);
-    renderClips();
+    paintBadges();
     store();
-    if (clip) openEditor(clip, clips.indexOf(clip) + 1);
+    if (editingRange) openEditor(editingRange, editingLabel);
   }
 
   function editorAdd() {
@@ -1151,6 +1211,7 @@
     else notice("");
     for (const b of [el.previewFrame, el.previewClip]) b.disabled = !ready || count === 0;
     el.transcribe.disabled = !source || Boolean(transcribing);
+    paintBadges();
     syncMaking();
   }
 
@@ -1197,6 +1258,7 @@
   el.cancel.addEventListener("click", cancelRender);
   setLine(el.status, MSG.loading);
   paint();
+  window.SaveMeShorts = Object.freeze({ editCaptions });
   bridge.onSource(onSource);
   bridge.onClips(onClips);
   bridge.onMoments(onMoments);

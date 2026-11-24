@@ -255,6 +255,7 @@ MAKE_COPY = [
     "Where will you post?", "How many shorts?", "What should they be about?",
     'No moments found. Try other words in "What should they be about?", or other lengths under More settings.',
     "More settings",
+    "Scores are the AI's editorial judgement of each moment, not a prediction of views.",
 ]
 
 
@@ -336,6 +337,16 @@ def test_moments_handoff_is_wired():
     assert "bridge.setMoments(" in ai and "bridge.onMaking(" in ai
     assert "bridge.onMoments(" in shorts and "bridge.setMaking(" in shorts
     assert "You can make up to 20 shorts at once." in shorts
+
+
+def test_cards_are_simple():
+    ai = (STATIC / "ai.js").read_text(encoding="utf-8")
+    shorts = (STATIC / "shorts.js").read_text(encoding="utf-8")
+    assert "window.SaveMeShorts = Object.freeze(" in shorts and "editCaptions(" in shorts
+    assert "window.SaveMeShorts" in ai
+    for text in ("▶ Play", "Save plain cut", "Edit captions", "Why it was picked: ", "line-clamp-2"):
+        assert text in ai, text
+    assert "Load into editor" not in ai
 
 
 SHORTS_IDS = [

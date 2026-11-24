@@ -641,9 +641,32 @@
     return b;
   }
 
-  // One highlight: select box, rank, score, title, editable times, summary, reason, tags, actions.
+  const SCORE_NOTE = "Scores are the AI's editorial judgement of each moment, not a prediction of views.";
+  const SUMMARY = "inline-flex h-10 cursor-pointer list-none items-center gap-1.5 rounded-lg px-2 text-sm font-semibold "
+    + "text-ink-700 hover:text-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 "
+    + "dark:text-ink-300 dark:hover:text-brand-300 dark:focus-visible:outline-brand-400 [&::-webkit-details-marker]:hidden";
+  const BADGE = "rounded-md bg-brand-50 px-1.5 py-0.5 font-semibold text-brand-700 dark:bg-white/10 dark:text-ink-50";
+  // The same key shorts.js gives a range, so it can show "Captions edited" on this card (it keeps the edits).
+  const keyOf = (r) => `${Math.round(r.start * 1000)}-${Math.round(r.end * 1000)}`;
+
+  function chevron() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("class", "size-4 shrink-0 transition-transform group-open:rotate-180 motion-reduce:transition-none");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", "m6 9 6 6 6-6");
+    svg.append(path);
+    return svg;
+  }
+
+  // One moment. The face: tick box, title, rank and times, a two-line summary and Play. Behind More: the
+  // times to change, why it was picked, the score, the tags, Edit captions and Save plain cut.
   function card(h, n) {
-    const title = str(h.title) || "Untitled highlight";
+    const title = str(h.title) || "Untitled moment";
     const item = node("li", "rounded-xl border border-ink-200 p-3 sm:p-4 dark:border-ink-800");
     item.dataset.highlight = h.id;
 
@@ -652,7 +675,7 @@
     check.type = "checkbox";
     check.id = `ai-${h.id}-select`;
     check.checked = selected.has(h.id);
-    check.setAttribute("aria-label", `Select highlight ${n}: ${title}`);
+    check.setAttribute("aria-label", `Make moment ${n} into a short: ${title}`);
     check.addEventListener("change", () => {
       if (check.checked) selected.add(h.id);
       else selected.delete(h.id);
@@ -660,18 +683,27 @@
       store();
       publish();
     });
-    const heading = node("div", "min-w-0 flex-1");
-    const meta = node("p", "flex flex-wrap items-center gap-2 text-xs text-ink-600 dark:text-ink-400");
-    meta.append(node("span", "font-semibold tabular-nums", `#${n}`));
-    const score = node("span", "rounded-md bg-brand-100 px-1.5 py-0.5 font-bold tabular-nums text-brand-700 dark:bg-brand-500/20 dark:text-brand-300",
-      `Score ${isNum(h.score) ? Math.round(h.score) : "–"}`);
-    meta.append(score);
-    const when = node("span", "tabular-nums");
-    meta.append(when);
-    heading.append(meta, node("h4", "mt-1 font-semibold break-words", title));
-    top.append(check, heading);
+    const face = node("div", "min-w-0 flex-1");
+    const when = node("p", "mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs tabular-nums text-ink-600 dark:text-ink-400");
+    const whenText = node("span");
+    const badge = node("span", BADGE, "Captions edited");
+    badge.hidden = true;
+    when.append(whenText, badge);
+    face.append(node("h4", "font-semibold break-words", title), when);
+    if (str(h.summary)) face.append(node("p", "mt-1 line-clamp-2 text-sm break-words text-ink-900 dark:text-ink-50", str(h.summary)));
+    top.append(check, face);
 
-    const times = node("div", "mt-3 flex flex-wrap items-end gap-3");
+    const actions = node("div", "mt-2 flex flex-wrap items-center gap-2 pl-7");
+    actions.append(button("▶ Play", `Play moment ${n}`, SOFT, () => preview(h)));
+
+    const more = node("details", "group mt-1 pl-7");
+    const summary = node("summary", SUMMARY);
+    summary.setAttribute("aria-label", `More about moment ${n}`);
+    summary.append(node("span", "", "More"), chevron());
+    const inside = node("div", "mt-2 space-y-3");
+    more.append(summary, inside);
+
+    const times = node("div", "flex flex-wrap items-end gap-3");
     const fields = {};
     for (const which of ["start", "end"]) {
       const wrap = node("div");
@@ -689,7 +721,7 @@
     }
     const length = node("span", "pb-2.5 text-sm tabular-nums text-ink-600 dark:text-ink-400");
     times.append(length);
-    const msg = node("p", "mt-2 text-sm font-medium text-red-700 dark:text-red-400");
+    const msg = node("p", "text-sm font-medium text-red-700 dark:text-red-400");
     msg.hidden = true;
     msg.id = `ai-${h.id}-msg`;
     fields.start.setAttribute("aria-describedby", msg.id);
@@ -700,7 +732,8 @@
       if (document.activeElement !== fields.start) fields.start.value = fmtTime(r.start);
       if (document.activeElement !== fields.end) fields.end.value = fmtTime(r.end);
       setText(length, `Length ${fmtTime(r.end - r.start)}`);
-      setText(when, `${fmtTime(r.start)} – ${fmtTime(r.end)}`);
+      setText(whenText, `#${n} · ${fmtTime(r.start)} – ${fmtTime(r.end)} · ${fmtTime(r.end - r.start)}`);
+      badge.dataset.captionsKey = keyOf(r); // shorts.js shows the badge when this range's captions were edited
     }
 
     function fromField(which) {
@@ -709,9 +742,9 @@
       const r = rangeOf(h);
       const next = { ...r, [which]: value };
       let problem = value === null ? MSG.badTime : "";
-      const top = source && source.duration > 0 ? source.duration : Infinity;
+      const end = source && source.duration > 0 ? source.duration : Infinity;
       if (!problem && Math.round(next.end * 1000) - Math.round(next.start * 1000) < Math.round(bridge.minClip * 1000)) problem = MSG.startAfterEnd;
-      if (!problem && next.end > top + 0.05) problem = `The video is only ${fmtTime(top)} long.`;
+      if (!problem && next.end > end + 0.05) problem = `The video is only ${fmtTime(end)} long.`;
       fields.start.removeAttribute("aria-invalid");
       fields.end.removeAttribute("aria-invalid");
       if (problem) {
@@ -722,12 +755,12 @@
         return;
       }
       msg.hidden = true;
-      edits[h.id] = [Math.round(next.start * 1000) / 1000, Math.round(Math.min(next.end, top) * 1000) / 1000];
+      edits[h.id] = [Math.round(next.start * 1000) / 1000, Math.round(Math.min(next.end, end) * 1000) / 1000];
       store();
-      publish();
       input.value = fmtTime(edits[h.id][which === "start" ? 0 : 1]);
       paintTimes();
-      announce(`Highlight ${n} now ${fmtTime(edits[h.id][0])} to ${fmtTime(edits[h.id][1])}.`);
+      publish();
+      announce(`Moment ${n} now ${fmtTime(edits[h.id][0])} to ${fmtTime(edits[h.id][1])}.`);
     }
     for (const which of ["start", "end"]) {
       fields[which].addEventListener("change", () => fromField(which));
@@ -736,24 +769,31 @@
       });
     }
     paintTimes();
+    inside.append(times, msg);
 
-    const body = node("div", "mt-3 space-y-1 text-sm");
-    if (str(h.summary)) body.append(node("p", "break-words text-ink-900 dark:text-ink-50", str(h.summary)));
-    if (str(h.reason)) body.append(node("p", "break-words text-ink-600 dark:text-ink-400", `Why it works: ${str(h.reason)}`));
+    const about = node("div", "space-y-1 text-sm");
+    if (str(h.reason)) about.append(node("p", "break-words text-ink-700 dark:text-ink-300", `Why it was picked: ${str(h.reason)}`));
+    about.append(node("p", "text-ink-600 dark:text-ink-400", `Score ${isNum(h.score) ? Math.round(h.score) : "–"}. ${SCORE_NOTE}`));
     const tags = Array.isArray(h.tags) ? h.tags.filter((t) => typeof t === "string" && t.trim()) : [];
     if (tags.length) {
       const list = node("ul", "mt-2 flex flex-wrap gap-1.5");
       list.setAttribute("aria-label", "Tags");
       for (const tag of tags) list.append(node("li", "rounded-md bg-ink-100 px-1.5 py-0.5 text-xs text-ink-700 dark:bg-white/10 dark:text-ink-300", tag));
-      body.append(list);
+      about.append(list);
     }
+    inside.append(about);
 
-    const actions = node("div", "mt-3 flex flex-wrap gap-2");
-    actions.append(
-      button("Preview", `Preview highlight ${n}`, SOFT, () => preview(h)),
-      button("Export", `Export highlight ${n} as a clip`, OUTLINE, () => exportOne(h, n)),
+    const tools = node("div", "flex flex-wrap gap-2");
+    tools.append(
+      button("Edit captions", `Edit the captions of moment ${n}`, OUTLINE, () => {
+        const shorts = window.SaveMeShorts; // shorts.js loads after this file
+        if (shorts) shorts.editCaptions(rangeOf(h), `moment ${n}`);
+      }),
+      button("Save plain cut", `Save moment ${n} as a plain cut`, OUTLINE, () => exportOne(h, n)),
     );
-    item.append(top, times, msg, body, actions);
+    inside.append(tools);
+
+    item.append(top, actions, more);
     return item;
   }
 
@@ -777,7 +817,7 @@
       announce(MSG.exportBusy);
       return;
     }
-    setLine(el.aiCardsMsg, `Exporting highlight ${n}. Its progress shows under the clip list.`);
+    setLine(el.aiCardsMsg, `Saving moment ${n} as a plain cut. Its progress shows below the steps.`);
   }
 
   function toggleAll() {
