@@ -23,6 +23,7 @@ class Settings:
     job_ttl_minutes: int
     max_ready_files: int
     max_total_disk_mb: int
+    max_clip_sources: int
     temp_dir: Path
     log_level: str
     allowed_hosts: tuple[str, ...]
@@ -98,6 +99,7 @@ def load_settings(env: Mapping[str, str]) -> Settings:
         job_ttl_minutes=_int(env, "JOB_TTL_MINUTES", 30, 1, 1440),
         max_ready_files=_int(env, "MAX_READY_FILES", 6, 1, 100),
         max_total_disk_mb=max_total_disk_mb,
+        max_clip_sources=_int(env, "MAX_CLIP_SOURCES", 2, 1, 20),
         temp_dir=temp_dir,
         log_level=log_level,
         allowed_hosts=hosts,
