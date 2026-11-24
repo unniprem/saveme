@@ -79,6 +79,14 @@ pending clips cancelled at once, then cancels the task. `run_worker` kills the w
   `reserve_disk` a `release_disk`. A new code path must keep that.
 - **Analysis cache keys** include the range, the fps and `ANALYSIS_VERSION`. Bump the version when the
   analysis format changes.
+- **FFmpeg evaluates expressions recursively, one level per `+`.** A 4,000-term flat sum crashed it
+  (SIGBUS on macOS). `path_expr` sums terms as a balanced tree, and `bounded_simplify` caps a path at
+  `MAX_PATH_POINTS` keyframes. Keep both.
+- **Start a render or preview with `_spawn`**, never with `asyncio.create_task` directly. It releases the
+  source hold even when the task is cancelled before its first step.
+- **Assets in use are never evicted.** `begin_asset` makes room only from assets no pending render or
+  preview uses, counts uploads in flight, and reserves disk until `end_asset`.
+- **The ZIP is built only after a render ends**, once per render (`zip_lock`).
 
 ## Tests
 
@@ -112,6 +120,28 @@ The journal describes the session's walkthrough. It started SaveMe natively on p
   "Finding faces", estimates, the ZIP);
 - presets: save, load, and a tampered one refused;
 - keyboard tab switching, and phone width (375 px) in dark mode.
+
+## Independent review
+
+After the build, a fresh agent was given the code and the requirements, not my conclusions. It
+reviewed the branch read-only and confirmed each finding with a script, FFmpeg or Chromium. All 13
+are fixed, each with a test that failed first (`9a83437`, `5ccf503`).
+
+| Finding | Severity | Fix |
+| --- | --- | --- |
+| A subject switch on a one-sample shot crashed face/speaker framing (`_at` precedence) | important | correct precedence |
+| A preset's logo upload used `fetch(data:)`, which the CSP blocks; after a video change every render failed | important | decode the data URL into a Blob |
+| Previews skipped the clip-length limit; a 4,000-term crop path crashed FFmpeg | important | limit checked; balanced sums, keyframe cap |
+| A source hold leaked when a task was cancelled before starting | important | `_spawn` with a done-callback |
+| Intro/outro videos had no container/codec allowlist (a GIF passed natively) | important | MP4/MOV/MKV/WebM and H.264/HEVC/VP8/VP9/AV1 only |
+| Asset uploads skipped the disk budget and limits, and could evict an asset in use | important | reservation, in-flight count, in-use check, slots |
+| ZIP builds could race, and a ZIP built mid-render was cached | important | per-render lock; ZIP only after the render |
+| Malformed `tRNS` crashed the PNG decoder | minor | checked; unexpected errors become `PngError` |
+| A still at the clip's very end failed | minor | clamped 0.1 s before the end |
+| Line balancing was O(n³) | minor | prefix sums (O(n²)) |
+| A cue whose words were all under 5 ms vanished from the video | minor | falls back to one plain event |
+| Skipping every clip ended the render as failed | minor | ends as cancelled |
+| A late preview reply could hide the newer preview | minor | request sequence number |
 
 ## Limitations (as built)
 
