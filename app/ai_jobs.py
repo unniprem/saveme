@@ -411,7 +411,8 @@ class AiManager:
         result = await self._run_worker(
             {"mode": "transcribe", "source": str(source.file_path), "workdir": str(workdir),
              "model": ai.whisper_model, "language": analysis.request.language,
-             "cpu_threads": ai.whisper_cpu_threads, "duration": source.duration, "max_seconds": max_seconds},
+             "cpu_threads": ai.whisper_cpu_threads, "duration": source.duration, "max_seconds": max_seconds,
+             "word_timestamps": ai.whisper_word_timestamps},
             cmd=self._cmd, timeout=ai.ai_max_job_seconds, on_event=on_event, workdir=workdir,
             max_workdir_bytes=reserve)
         transcript = load_transcript(workdir / TRANSCRIPT_FILE) if result.get("file") == TRANSCRIPT_FILE else None

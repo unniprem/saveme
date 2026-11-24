@@ -2,3 +2,6 @@
 # break the shebangs of scripts/*.sh and the app/bin ffmpeg/ffprobe wrappers, which run
 # inside the Linux container.
 * text=auto eol=lf
+*.onnx binary
+*.jpg binary
+*.png binary

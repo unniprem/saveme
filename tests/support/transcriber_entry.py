@@ -24,6 +24,15 @@ class _Segment:
     start: float
     end: float
     text: str
+    words: list | None = None
+
+
+@dataclass
+class _Word:
+    start: float
+    end: float
+    word: str
+    probability: float = 0.9
 
 
 @dataclass
@@ -55,7 +64,11 @@ class FakeModel:
             for second in range(int(length)):
                 if delay:
                     time.sleep(delay)
-                yield _Segment(second + 0.1, second + 0.9, f"  second\n{second} ")
+                segment = _Segment(second + 0.1, second + 0.9, f"  second\n{second} ")
+                if options.get("word_timestamps"):
+                    segment.words = [_Word(second + 0.1, second + 0.45, " second"),
+                                     _Word(second + 0.5, second + 0.9, f" {second}")]
+                yield segment
 
         return segments(), _Info(detected, 0.9, length)
 

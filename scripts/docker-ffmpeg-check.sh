@@ -124,6 +124,16 @@ if /app/app/bin/ffmpeg -hide_banner -loglevel error -nostdin -y -i s.mp4 -i ch.m
 else
   echo "FAIL  chapters via ffmetadata: $(tail -n 2 err.txt | tr '\n' ' ')"; failed=1
 fi
+# Auto Shorts: every source codec decodes and re-encodes as H.264 + AAC (scaled and cropped to 9:16),
+# a JPEG preview still is written, and FFmpeg still has no image decoder (logos arrive as raw RGBA).
+RENDER="-vf scale=270:480:force_original_aspect_ratio=increase,crop=270:480,setsar=1 -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -ac 2 -ar 48000"
+check "render AV1+Opus -> H.264+AAC"   r_av1.mp4  "aac h264"   -i av1.webm $RENDER
+check "render HEVC+AAC -> H.264+AAC"   r_hevc.mp4 "aac h264"   -i hevc.ts $RENDER
+check "render VP9+Opus -> H.264+AAC"   r_vp9.mp4  "aac h264"   -i vp9.webm $RENDER
+check "render H.264+AC-3 -> H.264+AAC" r_ac3.mp4  "aac h264"   -i ac3.mkv $RENDER
+check "JPEG preview still"             still.jpg  "mjpeg"      -ss 0.5 -i s.mp4 -frames:v 1 -vf scale=270:480 -strict -1 -f image2 -update 1
+images=$(/app/app/bin/ffmpeg -hide_banner -decoders 2>/dev/null | grep -E ' (png|mjpeg|webp|bmp|gif|tiff|jpeg2000) ' || true)
+if [ -n "$images" ]; then echo "FAIL  no image decoders: $images"; failed=1; else echo "PASS  no image decoders"; fi
 [ "$failed" = 0 ] || exit 1
 
 echo "==> integration tests against the minimal ffmpeg"

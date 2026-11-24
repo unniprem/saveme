@@ -110,3 +110,21 @@ def is_plain_filename(name: object, ext: str) -> bool:
     except UnicodeEncodeError:
         return False
     return len(ext) + 1 < size <= 255
+
+
+_SHORT_EXTS = {"mp4", "srt", "ass"}
+
+
+def short_filename(title: str | None, number: int, start: float, end: float, ext: str, *,
+                   numbered: bool = False) -> str:
+    """An Auto Shorts file: `<title> (short <n>, <start>-<end>).<ext>`, or with `numbered` (inside a
+    ZIP) `<nn> <title> (short …).<ext>` so the entries sort in order."""
+    if ext not in _SHORT_EXTS:
+        raise ValueError(f"unsupported extension: {ext!r}")
+    name = _labelled(title, f" (short {number}, {_clip_time(start)}-{_clip_time(end)})", ext)
+    return f"{number:02d} {name}" if numbered else name
+
+
+def shorts_zip_name(title: str | None, count: int) -> str:
+    """`<title> (<count> shorts).zip`."""
+    return _labelled(title, f" ({count} short{'' if count == 1 else 's'})", "zip")

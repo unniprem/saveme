@@ -49,7 +49,7 @@
 
   const el = {};
   for (const id of [
-    "tab-manual", "tab-ai", "manual-panel", "ai-panel", "ai-status", "ai-test", "ai-test-msg", "ai-form",
+    "tab-manual", "tab-ai", "tab-shorts", "manual-panel", "ai-panel", "shorts-panel", "ai-status", "ai-test", "ai-test-msg", "ai-form",
     "ai-instruction", "ai-min", "ai-max", "ai-count", "ai-min-score", "ai-language", "ai-retranscribe",
     "ai-start", "ai-transcribe", "ai-estimate", "ai-form-msg", "ai-progress", "ai-progress-spin",
     "ai-progress-status", "ai-progress-percent", "ai-progress-bar", "ai-progress-fill", "ai-progress-detail",
@@ -86,20 +86,35 @@
 
   // ---- tabs -------------------------------------------------------------------------------
 
+  // The studio's three tabs: Manual, AI Highlights and Auto Shorts (shorts.js fills the last).
+  const TABS = ["manual", "ai", "shorts"];
+
+  function tabParts(name) {
+    return name === "manual" ? [el.tabManual, el.manualPanel] : name === "ai" ? [el.tabAi, el.aiPanel]
+      : [el.tabShorts, el.shortsPanel];
+  }
+
+  function currentTab() {
+    return TABS.find((name) => tabParts(name)[0].getAttribute("aria-selected") === "true") || "manual";
+  }
+
   function selectTab(which, focus = false) {
-    const ai = which === "ai";
-    el.tabManual.setAttribute("aria-selected", String(!ai));
-    el.tabAi.setAttribute("aria-selected", String(ai));
-    el.tabManual.tabIndex = ai ? -1 : 0;
-    el.tabAi.tabIndex = ai ? 0 : -1;
-    show(el.manualPanel, !ai);
-    show(el.aiPanel, ai);
-    if (focus) (ai ? el.tabAi : el.tabManual).focus();
+    const chosen = TABS.includes(which) ? which : "manual";
+    for (const name of TABS) {
+      const [tab, panel] = tabParts(name);
+      const on = name === chosen;
+      tab.setAttribute("aria-selected", String(on));
+      tab.tabIndex = on ? 0 : -1;
+      show(panel, on);
+    }
+    if (focus) tabParts(chosen)[0].focus();
     store();
   }
 
   function onTabKey(event) {
-    const keys = { ArrowLeft: "manual", ArrowRight: "ai", Home: "manual", End: "ai" };
+    const at = TABS.indexOf(currentTab());
+    const keys = { ArrowLeft: TABS[(at + TABS.length - 1) % TABS.length], ArrowRight: TABS[(at + 1) % TABS.length],
+      Home: TABS[0], End: TABS[TABS.length - 1] };
     if (!(event.key in keys)) return;
     event.preventDefault();
     selectTab(keys[event.key], true);
@@ -118,7 +133,7 @@
     if (!source) return;
     try {
       sessionStorage.setItem(STORE_KEY, JSON.stringify({
-        sourceId: source.id, analysisId, readyId, tab: el.tabAi.getAttribute("aria-selected") === "true" ? "ai" : "manual",
+        sourceId: source.id, analysisId, readyId, tab: currentTab(),
         form: formState(), edits, selected: [...selected],
       }));
     } catch {
@@ -184,7 +199,7 @@
       selected = new Set(Array.isArray(saved.selected) ? saved.selected.filter((s) => typeof s === "string") : []);
       if (typeof saved.analysisId === "string" && JOB_ID_RE.test(saved.analysisId)) analysisId = saved.analysisId;
       if (typeof saved.readyId === "string" && JOB_ID_RE.test(saved.readyId)) readyId = saved.readyId;
-      selectTab(saved.tab === "ai" ? "ai" : "manual");
+      selectTab(TABS.includes(saved.tab) ? saved.tab : "manual");
     } else {
       unstore();
       selectTab("manual");
@@ -898,10 +913,11 @@
 
   // ---- wiring ----------------------------------------------------------------------------------
 
-  el.tabManual.addEventListener("click", () => selectTab("manual"));
-  el.tabAi.addEventListener("click", () => selectTab("ai"));
-  el.tabManual.addEventListener("keydown", onTabKey);
-  el.tabAi.addEventListener("keydown", onTabKey);
+  for (const name of TABS) {
+    const [tab] = tabParts(name);
+    tab.addEventListener("click", () => selectTab(name));
+    tab.addEventListener("keydown", onTabKey);
+  }
   el.aiTest.addEventListener("click", testConnection);
   el.aiForm.addEventListener("submit", (event) => event.preventDefault()); // Enter in a field never starts a paid run
   el.aiStart.addEventListener("click", () => start(false));

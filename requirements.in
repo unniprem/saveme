@@ -4,3 +4,7 @@ yt-dlp[default]==2026.10.26
 # AI Highlights: local transcription, and the OpenRouter client.
 faster-whisper==1.2.1
 httpx
+# Auto Shorts face detection: YuNet (app/models) on ONNX Runtime, with NumPy (both also come with
+# faster-whisper; listed here because app.faces uses them directly).
+onnxruntime
+numpy

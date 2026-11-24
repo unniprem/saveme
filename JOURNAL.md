@@ -2,6 +2,315 @@
 
 ---
 
+## 2026-11-24 15:59 IST — Session: Phase 3, Auto Shorts & Reels
+
+### Summary
+
+The owner sent the Phase 3 brief: an automatic short-video renderer on top of Clip Studio and AI Highlights. It covers 9:16/16:9/1:1/4:5 output, smart reframing (center, face, speaker, split-screen, blurred background, original), word-timed burned-in subtitles in six styles with Malayalam support, templates, optional branding, batch rendering with a ZIP, and an Auto Shorts tab. It is built in small tested commits on `feature/auto-shorts`, with this journal updated after every task. The brief was taken as a go-ahead without a question round, and design calls are under Key Decisions.
+
+**Status: Phase 3 complete on `feature/auto-shorts` (all 10 tasks). It is not merged and not pushed; that is the owner's call.** The acceptance criteria were shown with the real renderer in tests and in Chrome, and in the hardened container:
+- a highlight becomes a word-captioned 9:16 MP4 you can download;
+- several highlights become a ZIP of separately rendered shorts;
+- the downloader, manual Clip Studio and AI Highlights suites all still pass.
+
+An independent review found 7 important and 6 minor problems, all fixed with tests that failed first.
+
+### Progress by task
+
+- [x] **Task 1, audit and design.**
+  - Phase 2 is fully merged: `main` = `origin/main` = `2edc86b`, and `feature/ai-clipping` (`fa43b51`) is its ancestor.
+  - Two older branches aren't merged into `main`: `feature/download-queue` and `feature/security-hardening`. Their unmerged commits change only the journal and a design document, with no code, so nothing was integrated.
+  - `feature/auto-shorts` was cut from `2edc86b`.
+  - No `OPENROUTER_API_KEY` exists here, so OpenRouter is still checked only through its mocked suite. Auto Shorts doesn't call it.
+  - `docs/AUTO_SHORTS_DESIGN.md` holds the audit, architecture, FFmpeg build/licensing/security review, reframing, subtitles, templates, API, lifecycle, limits and test plan.
+- [x] **Task 2, FFmpeg encoders and rendering infrastructure.**
+  - `app/renderer.py`: a worker, `python -m app.renderer`, with modes `render` (`video` and `frame`) and `asset`; `analyze` is stubbed until Task 6. It applies its own `RLIMIT_DATA`, nice 10 and a deny-all connect guard.
+  - `app/encoders.py`: capability detection from `ffmpeg -encoders`/`-filters`, the encoder choice (`auto` picks VideoToolbox when listed), and x264/VideoToolbox/AAC arguments for the `draft`, `standard` and `high` presets.
+  - `app/render_graph.py`: filtergraphs for crop, fit-with-blur, fit-with-colour and split, plus the ASS captions, logo overlay and intro/outro concat. The graph holds only numbers and fixed relative names.
+  - `app/reframe.py`: geometry and piecewise-linear crop paths as flat FFmpeg expressions. `app/layouts.py`: the layout modes.
+  - `RenderSettings` (9 `RENDER_*` variables) in `app/config.py`, `.env.example` and the README.
+  - Dockerfile: libx264, aac, swscale, libass, dav1d, the decoders, mjpeg/rawvideo encoders, image2/rawvideo muxers, `image_png_pipe`, the filters, and the runtime libraries and fonts.
+  - Every output is checked with ffprobe; a failed hardware encode falls back to libx264; progress is FFmpeg's measured `out_time`.
+- [x] **Task 3, aspect ratios, layouts and templates.**
+  - `app/shorts_templates.py`: 7 platforms with safe areas, 3 qualities, 6 FPS choices and the 6 templates, all as data.
+  - `app/caption_styles.py`: the 6 caption styles and 4 font presets.
+  - `app/render_spec.py`: strict pydantic request models and `resolve()` (template ⊕ platform ⊕ overrides), plus `options()` for the API.
+- [x] **Task 4, subtitle generation and timing.**
+  - Word timestamps:
+    - an optional `words` field on each transcript segment;
+    - the transcriber's `word_timestamps` request field;
+    - `WHISPER_WORD_TIMESTAMPS` (default true), passed by `AiManager`.
+  - Word-edge refinement against the audio's energy (`Voicing`, `refine_words` in `app/transcriber.py`).
+  - `app/captions.py`:
+    - clip words, timed or estimated by grapheme length;
+    - segmentation, balanced lines and fitting chars to the frame;
+    - SRT, and ASS with per-word highlight events, safe-area placement, the Malayalam family, title bar, watermark and escaping.
+- [x] **Task 5, subtitle styles and preview.** All 6 styles were rendered and checked by eye on a contact sheet. `test_caption_render.py` checks every style's look (boxes, highlight colours) and that the options (colour, size, position) change the output. The preview still is the renderer's `frame` kind; its API is in Task 8.
+- [x] **Task 6, smart crop and face tracking.**
+  - `app/faces.py`:
+    - YuNet (vendored `app/models/face_detection_yunet_2023mar.onnx`, MIT, SHA-256 pinned) on ONNX Runtime, with a NumPy port of OpenCV's decoding and NMS;
+    - one FFmpeg decode per range: frames at `RENDER_ANALYSIS_FPS`, letterboxed to 640, plus 64×36 grey frames at the source rate for scene cuts;
+    - track linking, and mouth-patch motion.
+  - The planner:
+    - group framing with hysteresis, else the primary face;
+    - speaker focus by mouth motion during transcript speech;
+    - split panels for the 2 main tracks;
+    - a dead zone, median+average smoothing, a speed cap (0.6 window/s), a keep-in clamp for the followed box, 0.6 s eased subject switches, jumps only at cuts, and hold-then-ease when faces are lost;
+    - RDP simplification, then a flat FFmpeg expression.
+  - Fixtures: two public-domain NASA portraits (`tests/fixtures/faces`).
+  - `onnxruntime` and `numpy` are now listed in `requirements.in` (same pinned versions).
+- [x] **Task 7, branding and presets (server side).**
+  - Logo (PNG) uploads are decoded by `app/png.py`, a strict pure-Python PNG decoder, in the renderer worker. FFmpeg gets raw RGBA (`rawvideo`), so **FFmpeg still never parses an image**, the Phase 1 invariant `test_packaging` enforces. The image build has no `png` decoder or PNG demuxer.
+  - Watermark and title bar are ASS events; brand colour drives padding, title bar and default highlight.
+  - Intro/outro are uploaded, probed (≤ 15 s) and joined with `concat`.
+  - `POST /api/shorts/validate` checks a saved or imported preset. The presets themselves live in the browser (Task 9).
+- [x] **Task 8, batch rendering integration.**
+  - `app/render_jobs.py` `RenderManager`:
+    - its own slot (`RENDER_MAX_CONCURRENT_JOBS`) and queue bound;
+    - holds the source, and reserves disk per clip;
+    - clips run one at a time in their own worker runs;
+    - analysis is cached per range;
+    - captions come from the cached transcript or edited cues, sent as data (the worker writes the ASS at the real canvas size);
+    - per-clip and batch cancel; previews have their own slot, and the newest wins;
+    - assets, an on-demand ZIP, and pruning (4 renders and 4 previews per source, 50 records).
+  - `app/render_routes.py`: 13 routes. Render, preview and asset routes read their own bodies (2 MiB JSON cap, 2 MB logo, 100 MB intro/outro).
+  - Wired into `app/main.py`: `_Runtime.render`, lifespan, `OWN_BODY_PATHS`, and `RENDER_*` loaded separately (a bad value turns off only Auto Shorts).
+- [x] **Task 9, UI.**
+  - `static/shorts.js` and the Auto Shorts tab in `static/index.html`:
+    - clips with checkboxes, and Use current marks;
+    - platform, template, quality, FPS;
+    - framing mode, safe margin, manual X/Y/zoom;
+    - captions: on, burn, SRT, style, position, size, words, colours, highlight, capitals, transcript status and Transcribe;
+    - a per-clip caption editor;
+    - branding: logo, watermark, brand colour, title bar, intro/outro;
+    - presets in localStorage: save, load, delete, export, import, each checked by `/api/shorts/validate`;
+    - previews: a still and a draft clip;
+    - the render, with per-clip measured %, estimated time left, Skip, Cancel, MP4/SRT links and the ZIP.
+  - `static/studio.js`: the bridge takes several `onSource` listeners and gains `onClips`/`clips`/`marks`/`currentTime`.
+  - `static/ai.js`: tabs cover three panels.
+- [x] **Task 10, end-to-end verification and documentation.**
+  - Docs:
+    - `docs/AUTO_SHORTS_IMPLEMENTATION.md`: code map, request flow, pitfalls, tests, review table, limitations;
+    - `docs/RENDERING_PRESETS.md`: generated from the preset data, kept in sync by `tests/unit/test_presets_doc.py`;
+    - `docs/AUTO_SHORTS_DESIGN.md` aligned with the code (PNG decoding, validate, measured size and memory);
+    - the README (feature, Auto Shorts section, security, stack, layout, disk 770 MB, settings table);
+    - the "Phase 3" notes in the Phase 2 docs.
+  - Docker:
+    - `scripts/docker-ffmpeg-check.sh` renders AV1/HEVC/VP9/AC-3 sources to H.264+AAC, writes a JPEG still and asserts there is no image decoder;
+    - `scripts/docker-smoke.sh` and `scripts/smoke_shorts.py` render a captioned short (English and Malayalam) inside the container and report memory.
+  - An independent read-only review by a fresh agent, given the code and the brief. Every finding was fixed with a test.
+
+### Changes Made
+
+| Commit    | Type | Description |
+| --------- | ---- | ----------- |
+| `80b2831` | docs | Add the Auto Shorts design |
+| `aeeed49` | feat | Add the renderer worker, layouts, encoder choice and render settings |
+| `975adac` | feat | Add declarative Auto Shorts templates, platforms, caption styles and request schemas |
+| `2216fd2` | feat | Store word timestamps, moved onto the speech itself |
+| `a0ccb60` | feat | Generate word-timed captions as SRT and ASS |
+| `50ec5b5` | build | Add H.264, AAC, libass, dav1d and rendering filters to the image's FFmpeg |
+| `de8233a` | docs | Update journal |
+| `b511c4a` | test | Check every caption style and its options in rendered frames |
+| `c7c4bb7` | fix | Keep word timestamps out of the transcript API response |
+| `82c6812` | feat | Track faces for face, speaker-focus and split-screen framing |
+| `40bb407` | feat | Decode logos in Python so FFmpeg still never parses an image |
+| `71ccbd8` | feat | Add the Auto Shorts render manager and API |
+| `e717985` | docs | Update journal |
+| `780b3ac` | feat | Add the Auto Shorts tab to Clip Studio |
+| `bd4d05e` | docs | Describe Auto Shorts: implementation notes, presets reference and README |
+| `40cf9c9` | test | Render in the Docker checks |
+| `cf6777d` | docs | Update journal |
+| `7893f2d` | docs | Give the measured image size and container memory |
+| `9a83437` | fix | Close the problems an independent review found in Auto Shorts |
+| `5ccf503` | fix | Re-add a preset's logo without fetch, and ignore stale preview replies |
+| `44a6448` | docs | Record the review findings and the pitfalls they taught |
+
+### Test Results
+
+- **Baseline on `feature/auto-shorts` before any change: 932 passed, 2 skipped, 8 deselected** (108 s). This equals the end of Phase 2.
+- **Encoder benchmark** on this M2 (8 GB): 30 s of 1080×1920 at 30 fps cropped from 1080p, 2 threads, `/usr/bin/time -l`:
+
+  | Encoder | Time | Peak RSS | Size |
+  | --- | --- | --- | --- |
+  | x264 `ultrafast` | 2.8 s | 162 MB | 31.5 MB |
+  | x264 `veryfast` | 5.9 s | 308 MB | 11.2 MB |
+  | x264 `faster` | 7.9 s | 376 MB | 11.6 MB |
+  | x264 `medium` | 11.1 s | 508 MB | 11.7 MB |
+  | VideoToolbox 8 Mb/s | 4.8 s | 183 MB | 28.1 MB |
+
+  All x264 runs were at CRF 21.
+
+- **Task 2:**
+  - `tests/integration/test_renderer.py`: 49 passed. It renders with the real FFmpeg and checks with ffprobe (codecs, H.264 High, `yuv420p`, size, FPS, duration, A/V start at 0) and with pixels from colour-coded sources:
+    - each aspect, and each layout's position;
+    - a rotated source, non-square pixels, a source with no audio;
+    - the still, logo, intro/outro;
+    - the size limit, the hardware-to-software fallback, malformed requests;
+    - the worker protocol, and cancel stopping FFmpeg.
+  - `tests/unit/test_render_core.py`: 55 passed (settings, capability parsing, encoder args, geometry, crop paths evaluated against their FFmpeg expressions, layouts, graphs).
+  - Found while testing, fixed before committing:
+    - video could start one frame after the audio (`fps=…:start_time=0` fixes it);
+    - an unmeasured progress event.
+  - **Docker, first build `saveme:auto-shorts`: 770 MB** (Phase 2 image: 738 MB). `scripts/docker-ffmpeg-check.sh`: every matrix case passed; integration tests inside the image **585 passed, 5 failed, 1 skipped**.
+    - 1 real failure: the logo test, because `png_pipe` isn't a configure name. The demuxer is `image_png_pipe`, now fixed in `50ec5b5`.
+    - 4 failures were expected: the check runs current tests against the image's app code, which was built before word timestamps.
+    - A rebuild is running.
+- **Task 3:** `tests/unit/test_render_spec.py`: 55 passed. Every template defines aspect, layout, captions and branding; resolution and overrides work; 28 invalid or tampered presets are refused; text is cleaned and capped. The test found that a template's caption offset carried over to a user-chosen position, pushing captions out of the safe area. It is fixed in both places (`a0ccb60`).
+- **Task 4:**
+  - `tests/unit/test_captions.py`: 37 passed.
+  - `tests/integration/test_transcriber.py`, `test_ai_jobs.py`, `tests/unit/test_transcript.py`: 93 passed with word timestamps.
+  - `tests/integration/test_caption_render.py`: 4 passed:
+    - burned captions show inside their cue times and never outside;
+    - captions off leaves no ink;
+    - Malayalam: every glyph found a font in libass's debug log (here CoreText picked Malayalam Sangam MN), with ink in the caption box;
+    - **opt-in real speech**: 15 isolated words said by `say`, transcribed by real Whisper `base`, then burned in.
+  - **Timing against actual speech** (words said one at a time with known gaps, so the truth comes from the audio):
+
+    | | Starts (median / worst) | Ends (median / worst) |
+    | --- | --- | --- |
+    | Raw Whisper word times | 0.62 s / 0.89 s early | 0.14 s / 0.26 s early |
+    | After refinement | 0.03 s / 0.046 s | 0.057 s / 0.236 s |
+    | Refined, with pink noise added (0.03 amplitude) | 0.029 s / 0.046 s | 0.047 s / 0.115 s |
+    | Continuous four-phrase speech: phrase start / end | within 0.03 s | 0.1–0.37 s early on fading endings |
+
+  - **Word-timestamp cost** (66 s `say` talk, `base`, 2 threads, idle machine): 5.0/5.1 s with words vs 5.8/5.4 s without, so no measurable extra time. Peak RSS was 546 MB vs 476–534 MB.
+  - Stills checked by eye (`$CLAUDE_JOB_DIR/tmp/r1/stills/`):
+    - Bold Creator: the word highlight, outline and watermark.
+    - Malayalam news template: correct conjuncts and chillu, the box style, the brand-colour title bar and the blurred background.
+- **Image check after the first rebuild** (`saveme:auto-shorts`): **597 passed, 3 failed**. The logo test passed.
+  - `test_ai_api` failed because the transcript API now carried `words: null`. Fixed in `c7c4bb7`, which leaves words out of that response.
+  - Two ink thresholds were calibrated on macOS fonts; Docker's Roboto and Manjari draw thinner. There were no glyph failures, and the thresholds are lowered.
+- **Task 5:** `test_caption_render.py` grew to 11 tests, all passed.
+- **Task 6:**
+  - `tests/integration/test_faces.py`: 24 passed, 1 skipped. The skip is the OpenCV cross-check; run in a scratch venv with `opencv-python-headless` 5.1, it **passed**: same faces and scores as `cv2.FaceDetectorYN`, boxes within 1 px.
+  - YuNet on the fixtures: the Apollo 11 crew photo gives 3 faces and each portrait 1 (scores 0.92–0.94).
+  - The cut is found at exactly 2.0 s, and mouth motion separates the speakers (about 67 vs 0, then 53 vs 0).
+  - Renders were checked by finding the faces again in the output frames: a moving face stays within 20–80 % of the width, the split puts one person per panel, speaker focus moves to the right person after the switch, and the window jumps exactly at the cut.
+  - The tests found two real problems, fixed before the commit:
+    - a 0.35 window/s speed cap couldn't follow a face moving 160 px/s (now 0.6, plus the keep-in clamp);
+    - speaker switches took about 4 s (now an eased 0.6 s move).
+  - **Speed:** analysing 30 s of 1080p took 2.4 s, peaking at 114 MB RSS.
+- **Task 7:** `tests/unit/test_png.py`: 23 passed. The decoder matches FFmpeg's own decode on every colour type and filter (8-bit identical; 16-bit within 1 level). It refuses bad CRCs, interlacing, over 2048 px, bad filters, palette overruns, truncation, and a 50 MB decompression bomb (without inflating it). Speed: 1024² Paeth decodes in 0.7 s, 2048² mixed in 0.6 s.
+- **Task 8:** `tests/integration/test_render_api.py`: **29 passed**. It covers options/unavailable/config error, validate, captions (none, words, estimated), clips run in order with the resolved spec, analysis cached per range, captions off/edited/missing, branding-only overlays, a failed clip not stopping the batch, cancelling a render and one clip, a source close, one render per source and the queue bound, downloads unaffected while rendering, refused requests, the body cap, the Origin check, disk full, ZIP contents (`testzip`, order, stored MP4s), previews (still, draft, newest wins), logo upload and use, unsafe assets, and intro/outro.
+  - The two **acceptance tests** use the real renderer: a highlight becomes a captioned 9:16 MP4 (H.264/AAC/yuv420p, 4 s, caption ink while the word is said), and two highlights become a ZIP of two valid MP4s.
+  - The tests caught two real bugs, both fixed:
+    - captions with `enabled: false` were still burned in;
+    - a clip end past the video was clamped instead of refused (Clip Studio refuses it).
+- **Whole suite at `71ccbd8` (before the UI): 1217 passed, 3 skipped, 8 deselected** (163 s). The skips are the OpenCV cross-check (no `cv2` in `.venv`) and the two existing ones.
+- **Task 9:**
+  - `tests/unit/test_page.py`: 19 passed, adding the shorts markup, labels, ARIA, pinned copy, routes, script order and the Tailwind source.
+  - **Browser walkthrough** (Playwright with Chromium) against SaveMe run natively on port 8077, with a 64 s video: a public-domain portrait moving slowly, plus a `say` talk.
+    - Upload, two clips, the Auto Shorts tab. A reload restored the tab and settings.
+    - **Transcribe this video** ran real Whisper `base` in about 6 s. The status then read "Captions use the transcript's word timing (en)".
+    - The editor showed 18 word-timed cues. Editing the first to `Using an AI {\b1}` rendered as literal "USING AN AI (/B1)": escaped, no override applied.
+    - **Preview frame:** 540×960 with "Framing: Face tracking", and the cue matching the moment (checked by eye).
+    - **Render 2 shorts** on VideoToolbox. It showed "Rendering 48 % · about 0:02 left (estimate)", "Finding faces 11 %→83 %" for clip 2, then 1080×1920 for both and a ZIP link.
+    - Downloads: H.264 High, `yuv420p`, 25 fps, AAC LC 48 kHz stereo, exactly 20.000 s, with the right `Content-Disposition` name. The ZIP held 2 entries, and `testzip` passed.
+    - Presets: save, load, and same-name replacement. A tampered preset (`color: "red"`) gave "This preset can't be used: spec.captions.color is not valid".
+    - Keyboard: ArrowRight/ArrowLeft wrap across the three tabs.
+    - **Phone 375 px, dark:** `scrollWidth` 375, and no control under 36 px.
+    - Console: the only error was a 400 from validating the tampered preset. `/api/shorts/validate` now answers `{valid: false}` with 200, and it was re-checked with no error.
+  - Bugs the walkthrough found, all fixed before the UI commit:
+    - the bridge's `clips()`/`marks()` divided seconds by 1000;
+    - the validate console error above.
+- **Task 10:**
+  - **Rebuilt image** (`saveme:auto-shorts`, **770 MB**):
+    - `docker-ffmpeg-check.sh`: **FFMPEG CHECK OK**. Every matrix case passed, including the 4 render cases, the JPEG still and "no image decoders". **653 integration tests passed inside the image** against the minimal FFmpeg 9.0.2, with 3 skipped (two need macOS `say`; the OpenCV cross-check needs `cv2`). Manjari is in the image, so the Malayalam glyph test ran there.
+    - Isolated `docker-smoke.sh` (`COMPOSE_PROJECT_NAME=saveme-ctest`, `SAVEME_PORT=8001`): **SMOKE OK**. It rendered a 540×960 H.264+AAC 4.00 s short from imported English and Malayalam subtitles, and the container peaked at 131 MiB.
+  - **Worst-case memory** in that container (2 GiB `mem_limit`, 2 CPUs): a High-quality 1080×1920 face-tracked render of 40 s (33.7 s, libx264) ran beside a Whisper `base` transcription of 64 s (16.7 s). Peak: **965 MiB**, so the default limit is enough.
+  - `saveme-ctest` was taken down each time, and the live `saveme-saveme-1` was never touched.
+  - **Whole suite before the review fixes (`cf6777d`): 1221 passed, 3 skipped, 8 deselected** (164 s).
+  - **Independent review** (a fresh agent, read-only, given the code and the brief, not my conclusions). It found 7 important and 6 minor problems, each confirmed with a script, FFmpeg or Chromium; all are fixed (table in `docs/AUTO_SHORTS_IMPLEMENTATION.md`).
+    - Important:
+      - a `_at` precedence crash in face/speaker framing on a one-sample subject flip;
+      - preset logos re-uploaded with `fetch(data:)`, which the CSP blocks, breaking every render after a video change;
+      - previews skipped the clip-length limit, and a 4,000-term crop expression crashes FFmpeg (SIGBUS, reproduced here: 3,000 terms ran, 4,000 crashed);
+      - a source hold leaked when a task was cancelled before starting;
+      - intro/outro had no container/codec allowlist (a GIF passed natively);
+      - asset uploads skipped the disk budget and limits, and could evict an asset in use;
+      - ZIP builds raced, and a mid-render ZIP was cached.
+    - Minor: malformed `tRNS`, a still at the clip's end, O(n³) line balancing, quick cues vanishing, skip-all reported as failed, a stale preview reply.
+    - **18 new regression tests fail on the old code and pass on the fix.** The real FFmpeg SIGBUS (rc −10) showed up in `test_a_very_long_crop_path_renders`. The logo fix was checked in Chromium with the real CSP: a preset's logo re-uploaded on a new video, appeared top-right in the preview, with no console errors.
+  - **Final whole suite (`5ccf503`): 1240 passed, 3 skipped, 8 deselected** (173 s, idle machine).
+  - **Final image re-check on the final code:** FFMPEG CHECK OK with **664 integration tests passed in the image**, 3 skipped, and SMOKE OK (short 540×960 h264+aac, 4.00 s).
+
+### Key Decisions
+
+- **Face detection is YuNet (OpenCV Zoo, MIT, 232 KB ONNX) run on ONNX Runtime**, which faster-whisper already ships, not the `opencv-python-headless` or MediaPipe packages:
+  - The OpenCV wheels are 36–64 MB and bundle a second, unhardened FFmpeg.
+  - MediaPipe pulls in jax, matplotlib and the GUI OpenCV.
+  - Everything else OpenCV would do (resize, grey, differences) is done by the hardened FFmpeg or NumPy.
+  - An opt-in test compares the decoding with `cv2.FaceDetectorYN` when OpenCV is present.
+- **libx264 (GPL), not OpenH264.** OpenH264's patent cover applies only to Cisco's binaries. It is also Constrained Baseline only, with weak rate control. The image's FFmpeg becomes GPL-2.0+. SaveMe stays MIT, because FFmpeg is a separate program. Publishing the image needs a GPL source offer, which the design notes.
+- **A separate renderer worker and manager**, as with the transcriber:
+  - the worker gets a memory cap sized for x264 (the download worker's 1 GiB cap can't be raised), a deny-all connect guard and nice 10;
+  - the manager has its own slot, so renders never take download slots;
+  - clips render one at a time, one worker run each.
+- **Subtitles via libass (ASS files SaveMe writes)**, not `drawtext`. That gives HarfBuzz shaping for Malayalam, outlines and boxes, and word highlighting. User text is escaped before it enters ASS, and no user text ever reaches a filtergraph.
+- **Word timestamps in the transcriber** (`WHISPER_WORD_TIMESTAMPS`, default on) as an optional field. Older cached transcripts stay valid, with estimated word timing.
+- **Fonts come from Debian packages** (Roboto Apache-2.0, DejaVu, Manjari OFL-1.1). No font files are committed.
+- **Presets live in the browser** (localStorage plus JSON export/import), and every render request is validated as untrusted.
+- **Word edges are refined against the audio in the transcriber**, where the samples already are: a start moves past the last ≥150 ms pause inside its span, and an end extends through speech (≤0.4 s, never past the next word). Raw Whisper starts were up to 0.9 s early, which is visible with word highlighting.
+- **Captions are positioned with `\an`+`\pos`** inside the platform's safe area (9:16 keeps the bottom 20–22 % and right 12–14 % clear). A template's offset applies only at its own position, and the result is clamped to the safe area.
+- **The filtergraph is passed as a file (`-/filter_complex graph.txt`)**, and FFmpeg runs with its cwd in the work folder. The `ass` filter then reads `subs.ass` by a fixed relative name, so no path is ever escaped into a graph.
+- **`fps=…:start_time=0`** holds the first decoded frame from t = 0. Video and audio both start at 0, and crop paths and captions use the clip's own time.
+- **The worker writes the ASS.** Only it knows the real canvas: with "source aspect" the size depends on the probed video. The manager sends cues and a caption plan as data, segmented for the spec's size (or a narrow 1080×1920 stand-in, which only shortens lines).
+- **Logos are decoded in Python, not by FFmpeg.** Phase 1 made "FFmpeg never reads an image" an invariant, enforced by a packaging test, so a ~150-line strict PNG decoder in the memory-capped worker beats enabling FFmpeg's PNG decoder.
+- **Speaker switches are eased (0.6 s), not cut.** The brief asks for no sudden framing jumps. Only real scene cuts jump.
+- **Renders keep files in the source's folder**, like AI results: they end with the source, at most 4 finished renders per source. The ZIP is built on demand from the finished clips, so a cancelled batch still exports what finished.
+- **FFmpeg capability detection is cached per FFmpeg/PATH**, so starting test apps doesn't spawn FFmpeg each time.
+- **Crop expressions are balanced sums with a keyframe cap.** FFmpeg's expression evaluator recurses once per `+`, and a flat 4,000-term sum crashed it.
+- **No `mpeg4` decoder in the image.** Old MPEG-4 Part 2 AVIs can still be clipped (stream copy). The renderer refuses them with a clear message rather than adding another parser for a rare format.
+- **`/api/shorts/validate` answers 200 `{valid:false}`.** Validation is a question, so a bad preset doesn't surface as a console error (the same reasoning as Phase 2's `{transcript: null}`).
+- **The default `mem_limit: 2g` stays.** The worst case measured, a High render beside a transcription, peaked at 965 MiB.
+
+### Issues Encountered
+
+- Whisper word starts absorb pauses (fixed by the refinement above).
+- The Phase 1 packaging test caught my first logo design, which used FFmpeg's PNG decoder. I redesigned it rather than relax the invariant.
+- The browser walkthrough found the bridge's ms/seconds mix-up and the validate console error. The review found 13 more (Task 10).
+- `fetch()` of a `data:` URL is blocked by `connect-src 'self'`. Tests didn't catch it because it needs a real browser with the real CSP.
+- The `png_pipe` configure name (it is `image_png_pipe`).
+- A command with `rm -rf "$T/work/"*` was stopped by the safety check; separate folders were used instead.
+
+### Pending Work
+
+- **Ship (the owner's call):**
+  1. Push `feature/auto-shorts`.
+  2. Merge it into `main` (`--no-ff`, as before).
+  3. Rebuild the live container with `docker compose up -d --build`. The live `saveme-saveme-1` still runs `saveme:local`, built before Phase 2.
+- **Publishing the image** makes its FFmpeg GPL-2.0+ (x264). Offer the source: the FFmpeg tarball is pinned, and x264 comes from Debian.
+- **Known limitations:** see `docs/AUTO_SHORTS_IMPLEMENTATION.md`. In short:
+  - speaker focus is visual (no diarisation);
+  - no HDR tone mapping;
+  - no MPEG-4 Part 2 rendering;
+  - VideoToolbox on native macOS only;
+  - renders end with their source;
+  - presets are per browser.
+- **Not exercised:** a real OpenRouter call (no key here; Auto Shorts doesn't need one). Real Whisper ran for captions, and the browser walkthrough used it.
+- **Leftover images:** `saveme:auto-shorts` (770 MB), `saveme:ai-clipping` (738 MB) and `saveme-ffmpeg-check` (about 1.2 GB). Remove them with `docker image rm` when done.
+- **Pre-existing:** `test_aborted_download_keeps_file` can fail under heavy CPU load (Phase 2 note). It passed in every full run this session.
+
+### Handoff
+
+- Branch `feature/auto-shorts`, 26 commits on `2edc86b`, clean tree, not pushed. Read `docs/AUTO_SHORTS_IMPLEMENTATION.md` first (code map, pitfalls, tests), then the design and `RENDERING_PRESETS.md`.
+- **Never run `scripts/docker-smoke.sh` bare** next to the live container. Use `COMPOSE_PROJECT_NAME=saveme-ctest COMPOSE_FILE=compose.yaml:<override setting image: saveme:auto-shorts> SAVEME_PORT=8001`, then `docker compose down` with the same variables.
+- Dev run used in the walkthrough: `TEMP_DIR=<dir> .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8077`. `python -m app` always binds 8000. Build the CSS first with `scripts/build-css.sh`.
+- Tests: `.venv/bin/pytest -q`, with real FFmpeg/ffprobe on `PATH` (Homebrew 8.0.1 here, which has libx264, libass with HarfBuzz and VideoToolbox).
+- Backend code map:
+  - `app/renderer.py`: worker modes render/analyze/asset;
+  - `app/render_graph.py`, `app/layouts.py`, `app/reframe.py`: geometry and filtergraphs;
+  - `app/faces.py`: analysis and tracked framing;
+  - `app/captions.py`, `app/caption_styles.py`: captions;
+  - `app/shorts_templates.py`, `app/render_spec.py`: presets and requests;
+  - `app/png.py`: logos;
+  - `app/encoders.py`: FFmpeg capabilities and encoder args;
+  - `app/render_jobs.py`, `app/render_routes.py`: manager and API.
+- Test helpers: `tests/support/render.py` (sources, ffprobe, pixels), `faces.py` (face videos), `speech.py` (timed speech), `renderstub.py` (`RendererStub`, `RealRenderRunner`, transcripts).
+
+---
+
 ## 2026-11-24 13:29 IST — Session: Phase 2, AI smart clipping (OpenRouter)
 
 ### Summary

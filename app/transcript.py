@@ -28,6 +28,8 @@ from app.errors import AppError
 TRANSCRIPT_VERSION = 1
 MAX_SEGMENTS = 20_000
 MAX_SEGMENT_CHARS = 2000
+MAX_WORDS_PER_SEGMENT = 1000
+MAX_WORD_CHARS = 100
 MAX_TRANSCRIPT_FILE_BYTES = 64 * 1024 * 1024
 UNKNOWN_LANGUAGE = "und"
 AUTO = "auto"
@@ -90,6 +92,26 @@ def _finite(value: float) -> float:
 Seconds = Annotated[float, Field(ge=0)]
 
 
+class Word(BaseModel):
+    """One spoken word with its time (Whisper's word timestamps). A word may be instantaneous."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    start: Seconds
+    end: Seconds
+    text: Annotated[str, Field(min_length=1, max_length=MAX_WORD_CHARS)]
+
+    @field_validator("start", "end")
+    @classmethod
+    def _times_finite(cls, value: float) -> float:
+        return _finite(value)
+
+    @model_validator(mode="after")
+    def _range(self) -> Word:
+        if self.end < self.start:
+            raise ValueError("a word must not end before it starts")
+        return self
+
+
 class Segment(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -97,6 +119,9 @@ class Segment(BaseModel):
     end: Seconds
     text: Annotated[str, Field(min_length=1, max_length=MAX_SEGMENT_CHARS)]
     language: str | None = None
+    # Word timestamps, when the transcript was made with them (none for older transcripts and
+    # imported subtitles). In order, inside the segment.
+    words: Annotated[list[Word], Field(max_length=MAX_WORDS_PER_SEGMENT)] | None = None
 
     @field_validator("start", "end")
     @classmethod
@@ -114,6 +139,11 @@ class Segment(BaseModel):
     def _range(self) -> Segment:
         if self.end <= self.start:
             raise ValueError("a segment must end after it starts")
+        previous = self.start - _END_TOLERANCE
+        for word in self.words or ():
+            if word.start < previous or word.end > self.end + _END_TOLERANCE:
+                raise ValueError("words must be in order, inside their segment")
+            previous = word.start
         return self
 
 
@@ -128,6 +158,11 @@ class Transcript(BaseModel):
     requested_language: str
     duration: Annotated[float, Field(gt=0)]
     segments: Annotated[list[Segment], Field(max_length=MAX_SEGMENTS)]
+
+    @property
+    def has_words(self) -> bool:
+        """True when the segments carry word timestamps."""
+        return any(segment.words for segment in self.segments)
 
     @field_validator("language")
     @classmethod
