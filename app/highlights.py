@@ -15,8 +15,10 @@
    fewer results, never padding.
 
 analyze() runs 2-5 against OpenRouter, one chunk at a time, keeping to the spending limit: a
-call is made only if the cost so far plus that call's upper bound (prompt estimate + full answer
-budget, at catalogue prices) fits. An unusable answer is asked for again once, then that chunk
+call is made only if the cost so far plus that call's upper bound fits. The bound is a true one
+for any tokenizer: every token covers at least one byte, so a prompt has at most as many tokens
+as UTF-8 bytes (plus a little per message), and the answer at most its token budget. The
+"estimated" figures use a typical 3 bytes a token instead. An unusable answer is asked for again once, then that chunk
 is skipped with a notice. Scores are the model's editorial heuristic, not a prediction of views.
 """
 from __future__ import annotations
@@ -42,9 +44,10 @@ TAIL_SECONDS = 0.5
 DUPLICATE_OVERLAP = 0.3  # of the shorter clip
 TITLE_CHARS, TEXT_CHARS, TAG_CHARS, MAX_TAGS = 100, 400, 32, 5
 INSTRUCTION_CHARS = 500
-# A guess for a video not yet transcribed: tokens of numbered transcript per minute of video.
-# Generous for English (~350), meant to cover denser scripts such as Malayalam.
-TOKENS_PER_MINUTE_GUESS = 600
+# A guess for a video not yet transcribed: UTF-8 bytes of numbered transcript per minute of
+# video. Generous for English (~1,100), meant to cover denser scripts such as Malayalam.
+BYTES_PER_MINUTE_GUESS = 1800
+_HEADER_BYTES = 600  # the user message around the transcript lines
 _MESSAGE_OVERHEAD = 8  # tokens a chat message costs besides its text
 DEFAULT_INSTRUCTION = ("Find the most interesting, informative, surprising, funny or emotionally "
                        "engaging moments.")
@@ -234,7 +237,13 @@ def build_messages(transcript: Transcript, chunk: Chunk, *, chunks: int, options
 
 
 def message_tokens(messages: list[dict]) -> int:
+    """Typical prompt tokens (3 bytes a token)."""
     return sum(estimate_tokens(m["content"]) + _MESSAGE_OVERHEAD for m in messages)
+
+
+def message_tokens_max(messages: list[dict]) -> int:
+    """At most this many prompt tokens, for any tokenizer: a token is at least one byte."""
+    return sum(len(m["content"].encode("utf-8")) + _MESSAGE_OVERHEAD for m in messages)
 
 
 # --- answers ---------------------------------------------------------------------------------
@@ -351,36 +360,40 @@ def rank(candidates: list[Candidate], *, count: int, min_score: int) -> list[Can
 
 # --- estimates -------------------------------------------------------------------------------
 
-def _estimate(basis: str, prompts: list[int], options: Options, model: ModelInfo) -> Estimate:
+def _estimate(basis: str, prompts: list[int], bounds: list[int], options: Options,
+              model: ModelInfo) -> Estimate:
+    """`prompts`: typical prompt tokens per chunk; `bounds`: at most this many."""
     per_chunk = per_chunk_budget(options.count)
     budget = answer_budget(per_chunk, model)
     check_model(model, needed_tokens=max(prompts, default=0) + budget)
     pricing = model.pricing
     assert pricing is not None  # check_model refuses a model without fixed prices
     expected = sum(pricing.cost(p, budget // 2) for p in prompts)
-    upper = sum(pricing.cost(p, budget) for p in prompts)
+    upper = sum(pricing.cost(b, budget) for b in bounds)
     return Estimate(basis=basis, chunks=len(prompts), prompt_tokens=sum(prompts),
-                    estimated_usd=round(expected, 6), max_usd=round(upper, 6))
+                    estimated_usd=round(expected, 6), max_usd=round(math.ceil(upper * 1e6) / 1e6, 6))
 
 
 def estimate_from_transcript(transcript: Transcript, options: Options, model: ModelInfo) -> Estimate:
     chunks = make_chunks(transcript.segments, max_seconds=options.max_seconds)
     per_chunk = per_chunk_budget(options.count)
-    prompts = [message_tokens(build_messages(transcript, c, chunks=len(chunks), options=options,
-                                             per_chunk=per_chunk)) for c in chunks]
-    return _estimate("transcript", prompts, options, model)
+    messages = [build_messages(transcript, c, chunks=len(chunks), options=options, per_chunk=per_chunk)
+                for c in chunks]
+    return _estimate("transcript", [message_tokens(m) for m in messages],
+                     [message_tokens_max(m) for m in messages], options, model)
 
 
 def estimate_from_duration(duration: float, options: Options, model: ModelInfo) -> Estimate:
     """A cautious estimate before the video is transcribed."""
-    tokens = math.ceil(duration / 60 * TOKENS_PER_MINUTE_GUESS)
+    text_bytes = math.ceil(duration / 60 * BYTES_PER_MINUTE_GUESS)
     overlap = max(OVERLAP_SECONDS, options.max_seconds)
-    by_tokens = math.ceil(tokens / CHUNK_TOKENS)
+    by_tokens = math.ceil(text_bytes / 3 / CHUNK_TOKENS)
     by_time = math.ceil(duration / max(1.0, CHUNK_SECONDS - overlap))
     count = max(1, by_tokens, by_time)
-    system = estimate_tokens(SYSTEM_PROMPT) + 200 + 2 * _MESSAGE_OVERHEAD
-    share = math.ceil(tokens * (1 + overlap / CHUNK_SECONDS) / count)
-    return _estimate("duration", [system + share] * count, options, model)
+    fixed = len(SYSTEM_PROMPT.encode("utf-8")) + _HEADER_BYTES
+    share = math.ceil(text_bytes * (1 + overlap / CHUNK_SECONDS) / count) + fixed
+    return _estimate("duration", [math.ceil(share / 3) + 2 * _MESSAGE_OVERHEAD] * count,
+                     [share + 2 * _MESSAGE_OVERHEAD] * count, options, model)
 
 
 def usd_text(value: float) -> str:
@@ -404,7 +417,7 @@ async def analyze(client: OpenRouterClient, model: ModelInfo, transcript: Transc
     stopped = False
 
     def affordable(messages: list[dict]) -> bool:
-        upper = pricing.cost(message_tokens(messages), budget) if pricing else 0.0
+        upper = pricing.cost(message_tokens_max(messages), budget) if pricing else 0.0
         return meter.spent + upper <= limit_usd
 
     for chunk in chunks:

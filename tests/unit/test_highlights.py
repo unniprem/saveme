@@ -349,3 +349,48 @@ async def test_analyze_sends_only_the_part_of_the_transcript_it_needs():
         user = body["messages"][1]["content"]
         assert f"[{chunk.first}] " in user and f"[{chunk.last + 1}] " not in user
         assert json.dumps(body).count("secret") == chunk.last - chunk.first + 1
+
+
+# --- the spending bound is a true upper bound -----------------------------------------------
+
+def malayalam(seconds: int) -> Transcript:
+    segments = [Segment(start=t, end=t + 5, text="മലയാളം സംസാരിക്കുന്നു " * 3, language="ml")
+                for t in range(0, seconds, 5)]
+    return Transcript(origin="whisper", model="base", language="ml", language_probability=0.9,
+                      requested_language="auto", duration=float(seconds), segments=segments)
+
+
+def test_the_upper_bound_counts_a_token_per_byte():
+    from app.highlights import message_tokens_max
+
+    t = malayalam(300)
+    chunk = make_chunks(t.segments, max_seconds=90)[0]
+    messages = build_messages(t, chunk, chunks=1, options=OPTIONS, per_chunk=7)
+    assert message_tokens_max(messages) == sum(len(m["content"].encode()) + 8 for m in messages)
+    info = model_info(HAIKU)
+    est = estimate_from_transcript(t, opts(), info)
+    assert est.max_usd >= info.pricing.cost(message_tokens_max(messages), answer_budget(7, info)) - 1e-9
+
+
+async def test_analyze_keeps_to_the_true_bound_for_byte_heavy_scripts():
+    from app.highlights import message_tokens, message_tokens_max
+
+    t = malayalam(300)
+    info = model_info(HAIKU)
+    chunk = make_chunks(t.segments, max_seconds=90)[0]
+    messages = build_messages(t, chunk, chunks=1, options=opts(), per_chunk=7)
+    budget = answer_budget(7, info)
+    typical, bound = info.pricing.cost(message_tokens(messages), budget), info.pricing.cost(message_tokens_max(messages), budget)
+    assert typical < bound
+    server = MockOpenRouter()
+    result = await analyze(make_client(server), info, t, opts(), limit_usd=(typical + bound) / 2,
+                           meter=UsageMeter(info.pricing), on_progress=lambda d, n: None)
+    assert server.bodies() == [] and "Stopped at the" in result.notice
+
+
+def test_the_length_guess_bounds_a_real_english_transcript():
+    info = model_info(HAIKU)
+    for seconds in (300, 3600):
+        real = estimate_from_transcript(transcript(speech(seconds)), opts(), info)
+        guess = estimate_from_duration(seconds, opts(), info)
+        assert guess.max_usd >= real.max_usd, seconds
