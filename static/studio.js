@@ -339,9 +339,8 @@
       marks.end = saved.end;
     }
     if (Array.isArray(saved.clips)) {
-      list = saved.clips.slice(0, MAX_LIST)
-        .filter((c) => Array.isArray(c) && isNum(c[0]) && isNum(c[1]) && c[0] >= 0 && c[1] > c[0])
-        .map((c) => ({ start: c[0], end: c[1] }));
+      list = tidyList(saved.clips.filter((c) => Array.isArray(c) && isNum(c[0]) && isNum(c[1]))
+        .map((c) => ({ start: c[0], end: c[1] })));
     }
     if (typeof saved.exportId === "string" && JOB_ID_RE.test(saved.exportId)) {
       exportJob = { id: saved.exportId, autoSaved: saved.exportAutoSaved === true,
@@ -473,10 +472,7 @@
       marks.end = duration ? Math.min(duration, DEFAULT_LENGTH) : DEFAULT_LENGTH;
     }
     if (duration) marks.end = Math.min(marks.end, duration);
-    if (duration) {
-      list = list.map((c) => ({ start: c.start, end: Math.min(c.end, ms(duration)) }))
-        .filter((c) => longEnough(c.start, c.end));
-    }
+    list = tidyList(list);
     store();
     show(el.studioLoading, false);
     show(el.studioPreviewNote, false);
@@ -527,7 +523,9 @@
     if (!duration && isNum(own) && own > 0) {
       duration = own;
       marks.end = Math.min(marks.end, duration);
+      list = tidyList(list); // rows added before the length was known may run past the end
       store();
+      renderList();
     }
     render();
   }
@@ -683,6 +681,24 @@
   // ---- clip list ---------------------------------------------------------------------------
 
   const maxList = () => (limits && isNum(limits.max_batch_clips) ? limits.max_batch_clips : MAX_LIST);
+
+  // The list as the server will take it: whole milliseconds, ends pulled back to the video's
+  // length when it's known, each clip at least MIN_CLIP long, no repeats, sorted by start, and
+  // at most maxList() rows. Used on restore and whenever the length becomes known.
+  function tidyList(items) {
+    const top = duration > 0 ? ms(duration) : Infinity;
+    const seen = new Set();
+    return items
+      .map((c) => ({ start: ms(c.start), end: ms(Math.min(c.end, top)) }))
+      .filter((c) => {
+        const key = `${c.start}-${c.end}`;
+        if (c.start < 0 || !longEnough(c.start, c.end) || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => a.start - b.start || a.end - b.end)
+      .slice(0, maxList());
+  }
   const rangeText = (c) => `${fmtTime(c.start)} to ${fmtTime(c.end)}`;
 
   function addToList() {
