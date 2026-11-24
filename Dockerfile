@@ -27,25 +27,31 @@ RUN scripts/build-css.sh /out/styles.css
 FROM denoland/deno:bin-${DENO_VERSION}@${DENO_DIGEST} AS deno
 
 # --- ffmpeg: a minimal build with only what the app uses. Debian's ffmpeg package added
-# ~410 MB of libraries (LLVM, Mesa, X11, video encoders) that the app never touches.
+# ~410 MB of libraries (LLVM, Mesa, X11, every codec) that the app never touches.
 # What the app needs from ffmpeg:
-#   - stream copy only for video: merging, remuxing to MP4, yt-dlp's fixups. That needs
-#     demuxers, muxers, parsers and bitstream filters, and no video encoders.
-#   - one video decoder, vp9, used only while probing. The MP4 muxer needs the VP9 pixel
-#     format for its vpcC box, and only the decoder can derive it. Without it, ffmpeg
-#     exits 0 but writes an MP4 that won't open.
+#   - stream copy for downloads and Clip Studio cuts: merging, remuxing to MP4, yt-dlp's
+#     fixups. That needs demuxers, muxers, parsers and bitstream filters.
 #   - for MP3: common web audio decoders, plus libmp3lame.
 #   - for AI Highlights transcription: the same audio decoders, resampled (aresample) to
-#     16 kHz mono 16-bit PCM (pcm_s16le encoder) in a WAV file (wav muxer). Nothing else.
+#     16 kHz mono 16-bit PCM (pcm_s16le encoder) in a WAV file (wav muxer).
+#   - for Auto Shorts rendering (docs/AUTO_SHORTS_DESIGN.md §3):
+#       decoders h264, hevc, vp8, vp9, AV1 (libdav1d) and png (the logo);
+#       encoders libx264 (GPL: this makes the binary GPL-2.0+; SaveMe only runs it, so the app
+#       stays MIT; publishing the image means offering this source), aac, mjpeg (preview stills)
+#       and rawvideo (frames for face tracking); muxers image2 (one still) and rawvideo;
+#       the png_pipe demuxer (one image, no file patterns); swscale; libass (burned-in
+#       captions, shaped with HarfBuzz) and the filters the render graphs use. transpose,
+#       hflip and vflip let FFmpeg apply a phone video's rotation.
 #   - local files only: no network protocols, and no HLS/DASH/concat demuxers that open
 #     other files. This also shrinks the attack surface for hostile media.
 # After changing these flags, run scripts/docker-ffmpeg-check.sh.
-# libav* is linked statically into ffmpeg/ffprobe; libmp3lame stays a Debian shared library.
+# libav* is linked statically into ffmpeg/ffprobe; libmp3lame, libx264, libass (with freetype,
+# fribidi, harfbuzz, fontconfig) and libdav1d stay Debian shared libraries.
 FROM debian:trixie-slim AS ffmpeg
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates curl xz-utils gcc libc6-dev make nasm pkg-config \
-        libmp3lame-dev zlib1g-dev \
+        libmp3lame-dev zlib1g-dev libx264-dev libass-dev libdav1d-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 ARG FFMPEG_VERSION
@@ -64,27 +70,35 @@ RUN ./configure \
         --disable-doc \
         --disable-ffplay \
         --disable-avdevice \
-        --disable-swscale \
+        --enable-gpl \
         --enable-pthreads \
         --enable-zlib \
         --enable-libmp3lame \
+        --enable-libx264 \
+        --enable-libass \
+        --enable-libdav1d \
         --enable-protocol=file,pipe \
-        --enable-demuxer=mov,matroska,mpegts,flv,avi,ogg,mp3,aac,flac,wav,ffmetadata \
-        --enable-muxer=mp4,ipod,mov,matroska,webm,mp3,wav \
+        --enable-demuxer=mov,matroska,mpegts,flv,avi,ogg,mp3,aac,flac,wav,ffmetadata,image_png_pipe \
+        --enable-muxer=mp4,ipod,mov,matroska,webm,mp3,wav,image2,rawvideo \
         --enable-parsers \
         --enable-bsfs \
-        --enable-decoder=vp9,aac,aac_latm,mp3,mp3float,mp2,mp2float,opus,vorbis,flac,alac,ac3,eac3,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s32le,pcm_f32le,pcm_u8,pcm_alaw,pcm_mulaw \
-        --enable-encoder=libmp3lame,pcm_s16le \
-        --enable-filter=aresample,aformat,anull,null,format \
+        --enable-decoder=h264,hevc,vp8,vp9,libdav1d,png,aac,aac_latm,mp3,mp3float,mp2,mp2float,opus,vorbis,flac,alac,ac3,eac3,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s32le,pcm_f32le,pcm_u8,pcm_alaw,pcm_mulaw \
+        --enable-encoder=libmp3lame,pcm_s16le,libx264,aac,mjpeg,rawvideo \
+        --enable-filter=aresample,aformat,anull,null,format,crop,scale,pad,setsar,fps,split,overlay,vstack,boxblur,eq,colorchannelmixer,ass,trim,atrim,setpts,asetpts,concat,anullsrc,apad,transpose,hflip,vflip \
     && make -j"$(nproc)" \
     && make install
 
 # --- runtime
 FROM python:3.12-slim-trixie
-# libmp3lame0: the MP3 encoder library the ffmpeg build links against.
+# The shared libraries the ffmpeg build links against: libmp3lame0 (MP3), libx264-164 (H.264),
+# libass9 (captions; it brings freetype, fribidi, harfbuzz and fontconfig) and libdav1d7 (AV1).
+# Caption fonts, all free licences, none committed to this repository: Roboto (Apache-2.0),
+# DejaVu (Bitstream Vera licence) and Manjari for Malayalam (SIL OFL 1.1).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libmp3lame0 \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends libmp3lame0 libx264-164 libass9 libdav1d7 \
+        fontconfig fonts-roboto-unhinted fonts-dejavu-core fonts-smc-manjari \
+    && rm -rf /var/lib/apt/lists/* \
+    && fc-cache -f
 COPY --from=ffmpeg /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe /usr/local/bin/
 # Fail the build if a shared library is missing or the binary isn't FFMPEG_VERSION.
 ARG FFMPEG_VERSION

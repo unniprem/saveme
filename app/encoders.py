@@ -22,8 +22,8 @@ AUDIO_RATE = 48000
 # Filters every render uses, and the one only burned-in captions need.
 REQUIRED_FILTERS = frozenset({
     "crop", "scale", "pad", "setsar", "fps", "format", "split", "overlay", "vstack", "boxblur",
-    "eq", "colorchannelmixer", "trim", "atrim", "setpts", "asetpts", "concat", "color",
-    "anullsrc", "apad", "aresample", "aformat", "settb",
+    "eq", "colorchannelmixer", "trim", "atrim", "setpts", "asetpts", "concat", "anullsrc", "apad",
+    "aresample", "aformat",
 })
 CAPTION_FILTER = "ass"
 _TIMEOUT = 20
