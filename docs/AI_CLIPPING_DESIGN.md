@@ -137,7 +137,7 @@ cap, security headers). Errors use the existing `{"error": {"code", "message"}}`
 | `POST /sources/{id}/analyses` | `AnalysisRequest` | `202 {analysis_id, status}`. 409 `analysis_running` if one is pending for this source. |
 | `GET /analyses/{id}` | — | Analysis view (below). |
 | `POST /analyses/{id}/cancel` | `{}` | Analysis view. |
-| `GET /sources/{id}/transcript` | — | Transcript (3.1) or 404 `transcript_not_found`. |
+| `GET /sources/{id}/transcript` | — | `{"transcript": <3.1>}`, or `{"transcript": null}` while there is none (the page asks whenever a video opens, so this isn't an error). |
 | `POST /sources/{id}/transcript` | raw SRT/VTT body, `Content-Type: text/plain` (or `application/x-subrip`, `text/vtt`), `Content-Length` ≤ 4 MiB, `?language=xx` optional, `X-SaveMe-Filename` optional | Imports subtitles as the cached transcript: `{origin, language, segments, duration}` summary. |
 
 `AnalysisRequest` (extra fields refused):
@@ -158,13 +158,13 @@ Analysis view:
 ```json
 {
   "analysis_id": "…22 chars…", "source_id": "…", "status": "analyzing",
-  "stage": "analyzing", "skipped": ["extracting", "transcribing"],
+  "skipped": ["extracting", "transcribing"],
   "detail": "Analyzing part 2 of 3", "progress_percent": 33.3,
   "transcript": {"origin": "whisper", "language": "en", "segments": 281, "cached": true},
   "candidates": [ … ], "notice": null, "error": null,
   "usage": {"calls": 1, "prompt_tokens": 5120, "completion_tokens": 610,
             "cost_usd": 0.00082, "cost_reported": true, "estimated_usd": 0.0021,
-            "limit_usd": 0.25},
+            "max_usd": 0.0049, "limit_usd": 0.25},
   "options": { … the accepted AnalysisRequest … }
 }
 ```
@@ -187,7 +187,8 @@ queued → preparing → extracting → transcribing → analyzing → ranking �
 - **ranking**: snapping, duration rules, dedupe, ranking (instant, no percent).
 - **ready**: candidates and usage kept until the source ends, or 60 min after finishing.
 
-With a cached transcript the view lists `extracting` and `transcribing` as `skipped`.
+The status is the stage. With a cached transcript the view lists `extracting` and
+`transcribing` as `skipped`. `usage` is null until analysis starts (and for transcribe-only runs).
 
 Cancellation at any stage cancels the analysis task: the transcriber's process group is
 killed by `run_worker`, an in-flight OpenRouter request is abandoned (the provider may still
