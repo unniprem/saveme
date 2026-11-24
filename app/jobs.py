@@ -22,6 +22,12 @@ A clip (kind "clip") cuts a range out of a ready source into its own folder and,
 ready, is delivered like a download; a cancelled clip can't be resumed. A batch (kind
 "batch") is the same for a list of ranges, delivered as one ZIP. All kinds share the
 queue, the slots and the disk budget.
+
+AI Highlights (app.ai_jobs) uses ready sources without taking a slot or a queue place: an
+analysis *holds* its source (hold_source/release_source), which then counts as in use (no idle
+expiry, no replacement), hears through add_source_listener when the source ends (closed, idle,
+replaced; before its folder is removed), and reserves disk for its audio with make_room. Its
+files live in the source's folder, so they end with it.
 """
 import asyncio
 import logging
@@ -210,6 +216,8 @@ class JobManager:
         self._tasks: set[asyncio.Task] = set()
         self._slots = asyncio.Semaphore(settings.max_active_jobs)
         self._sweeper: asyncio.Task | None = None
+        self._holds: dict[str, int] = {}  # source ID -> analyses using it
+        self._source_listeners: list[Callable[[str], None]] = []
 
     # --- Lifecycle ------------------------------------------------------------
 
@@ -398,13 +406,44 @@ class JobManager:
         logger.info("batch %s of %d clips queued from source %s", job.id, len(checked), source.id)
         return job
 
+    def ready_source(self, source_id: str) -> Job:
+        """The source if it is ready; else source_not_found or source_not_ready."""
+        return self._ready_source(source_id)
+
+    def hold_source(self, source_id: str) -> Job:
+        """Mark a ready source as in use by an analysis until release_source."""
+        source = self._ready_source(source_id)
+        self._holds[source.id] = self._holds.get(source.id, 0) + 1
+        self.touch(source)
+        return source
+
+    def release_source(self, source: Job) -> None:
+        """End one hold; the source's idle time starts again from now."""
+        left = self._holds.get(source.id, 0) - 1
+        if left > 0:
+            self._holds[source.id] = left
+        else:
+            self._holds.pop(source.id, None)
+        self.touch(source)
+
+    def add_source_listener(self, callback: Callable[[str], None]) -> None:
+        """Call callback(source_id) when a source ends, before its folder is removed."""
+        self._source_listeners.append(callback)
+
+    def make_room(self, nbytes: int) -> bool:
+        """True if `nbytes` more fit the disk budget now (active jobs counted), evicting unsaved
+        ready files if that is enough."""
+        return self._make_room(count_active=True, reserve=nbytes)
+
     def _open_sources(self) -> list[Job]:
         return [j for j in self._jobs.values() if j.kind == "source" and j.status not in _TERMINAL]
 
     def _in_use(self, source: Job) -> bool:
-        """True while one of the source's clips or batches is queued or running."""
-        return any(j.kind in _CUT_KINDS and j.source_id == source.id and j.status in _PENDING
-                   for j in self._jobs.values())
+        """True while one of the source's clips or batches is queued or running, or an
+        analysis holds it."""
+        return self._holds.get(source.id, 0) > 0 or any(
+            j.kind in _CUT_KINDS and j.source_id == source.id and j.status in _PENDING
+            for j in self._jobs.values())
 
     def _make_source_room(self) -> None:
         """Keep open sources under MAX_CLIP_SOURCES: close the least recently used ready
@@ -793,6 +832,13 @@ class JobManager:
         logger.info("job %s failed: %s", job.id, error.code)
 
     def _expire(self, job: Job, reason: str) -> None:
+        if job.kind == "source" and job.status not in _TERMINAL:
+            for listener in list(self._source_listeners):
+                try:
+                    listener(job.id)
+                except Exception:
+                    logger.exception("source %s: a listener failed", job.id)
+            self._holds.pop(job.id, None)
         job.status = "expired"
         job.reason = reason
         job.detail = None
