@@ -8,7 +8,7 @@
 
 The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merged into local `main` (`b661127`, not pushed), so this session checked the brief's ten features against what shipped. Two were missing, because the first design listed them as non-goals: **#4, several clips from one source as a list**, and **#6, ZIP batch export**. This session adds both on `feature/clip-studio` (fast-forwarded to `main` first). The design is `docs/superpowers/specs/2026-11-24-clip-studio-batch-export-design.md`. The other eight features were already in place, and links and nearly every upload already come out as MP4. Cheap fixes for four of the deferred review minors are also planned. The owner's brief was taken as a go-ahead to proceed without a question round; the design calls are listed under Key Decisions.
 
-**Status: Phase 1 complete on `feature/clip-studio` (not merged into `main`, not pushed).** All ten features in the brief are in place, verified by the whole suite, the image's minimal-FFmpeg check, the Docker smoke test, a ZIP export in the hardened container and real-browser checks. An independent review found nothing important, and its fixable minors are done.
+**Status: Phase 1 complete, merged into local `main` with `--no-ff` at the owner's request (not pushed).** All ten features in the brief are in place, verified by the whole suite, the image's minimal-FFmpeg check, the Docker smoke test, a ZIP export in the hardened container and real-browser checks. An independent review found nothing important, and its fixable minors are done.
 
 ### Changes Made
 
@@ -115,10 +115,9 @@ The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merg
 
 ### Pending Work
 
-- **Integrate `feature/clip-studio`.** It is ahead of local `main` (`b661127`) by this session's commits (`git log --oneline main..feature/clip-studio`). Local `main` itself is 30 commits ahead of `origin/main` (the earlier Clip Studio merge was never pushed). Nothing was merged or pushed this session. To ship:
-  1. `git checkout main && git merge --no-ff feature/clip-studio`
-  2. `git push origin main`
-  3. Rebuild the live container with `docker compose up -d --build`.
+- **Ship `main`.** The owner asked for the merge, and `feature/clip-studio` was merged into local `main` with `--no-ff`. The merged tree is identical to the tested branch tip. Local `main` is not pushed: it is ahead of `origin/main` by the earlier Clip Studio merge and this one. To ship:
+  1. `git push origin main`
+  2. Rebuild the live container with `docker compose up -d --build`. It still runs the image built 16 hours earlier, before Clip Studio.
 - **Known limitations:**
   - Clips are stream copies, with no re-encode. MKV and WebM sources (rare; most become MP4) show the keyframe lead-in, and players that ignore MP4 edit lists show it too.
   - At the smallest disk budget (`MAX_TOTAL_DISK_MB` = 2 × `MAX_FILE_SIZE_MB`), a ZIP is refused with `disk_full` while a source is open. Single clips still work.
