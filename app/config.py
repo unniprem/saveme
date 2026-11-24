@@ -157,15 +157,18 @@ def _base_url(env: Mapping[str, str]) -> str:
     raw = _get(env, "OPENROUTER_BASE_URL")
     if raw is None:
         return DEFAULT_OPENROUTER_BASE_URL
+    invalid = ConfigError("OPENROUTER_BASE_URL", "must be an https:// URL with no login, query or fragment")
     try:
+        import httpx
+
         parts = urlsplit(raw)
-        host = parts.hostname
-    except ValueError:
-        host = None
-    if (parts.scheme != "https" or not host or parts.username is not None
-            or parts.password is not None or parts.query or parts.fragment):
-        raise ConfigError("OPENROUTER_BASE_URL",
-                          "must be an https:// URL with no login, query or fragment")
+        _port = parts.port  # a bad port only raises when read
+        httpx.URL(raw)  # the client must take it too (no spaces, valid host)
+    except (ValueError, httpx.InvalidURL):
+        raise invalid from None
+    if (parts.scheme != "https" or not parts.hostname or parts.username is not None
+            or parts.password is not None or parts.query or parts.fragment or " " in raw):
+        raise invalid
     return raw.rstrip("/")
 
 

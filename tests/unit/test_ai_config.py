@@ -47,6 +47,10 @@ def test_the_key_never_shows_in_repr_or_errors():
     ("OPENROUTER_BASE_URL", "https://user:pw@openrouter.ai/api/v1"),
     ("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1?x=1"),
     ("OPENROUTER_BASE_URL", "https:///api"), ("OPENROUTER_BASE_URL", "ftp://x"),
+    ("OPENROUTER_BASE_URL", "https://[openrouter.ai/api/v1"),  # urlsplit raises
+    ("OPENROUTER_BASE_URL", "https://openrouter.ai:abc/api/v1"),  # bad port, only seen on access
+    ("OPENROUTER_BASE_URL", "https://openrouter.ai:99999/api/v1"),
+    ("OPENROUTER_BASE_URL", "https://open router.ai/api/v1"),
     ("OPENROUTER_DATA_COLLECTION", "maybe"),
     ("AI_MAX_CLIPS", "0"), ("AI_MAX_CLIPS", "21"), ("AI_MAX_CLIPS", "ten"),
     ("AI_MAX_CONCURRENT_JOBS", "5"),
@@ -60,3 +64,21 @@ def test_invalid_values_name_the_variable(var, value):
     with pytest.raises(ConfigError) as exc:
         load_ai_settings({var: value})
     assert exc.value.var == var
+
+
+def test_a_bad_ai_setting_never_stops_the_app_starting():
+    from app.main import _ai_settings_or_error
+    import os
+    from unittest import mock
+
+    for value in ("https://[openrouter.ai/api/v1", "https://openrouter.ai:abc/api/v1"):
+        with mock.patch.dict(os.environ, {"OPENROUTER_BASE_URL": value}):
+            result = _ai_settings_or_error()
+        assert isinstance(result, ConfigError) and result.var == "OPENROUTER_BASE_URL", value
+
+
+def test_an_accepted_base_url_is_one_httpx_takes():
+    import httpx
+
+    url = load_ai_settings({"OPENROUTER_BASE_URL": "https://gateway.example:8443/api/v1"}).openrouter_base_url
+    assert httpx.URL(url + "/models").port == 8443
