@@ -8,7 +8,7 @@
 
 The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with local faster-whisper transcription and OpenRouter as the only AI provider, built test-first in small commits on `feature/ai-clipping`, with this journal updated after every task. The brief was taken as a go-ahead without a question round; design calls are under Key Decisions.
 
-**Status: Phase 2 complete on `feature/ai-clipping`.** It is not merged or pushed (the owner didn't ask). All 9 tasks are done. The 12 acceptance criteria were shown in Chrome against the real transcriber with a simulated OpenRouter. Most were also shown in-process against a mocked OpenRouter, and transcription in the hardened container. The one thing not exercised is a real OpenRouter call: no key exists in this environment. An independent review found 2 important and 8 minor problems, all fixed with tests.
+**Status: Phase 2 complete. At the owner's request, `feature/ai-clipping` was pushed to GitHub, then merged into `main` with `--no-ff` and pushed.** All 9 tasks are done. The 12 acceptance criteria were shown in Chrome against the real transcriber with a simulated OpenRouter. Most were also shown in-process against a mocked OpenRouter, and transcription in the hardened container. The one thing not exercised is a real OpenRouter call: no key exists in this environment. An independent review found 2 important and 8 minor problems, all fixed with tests.
 
 ### Progress by task
 
@@ -172,10 +172,7 @@ The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with lo
 ### Pending Work
 
 - **Run the live check once with a real key** (well under $0.01): `OPENROUTER_API_KEY=sk-or-... .venv/bin/pytest -m network tests/network/test_openrouter_live.py -v`. Then try the AI tab in the live app.
-- **Merge and ship (the owner's call):**
-  1. `git checkout main && git merge --no-ff feature/ai-clipping`
-  2. `git push origin main`
-  3. Rebuild the live container with `docker compose up -d --build`.
+- **Rebuild the live container** to run Phase 2: `docker compose up -d --build`. `main` is merged and pushed; the live `saveme-saveme-1` still runs the image built before Phase 2.
 
   Notes for the rebuild:
   - The image grows from 311 MB (`saveme:local`) to 738 MB: faster-whisper, CTranslate2, onnxruntime, PyAV, NumPy, and the `base` model (141 MB).
@@ -194,7 +191,7 @@ The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with lo
 
 ### Handoff
 
-- Branch `feature/ai-clipping`, at the last journal commit. It holds every commit in the table above plus the journal updates, on top of `main` (`206d26b`).
+- `main` now holds Phase 2: `feature/ai-clipping` was merged with `--no-ff` on top of `206d26b`. Both branches are pushed to `origin`. Start new work on a new branch from `main`.
 - **Where to look:**
   - `docs/AI_CLIPPING_DESIGN.md` for the why;
   - `docs/AI_CLIPPING_IMPLEMENTATION.md` for the code map, the request flow, the "easy to get wrong" list and the test map;
