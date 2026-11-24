@@ -21,6 +21,7 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 | `8e53efa` | feat | Run clip and upload jobs in the job manager |
 | `b2dd526` | feat | Add Clip Studio API routes for sources, preview and clips |
 | `049063b` | feat | Accept video uploads for Clip Studio with their own limits |
+| `2e7be93` | refactor | Share the page's API and DOM helpers through `common.js` |
 
 ### Test Results
 
@@ -36,6 +37,7 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
   - Only the upload path skips the 64 KiB cap. Origin, Host and degraded mode still apply.
   - Title parsing.
   - Through a real uvicorn server: a client that leaves mid-body frees its folder and queue place; an idle client gets 504 `timeout`; a source closed mid-transfer gets 404 and is removed.
+- Task 8 (`2e7be93`): 590 passed, 2 skipped, 7 deselected. In headless Chromium, a direct MP4 from the local media server fetched, downloaded (198,451 bytes) and showed "Saved", with no console errors.
 
 ### Key Decisions
 
@@ -53,7 +55,12 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 
 ### Pending Work
 
-- Tasks 8–10 of the plan (Tasks 1–7 done): the page, then docs and image checks.
+- Tasks 9–10 of the plan (Tasks 1–8 done): the studio page, then docs and image checks.
+- Browser checks run through `/tmp/claude-501/saveme-dev/` (outside the repo):
+  - `serve.py` runs SaveMe on `127.0.0.1:8123` with loopback allowed, plus the test media server, whose URL it prints.
+  - The `check-*.js` scripts drive headless Chromium with the `playwright-core` from `~/.npm/_npx`.
+
+  The Playwright MCP browser is locked by a Chrome started on 23 Nov at 18:26 that this session left alone.
 - Known gap: an upload source that fails while waiting for a slot (`disk_full` at its deadline) leaves its folder until the next sweep (at most `sweep_interval`, 60 s), not at once.
 
 ### Handoff
