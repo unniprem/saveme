@@ -6,7 +6,7 @@
 
 ### Summary
 
-The owner found AI clipping confusing: getting shorts meant ticking highlights in one tab, adding them to the clip list, ticking the same clips again in Auto Shorts, and working through about 35 controls. They asked to execute the Make shorts plan (`docs/superpowers/plans/2026-11-24-make-shorts.md`, design in `docs/superpowers/specs/2026-11-24-make-shorts-design.md`) inline. Clip Studio now has two tabs, **Manual** and **Make shorts**. Make shorts has three numbered steps: **1. Find moments** (Where will you post? How many shorts? What should they be about?), **2. Pick the ones you want** (moment cards, all ticked, with everything but the face behind **More**, plus "Clips you cut by hand" unticked), and **3. Your shorts** (shorts play on the page, **Save**, **Download all**). Every other setting sits under one closed **More settings**. The ticked moments reach the render with their titles, so files are named after them. If captions are on and there's no transcript, Make transcribes first, and if captions can't be made it stops and offers **Make them without captions**. It was a page-only change: nothing under `app/` was edited. Full suite: 1244 passed, 3 skipped, 8 deselected (the baseline of 1240 plus 4 new page tests). Every task had a real-browser check in Chrome against the dev harness (real Whisper, simulated OpenRouter), and the final walkthrough passed at 1200 px light and 375 px dark with no console errors.
+The owner found AI clipping confusing: getting shorts meant ticking highlights in one tab, adding them to the clip list, ticking the same clips again in Auto Shorts, and working through about 35 controls. They asked to execute the Make shorts plan (`docs/superpowers/plans/2026-11-24-make-shorts.md`, design in `docs/superpowers/specs/2026-11-24-make-shorts-design.md`) inline. Clip Studio now has two tabs, **Manual** and **Make shorts**. Make shorts has three numbered steps: **1. Find moments** (Where will you post? How many shorts? What should they be about?), **2. Pick the ones you want** (moment cards, all ticked, with everything but the face behind **More**, plus "Clips you cut by hand" unticked), and **3. Your shorts** (shorts play on the page, **Save**, **Download all**). Every other setting sits under one closed **More settings**. The ticked moments reach the render with their titles, so files are named after them. If captions are on and there's no transcript, Make transcribes first, and if captions can't be made it stops and offers **Make them without captions**. It was a page-only change: nothing under `app/` was edited. Every task had a real-browser check in Chrome against the dev harness (real Whisper, simulated OpenRouter), and the final walkthrough passed at 1200 px light and 375 px dark with no console errors. A fresh reviewer then read the whole branch: no Critical findings, 2 Important, 12 Minor. Re-graded by what a person gets, nine were fixed in one pass (`fac1182`), each shown by a reproduction that failed first. They included: a reload or poll blip while Make transcribes, a stuck "Starting…", lost focus on a tick, caption edits lost when a moment's times change, Make during a running Find, and copy. Four minors with no visible effect were left. Full suite: 1245 passed, 3 skipped, 8 deselected (the baseline of 1240 plus 5 new page tests).
 
 ### Changes Made
 
@@ -21,6 +21,8 @@ The owner found AI clipping confusing: getting shorts meant ticking highlights i
 | `485a32c` | feat | Play finished shorts on the page, and ask before making them without captions |
 | `1a7cf4e` | docs | Describe Make shorts in place of the AI Highlights and Auto Shorts tabs |
 | `7620eb9` | fix  | Let a short's status wrap below its title on a phone |
+| `250dc96` | docs | Update journal |
+| `fac1182` | fix  | Address the final review of Make shorts |
 
 ### Key Decisions
 
@@ -30,6 +32,9 @@ The owner found AI clipping confusing: getting shorts meant ticking highlights i
 - **The AI's moments start ticked**, so the fast path is "look, untick any you don't want, Make". A new analysis ticks all its moments and drops the old card edits; a reload of the same analysis keeps the stored ticks.
 - **"Captions edited" on a moment card is painted by `shorts.js`**, which keeps the caption edits, through a `data-captions-key` marker on the card. That kept the `window.SaveMeShorts` interface to the one `editCaptions` call. Edits are keyed by range, so a moment whose times change gets automatic captions again.
 - **Step 3 stays up from Make to the end**, including "Transcribing on this computer for the captions — <stage>" and "Starting…" before the render's first poll, so focus can follow it from the disabled Make button.
+- **Make survives a reload** (from the review): the id of the transcription Make waits on is kept in `saveme.shorts`, and after a reload the page follows it again, with Cancel, and then makes the shorts. Polls of a transcription or a render retry a few failures instead of giving up on the first.
+- **Make waits for a Find already running on the page** (from the review): `ai.js` exposes the running analysis (`window.SaveMeMoments.running()`), and the captions check follows it, because the server allows one analysis per video and that Find may make the transcript anyway. Make makes what was ticked when it was pressed, minus anything unticked meanwhile.
+- **An open caption editor follows a moment whose times change** (`window.SaveMeShorts.moved`), so typed edits land on the range the short will use.
 - All other rulings are in the plan's ledger and the final report; none changed the spec's behaviour.
 
 ### Issues Encountered
@@ -39,6 +44,8 @@ The owner found AI clipping confusing: getting shorts meant ticking highlights i
 - Task 5's browser check found that step 3 hid for one poll between creating a render and fetching it, so focus fell to `<body>`. Fixed in the same task by keeping step 3 up ("Starting…") while a render exists without a view.
 - The final phone walkthrough found a short's title squeezed by its status line in step 3 (words broke mid-word). Fixed in `7620eb9` by letting the status wrap below the title.
 - The server's `video_too_long` message still says "…limit for AI Highlights", and it shows inside "Captions can't be made: …". It is server copy, outside this page-only change; left as a deferred minor.
+- The review's reproductions live in `$CLAUDE_JOB_DIR/tmp/dev/check-make-fixes.js` (27 checks), next to the per-task `check-make-*.js` scripts and the walkthrough `check-make-e2e.js`. None of the browser checks are in the repo.
+- Deferred minors: finished-short players are kept until the video closes; the bridge's `addRanges`/`marks`/`currentTime` are now unused (a page test still pins `marks`); a pre-existing, unlikely reload race between `/api/studio` and `/api/shorts/options`; and old-tab sessionStorage carries over once after the upgrade.
 
 ---
 
