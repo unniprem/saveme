@@ -37,11 +37,15 @@
     tooMany: "You can make up to 20 shorts at once.",
     loading: "Checking Auto Shorts…",
     offline: "Can't reach SaveMe. Check that it's running, then try again.",
-    lost: "This render is no longer on the server. Render again.",
+    lost: "These shorts are no longer on the server. Make them again.",
     noTranscript: "No transcript yet, so shorts get no captions. Transcribe the video first (this runs on this computer).",
     words: (lang) => `Captions use the transcript's word timing${lang ? ` (${lang})` : ""}.`,
     estimated: "Captions use the transcript, with word timing estimated within each line. Transcribing again gives exact word timing.",
     transcribing: "Transcribing on this computer…",
+    noBurn: "This FFmpeg can't burn in captions.",
+    checking: "Checking the captions…",
+    forCaptions: "Transcribing on this computer for the captions",
+    prepCancelled: "Cancelled. No shorts were made.",
     presetSaved: (name) => `Preset “${name}” saved in this browser.`,
     presetLoaded: (name) => `Preset “${name}” loaded.`,
     presetBad: "That file doesn't hold SaveMe presets.",
@@ -94,8 +98,14 @@
   let previewId = "";
   let previewSeq = 0; // the newest preview request, so a late reply for an older one is ignored
   let previewTimer = 0;
-  let transcribing = "";
+  let transcribing = ""; // the transcribe-only analysis running, if any
   let captionInfo = null;
+  let hasTranscript = null; // null until known
+  let aiStatus = null; // GET /api/ai/status, to know ahead when captions can't be made
+  let prep = null; // { text, percent } while Make gets captions ready (in step 3)
+  let prepCancelled = false;
+  let nocaps = ""; // why captions can't be made, shown in step 3 with "Make them without captions"
+  const videos = new Map(); // "<render>/<number>" -> the <video> of a finished short, kept across repaints
 
   const announce = (text) => setText(el.announcer, text);
   const fmtTime = (s) => bridge.fmtTime(s);
@@ -284,6 +294,12 @@
   // ---- availability --------------------------------------------------------------------------
 
   async function loadOptions() {
+    api("/api/ai/status").then((v) => {
+      aiStatus = v;
+      paint();
+    }, () => {
+      aiStatus = null;
+    });
     try {
       options = await api("/api/shorts/options");
     } catch (err) {
@@ -307,7 +323,7 @@
       setLine(el.status, `Ready. Encoding with ${encoder.hardware ? "the Mac's video hardware" : "x264 (software)"}`
         + `${options.captions_available ? "" : "; this FFmpeg can't burn in captions"}.`);
     } else {
-      setLine(el.status, (options.error && options.error.message) || "Auto Shorts isn't available.", "error");
+      setLine(el.status, (options.error && options.error.message) || "Making shorts isn't available.", "error");
     }
     listPresets();
     if (source) restore();
@@ -337,7 +353,12 @@
     making = false; // the bridge resets it for a new video, before telling us about the video
     previewId = "";
     captionInfo = null;
+    hasTranscript = null;
     transcribing = "";
+    prep = null;
+    prepCancelled = false;
+    nocaps = "";
+    videos.clear();
     show(el.editor, false);
     show(el.progress, false);
     show(el.preview, false);
@@ -528,6 +549,8 @@
       const data = await api(`${base()}/shorts/captions`, { start: first.start, end: first.end, spec: spec() });
       if (g !== gen) return;
       captionInfo = data.captions;
+      hasTranscript = Boolean(captionInfo);
+      paint();
     } catch {
       return;
     }
@@ -542,31 +565,67 @@
     }
   }
 
+  // Run a transcribe-only analysis on this computer and wait for it. Throws an Error with the server's
+  // message when it can't start (AI settings in error, a video too long…), or when it fails or is cancelled.
+  async function runTranscription(g, retranscribe, onProgress) {
+    const r = await api(`${base()}/analyses`, { transcribe_only: true, retranscribe });
+    transcribing = r.analysis_id;
+    paint();
+    try {
+      for (;;) {
+        await new Promise((resolve) => { setTimeout(resolve, POLL_MS); });
+        if (g !== gen) throw new Error("The video was closed.");
+        const view = await api(`/api/analyses/${encodeURIComponent(r.analysis_id)}`);
+        if (view.status === "ready") return;
+        if (view.status === "failed" || view.status === "cancelled") {
+          throw new Error((view.error && view.error.message)
+            || (view.status === "cancelled" ? "The transcription was cancelled." : "The transcription stopped."));
+        }
+        const pct = isNum(view.progress_percent) ? Math.round(view.progress_percent) : null;
+        onProgress(str(view.detail) || MSG.transcribing, pct);
+      }
+    } finally {
+      transcribing = "";
+    }
+  }
+
+  // More settings → Captions → Transcribe.
   async function transcribe() {
-    if (!source) return;
+    if (!source || transcribing) return;
     const g = gen;
     el.transcribe.disabled = true;
     setLine(el.transcript, MSG.transcribing);
     try {
-      const r = await api(`${base()}/analyses`, { transcribe_only: true, retranscribe: Boolean(captionInfo) });
-      transcribing = r.analysis_id;
-      while (g === gen) {
-        await new Promise((resolve) => { setTimeout(resolve, POLL_MS); });
-        const view = await api(`/api/analyses/${encodeURIComponent(transcribing)}`);
-        if (view.status === "ready") break;
-        if (view.status === "failed" || view.status === "cancelled") {
-          throw new Error((view.error && view.error.message) || "Transcription stopped.");
-        }
-        const pct = isNum(view.progress_percent) ? ` ${Math.round(view.progress_percent)}%` : "";
-        setLine(el.transcript, `${view.detail || MSG.transcribing}${pct}`);
-      }
+      await runTranscription(g, Boolean(captionInfo), (text, pct) => setLine(el.transcript, pct === null ? text : `${text} ${pct}%`));
       announce("Transcript ready.");
     } catch (err) {
-      setLine(el.transcript, err.message, "error");
+      if (g === gen) setLine(el.transcript, err.message, "error");
     } finally {
-      transcribing = "";
-      el.transcribe.disabled = false;
-      if (g === gen) refreshCaptions();
+      if (g === gen) {
+        paint();
+        refreshCaptions();
+      }
+    }
+  }
+
+  // Can these shorts get the captions the form asks for? Transcribes the video first when it has no
+  // transcript yet (with its progress in step 3). Captions never go missing without the owner saying so.
+  async function captionsGate(list) {
+    if (!el.captions.checked) return { ok: true };
+    if (el.burn.checked && !options.captions_available) return { ok: false, reason: MSG.noBurn };
+    const g = gen;
+    try {
+      const data = await api(`${base()}/shorts/captions`, { start: list[0].start, end: list[0].end, spec: spec() });
+      if (data.captions) return { ok: true };
+      prep = { text: `${MSG.forCaptions}…`, percent: null };
+      paintProgress();
+      await runTranscription(g, false, (text, percent) => {
+        prep = { text: `${MSG.forCaptions} — ${text}`, percent };
+        paintProgress();
+      });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, reason: err.message };
     }
   }
 
@@ -1033,35 +1092,67 @@
     return body;
   }
 
-  async function startRender() {
+  // Make: the picked moments and ticked clips become shorts. Captions are checked first (see captionsGate);
+  // `noCaptions` (from "Make them without captions") turns them off for this request only.
+  async function startRender(noCaptions = false) {
     const list = chosen();
     if (!source || !list.length) {
       say(MSG.noClips, "error");
       return;
     }
-    if (list.length > maxShorts()) return;
+    if (list.length > maxShorts() || isMaking()) return;
     const g = gen;
+    const hadFocus = [el.render, el.nocapsGo].includes(document.activeElement);
     starting = true;
-    el.render.disabled = true;
+    prepCancelled = false;
+    nocaps = "";
+    clearTimeout(pollTimer);
+    renderId = ""; // the shorts made before stay in step 3 until this Make
+    renderView = null;
+    store();
     say("");
+    prep = { text: noCaptions ? "Starting…" : MSG.checking, percent: null };
     paint();
+    paintProgress();
+    if (hadFocus) el.progress.focus(); // the button is now disabled: follow step 3 instead
     try {
+      if (!noCaptions) {
+        const gate = await captionsGate(list);
+        if (g !== gen) return;
+        if (prepCancelled) {
+          say(MSG.prepCancelled);
+          announce(MSG.prepCancelled);
+          return;
+        }
+        if (!gate.ok) {
+          nocaps = gate.reason;
+          announce(`Captions can't be made: ${gate.reason}`);
+          return;
+        }
+        refreshCaptions();
+      }
+      prep = { text: "Starting…", percent: null };
+      paintProgress();
       await ensureLogo();
-      const r = await api(`${base()}/renders`, { clips: list.map(clipBody), spec: spec() });
+      const s = spec();
+      if (noCaptions) s.captions.enabled = false;
+      const r = await api(`${base()}/renders`, { clips: list.map(clipBody), spec: s });
       if (g !== gen) return;
       renderId = r.render_id;
       renderView = null;
       failures = 0;
       store();
-      show(el.progress, true);
-      el.progress.focus();
-      announce(`Rendering ${list.length} short${list.length === 1 ? "" : "s"}.`);
+      announce(`Making ${list.length} short${list.length === 1 ? "" : "s"}.`);
       poll(g);
     } catch (err) {
       if (g === gen) say(err.message, "error");
     } finally {
-      starting = false;
-      paint();
+      if (g === gen) {
+        starting = false;
+        prep = null;
+        paint();
+        paintProgress();
+      }
     }
   }
 
@@ -1092,7 +1183,7 @@
     if (renderView && RENDER_PENDING.includes(renderView.status)) pollTimer = setTimeout(() => poll(g), POLL_MS);
     else if (renderView) {
       const done = renderView.ready;
-      announce(renderView.status === "cancelled" ? "Render cancelled." : `${done} of ${renderView.count} shorts ready.`);
+      announce(renderView.status === "cancelled" ? "Making shorts cancelled." : `${done} of ${renderView.count} shorts ready.`);
       paint();
     }
   }
@@ -1103,34 +1194,87 @@
     a.setAttribute("download", "");
     a.textContent = text;
     a.setAttribute("aria-label", label);
-    a.className = "rounded-md text-sm font-semibold text-brand-700 underline decoration-brand-700/30 underline-offset-4 "
-      + "hover:decoration-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 "
-      + "dark:text-brand-300";
+    a.className = "inline-flex h-10 items-center rounded-lg bg-brand-50 px-3 text-sm font-semibold text-brand-700 "
+      + "hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 "
+      + "dark:bg-white/10 dark:text-ink-50 dark:hover:bg-white/15 dark:focus-visible:outline-brand-400";
     return a;
   }
 
+  // A finished short's player. Kept across repaints, so one plays on while the others are still being made.
+  function player(view, c, url) {
+    const key = `${view.render_id}/${c.number}`;
+    let video = videos.get(key);
+    if (!video) {
+      video = document.createElement("video");
+      video.controls = true;
+      video.playsInline = true;
+      video.preload = "metadata";
+      video.src = url;
+      video.setAttribute("aria-label", `Short ${c.number}: ${str(c.title) || `Short ${c.number}`}`);
+      video.className = "mt-2 max-h-[28rem] w-auto max-w-full rounded-lg bg-black shadow-card";
+      videos.set(key, video);
+    }
+    return video;
+  }
+
+  function setBar(percent, text) {
+    if (isNum(percent)) {
+      el.progressFill.style.width = `${percent}%`;
+      el.progressBar.setAttribute("aria-valuenow", String(percent));
+    } else {
+      el.progressFill.style.width = "0%";
+      el.progressBar.removeAttribute("aria-valuenow");
+    }
+    el.progressBar.setAttribute("aria-valuetext", text);
+  }
+
+  // Step 3: getting the captions ready, the reason they can't be made, or the shorts being made.
   function paintProgress() {
     const view = renderView;
     syncMaking();
-    show(el.progress, Boolean(view));
-    if (!view) return;
+    // A render that exists but hasn't been fetched yet (just made, or after a reload) keeps step 3 up.
+    const pre = prep || (!view && renderId ? { text: "Starting…", percent: null } : null);
+    show(el.progress, Boolean(view || pre || nocaps));
+    show(el.nocaps, Boolean(nocaps) && !view && !pre);
+    if (nocaps && !view && !pre) {
+      setText(el.progressStatus, "Captions can't be made");
+      setText(el.nocapsMsg, `Captions can't be made: ${nocaps}`);
+    }
+    if (!view) {
+      if (pre) setText(el.progressStatus, pre.text);
+      show(el.progressSpin, Boolean(pre));
+      setText(el.progressPercent, pre && isNum(pre.percent) ? `${pre.percent}%` : "");
+      show(el.progressBar, Boolean(pre));
+      if (pre) setBar(isNum(pre.percent) ? pre.percent : null, pre.text);
+      el.results.replaceChildren();
+      show(el.zip, false);
+      show(el.cancel, Boolean(prep && transcribing));
+      return;
+    }
     const pending = RENDER_PENDING.includes(view.status);
-    const headline = pending ? `Rendering ${view.ready} of ${view.count} ready`
+    const headline = pending ? `Making ${view.count} short${view.count === 1 ? "" : "s"}: ${view.ready} ready`
       : view.status === "ready" ? `${view.ready} of ${view.count} short${view.count === 1 ? "" : "s"} ready`
-        : view.status === "cancelled" ? "Render cancelled" : "Render failed";
+        : view.status === "cancelled" ? "Making shorts cancelled" : "Making shorts failed";
     setText(el.progressStatus, headline);
     show(el.progressSpin, pending);
+    show(el.progressBar, true);
     const pct = isNum(view.percent) ? Math.round(view.percent) : 0;
     setText(el.progressPercent, pending ? `~${pct}%` : "");
-    el.progressFill.style.width = `${pending ? pct : 100}%`;
-    el.progressBar.setAttribute("aria-valuenow", String(pending ? pct : 100));
-    el.progressBar.setAttribute("aria-valuetext", pending ? `about ${pct} percent (estimate)` : headline);
+    setBar(pending ? pct : 100, pending ? `about ${pct} percent (estimate)` : headline);
     const rows = view.clips.map((c) => {
       const li = document.createElement("li");
-      li.className = "flex flex-wrap items-center gap-x-3 gap-y-1 py-2 text-sm";
+      li.className = "py-3 text-sm";
+      const line = document.createElement("div");
+      line.className = "flex flex-wrap items-center gap-x-3 gap-y-1";
       const what = document.createElement("span");
-      what.className = "min-w-0 flex-1 tabular-nums text-ink-900 dark:text-ink-50";
-      what.textContent = `Short ${c.number} · ${fmtTime(c.start)} – ${fmtTime(c.end)}`;
+      what.className = "min-w-0 flex-1 break-words text-ink-900 dark:text-ink-50";
+      const name = document.createElement("span");
+      name.className = "font-semibold";
+      name.textContent = str(c.title) || `Short ${c.number}`;
+      const when = document.createElement("span");
+      when.className = "tabular-nums text-ink-600 dark:text-ink-400";
+      when.textContent = ` · ${fmtTime(c.start)} – ${fmtTime(c.end)}`;
+      what.append(name, when);
       const state = document.createElement("span");
       state.className = "tabular-nums text-ink-700 dark:text-ink-300";
       let text = CLIP_STATUS[c.status] || c.status;
@@ -1139,26 +1283,31 @@
       if (isNum(c.eta_seconds) && c.status === "rendering") text += ` · about ${fmtTime(c.eta_seconds)} left (estimate)`;
       if (c.status === "ready" && isNum(c.width)) text += ` · ${c.width}×${c.height}, ${fmtTime(c.duration || 0)}`;
       state.textContent = text;
-      li.append(what, state);
-      if (c.status === "ready") {
-        const base = `/api/renders/${encodeURIComponent(view.render_id)}/clips/${c.number}/file`;
-        li.append(link("MP4", base, `Download short ${c.number} as MP4`));
-        if ((c.files || []).includes("srt")) li.append(link("SRT", `${base}?kind=srt`, `Download short ${c.number}'s subtitles`));
-      }
+      line.append(what, state);
       if (CLIP_PENDING.includes(c.status) && pending) {
-        const cancel = document.createElement("button");
-        cancel.type = "button";
-        cancel.textContent = "Skip";
-        cancel.setAttribute("aria-label", `Cancel short ${c.number}`);
-        cancel.className = "h-8 rounded-lg border border-ink-300 px-2 text-xs font-semibold text-ink-700 hover:border-red-300 "
+        const skip = document.createElement("button");
+        skip.type = "button";
+        skip.textContent = "Skip";
+        skip.setAttribute("aria-label", `Skip short ${c.number}`);
+        skip.className = "h-10 rounded-lg border border-ink-300 px-3 text-sm font-semibold text-ink-700 hover:border-red-300 "
           + "hover:text-red-700 focus-visible:outline-2 focus-visible:outline-brand-700 dark:border-ink-700 dark:text-ink-200";
-        cancel.addEventListener("click", () => cancelClip(c.number));
-        li.append(cancel);
+        skip.addEventListener("click", () => cancelClip(c.number));
+        line.append(skip);
+      }
+      li.append(line);
+      if (c.status === "ready") {
+        const file = `/api/renders/${encodeURIComponent(view.render_id)}/clips/${c.number}/file`;
+        li.append(player(view, c, file));
+        const links = document.createElement("div");
+        links.className = "mt-2 flex flex-wrap gap-2";
+        links.append(link("Save", file, `Save short ${c.number}`));
+        if ((c.files || []).includes("srt")) links.append(link("SRT", `${file}?kind=srt`, `Save short ${c.number}'s subtitles`));
+        li.append(links);
       }
       const extra = (c.error && c.error.message) || c.notice;
       if (extra) {
         const note = document.createElement("p");
-        note.className = `w-full text-xs ${c.error ? "font-medium text-red-700 dark:text-red-400" : "text-amber-800 dark:text-amber-200"}`;
+        note.className = `mt-1 text-xs ${c.error ? "font-medium text-red-700 dark:text-red-400" : "text-amber-800 dark:text-amber-200"}`;
         note.textContent = extra;
         li.append(note);
       }
@@ -1171,7 +1320,20 @@
     show(el.cancel, pending);
   }
 
+  // Cancel in step 3: the transcription getting captions ready, or the shorts being made.
   async function cancelRender() {
+    if (prep && transcribing) {
+      prepCancelled = true;
+      el.cancel.disabled = true;
+      try {
+        await api(`/api/analyses/${encodeURIComponent(transcribing)}/cancel`, {});
+      } catch (err) {
+        say(err.message, "error");
+      } finally {
+        el.cancel.disabled = false;
+      }
+      return;
+    }
     if (!renderId) return;
     el.cancel.disabled = true;
     try {
@@ -1196,6 +1358,20 @@
 
   // ---- buttons -------------------------------------------------------------------------------------------
 
+  // When the page already knows captions can't be made, it says so above Make, before anything starts.
+  function captionsWarning() {
+    if (!options || !source || !el.captions.checked) return "";
+    const ask = "You'll be asked before any short is made without them.";
+    if (el.burn.checked && !options.captions_available) return `Captions can't be burned in: ${MSG.noBurn} ${ask}`;
+    if (hasTranscript !== false || !aiStatus) return "";
+    if (!aiStatus.available) return `Captions need a transcript, and transcription is off on this server. ${ask}`;
+    const minutes = aiStatus.max_source_minutes;
+    if (isNum(minutes) && isNum(source.duration) && source.duration > minutes * 60) {
+      return `Captions need a transcript, and this video is longer than the ${minutes}-minute limit for transcribing. ${ask}`;
+    }
+    return "";
+  }
+
   // Shorts are being made: a Make on its way, or a render that hasn't ended (or whose state is still
   // being fetched after a reload).
   function isMaking() {
@@ -1217,11 +1393,11 @@
     const count = list.length;
     const tooMany = count > maxShorts();
     show(el.makePick, Boolean(source) && (moments.shown || clips.length > 0));
-    el.render.disabled = !ready || busy || count === 0 || tooMany;
+    el.render.disabled = !ready || busy || count === 0 || tooMany || Boolean(transcribing);
     setText(el.renderLabel, count ? `Make ${count} short${count === 1 ? "" : "s"}` : "Make shorts");
     if (options && !options.available) notice((options.error && str(options.error.message)) || "Making shorts isn't available.", "error");
     else if (tooMany) notice(MSG.tooMany.replace("20", String(maxShorts())), "error");
-    else notice("");
+    else notice(count ? captionsWarning() : "");
     for (const b of [el.previewFrame, el.previewClip]) b.disabled = !ready || count === 0;
     el.transcribe.disabled = !source || Boolean(transcribing);
     paintBadges();
@@ -1253,6 +1429,7 @@
   }
   for (const input of [el.platform, el.words, el.size]) input.addEventListener("change", refreshCaptions);
   el.platform.addEventListener("change", syncChips);
+  for (const input of [el.captions, el.burn]) input.addEventListener("change", paint); // the notice above Make
   for (const radio of el.makePlatformChips.querySelectorAll('input[name="make-platform"]')) {
     radio.addEventListener("change", () => {
       if (!radio.checked || !options || !byId(options.platforms, radio.value)) return;
@@ -1277,7 +1454,8 @@
   el.presetImport.addEventListener("change", importPresets);
   el.previewFrame.addEventListener("click", () => startPreview("frame"));
   el.previewClip.addEventListener("click", () => startPreview("clip"));
-  el.render.addEventListener("click", startRender);
+  el.render.addEventListener("click", () => startRender());
+  el.nocapsGo.addEventListener("click", () => startRender(true));
   el.cancel.addEventListener("click", cancelRender);
   setLine(el.status, MSG.loading);
   paint();

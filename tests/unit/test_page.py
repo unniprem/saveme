@@ -256,6 +256,7 @@ MAKE_COPY = [
     'No moments found. Try other words in "What should they be about?", or other lengths under More settings.',
     "More settings",
     "Scores are the AI's editorial judgement of each moment, not a prediction of views.",
+    "Make them without captions",
 ]
 
 
@@ -356,6 +357,16 @@ def test_step_one_copy():
     assert "syncChips(" in shorts and 'name="make-platform"' in page
     assert "Finding moments needs an OpenRouter key" in ai
     assert "Ranking moments" in ai and "highlights found" not in ai
+
+
+def test_step_three():
+    page = _html()
+    shorts = (STATIC / "shorts.js").read_text(encoding="utf-8")
+    assert "captionsGate(" in shorts and "runTranscription(" in shorts
+    assert "/api/ai/status" in shorts
+    assert "Make them without captions" in page
+    assert 'createElement("video")' in shorts
+    assert "Download all" in page
 
 
 SHORTS_IDS = [
