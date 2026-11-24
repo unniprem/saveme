@@ -311,9 +311,12 @@ class OpenRouterClient:
     # --- requests ---
 
     def _scrub(self, text: str) -> str:
+        """An OpenRouter message fit to show: the key removed first (cutting first could leave
+        part of it), then cleaned and capped."""
         key = self._settings.openrouter_api_key
-        text = clean_text(text, 300)
-        return text.replace(key, "[key]") if key else text
+        if key:
+            text = text.replace(key, "[key]")
+        return clean_text(text, 300)
 
     def _error_body_message(self, data: object) -> str:
         error = data.get("error") if isinstance(data, dict) else None

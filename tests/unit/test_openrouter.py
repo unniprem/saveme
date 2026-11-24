@@ -298,3 +298,13 @@ def test_usage_meter_prices_calls_without_a_reported_cost():
     assert view["cost_usd"] == pytest.approx(0.0002 + 1000 * 1e-7 + 100 * 5e-7)
     assert view["cost_reported"] is False
     assert meter.spent == pytest.approx(view["cost_usd"])
+
+
+async def test_a_key_near_the_message_cut_is_scrubbed_whole():
+    server = MockOpenRouter()
+    message = "x" * 290 + KEY + " tail"
+    server.chat.append(httpx.Response(400, json={"error": {"code": 400, "message": message}}))
+    client, _ = make(server)
+    with pytest.raises(AppError) as exc:
+        await client.complete(MESSAGES, model=model_info(HAIKU), schema=SCHEMA, schema_name="h", max_tokens=50)
+    assert KEY[:8] not in exc.value.message and "[key]" in exc.value.message
