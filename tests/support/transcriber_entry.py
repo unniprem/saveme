@@ -46,7 +46,8 @@ class FakeModel:
         log = os.environ.get("SAVEME_TEST_WHISPER_LOG")
         if log:
             with open(log, "a", encoding="utf-8") as out:
-                out.write(json.dumps({"language": language, "seconds": round(length, 3),
+                out.write(json.dumps({"pid": os.getpid(), "language": language,
+                                      "seconds": round(length, 3),
                                       "dtype": str(audio.dtype), **options}) + "\n")
         delay = float(os.environ.get("SAVEME_TEST_WHISPER_DELAY", "0"))
 

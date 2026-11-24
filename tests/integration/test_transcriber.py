@@ -181,21 +181,23 @@ def test_transcriber_blocks_every_network_connection():
     assert out.stdout.startswith("blocked"), out.stderr
 
 
-async def test_cancelling_a_transcription_kills_the_worker(source, workdir, monkeypatch):
+async def test_cancelling_a_transcription_kills_the_worker(source, workdir, monkeypatch, tmp_path):
+    log = tmp_path / "calls.jsonl"
+    monkeypatch.setenv("SAVEME_TEST_WHISPER_LOG", str(log))
     monkeypatch.setenv("SAVEME_TEST_WHISPER_DELAY", "5")
     task = asyncio.create_task(run_worker(request(source, workdir), cmd=CMD, timeout=60,
                                           on_event=lambda event: None, workdir=workdir))
-    for _ in range(300):  # wait for the transcribing phase (the WAV exists)
-        if (workdir / "audio.wav").exists():
+    for _ in range(300):  # wait until the model is transcribing
+        if log.exists() and log.read_text().strip():
             break
         await asyncio.sleep(0.05)
-    pids = subprocess.run(["pgrep", "-f", ENTRY], capture_output=True, text=True).stdout.split()
-    assert pids
+    pid = json.loads(log.read_text().splitlines()[0])["pid"]
+    os.kill(pid, 0)  # running
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    left = subprocess.run(["pgrep", "-f", ENTRY], capture_output=True, text=True).stdout.split()
-    assert not set(pids) & set(left)
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
 
 
 # --- the real model (opt-in: needs faster-whisper's `base` in the Hugging Face cache) ------------
