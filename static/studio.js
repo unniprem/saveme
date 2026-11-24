@@ -106,6 +106,7 @@
   let loadFailures = 0;
   let keepTimer = 0;
   let previewing = false; // "Play clip" is playing: pause at the end mark
+  let playable = true; // false once the browser can't play the source at all (no playhead to use)
   let drag = null; // the handle being dragged: "start" | "end"
   let list = []; // the clip list: { start, end } in whole milliseconds, sorted by start
   let exportJob = null; // { id, autoSaved, kind: "clip" | "zip" }
@@ -479,6 +480,7 @@
     store();
     show(el.studioLoading, false);
     show(el.studioPreviewNote, false);
+    playable = true;
     setLine(el.clipMsg, "");
     el.studioVideo.src = mediaUrl();
     show(el.studioEditor, true);
@@ -530,8 +532,14 @@
     render();
   }
 
+  // Nothing plays, so the playhead stays at 0: the controls that use it are turned off. (When
+  // only the picture can't be decoded, the sound still plays and moves the playhead.)
   function onVideoError() {
-    if (state === "ready" && el.studioVideo.getAttribute("src")) show(el.studioPreviewNote, true);
+    if (state !== "ready" || !el.studioVideo.getAttribute("src")) return;
+    show(el.studioPreviewNote, true);
+    playable = false;
+    stopPreview();
+    render();
   }
 
   function render() {
@@ -555,6 +563,7 @@
     if (document.activeElement !== el.clipEnd) el.clipEnd.value = fmtTime(marks.end);
     setText(el.clipLength, fmtTime(marks.end - marks.start));
     el.exportClip.disabled = !longEnough(marks.start, marks.end) || exportRunning();
+    el.setStart.disabled = el.setEnd.disabled = el.playClip.disabled = !playable;
     el.exportZip.disabled = list.length === 0 || exportRunning();
   }
 
@@ -639,6 +648,7 @@
     if (state !== "ready" || event.ctrlKey || event.metaKey || event.altKey) return;
     const target = event.target;
     if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target.isContentEditable) return;
+    if (!playable) return;
     const key = event.key.toLowerCase();
     if (key === "i") toPlayhead("start");
     else if (key === "o") toPlayhead("end");
