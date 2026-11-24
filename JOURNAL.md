@@ -8,7 +8,7 @@
 
 The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with local faster-whisper transcription and OpenRouter as the only AI provider, built test-first in small commits on `feature/ai-clipping`, with this journal updated after every task. The brief was taken as a go-ahead without a question round; design calls are under Key Decisions.
 
-**Status: in progress.** Tasks 1–4 (audit, design, transcription, OpenRouter client) are done.
+**Status: in progress.** Tasks 1–5 (audit, design, transcription, OpenRouter client, highlight engine) are done.
 
 ### Progress by task
 
@@ -16,7 +16,7 @@ The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with lo
 - [x] **Task 2, design.** `docs/AI_CLIPPING_DESIGN.md`: architecture, API contracts, schemas, lifecycle, limits.
 - [x] **Task 3, transcription.** `app/transcript.py` (schema, SRT/WebVTT import, language codes, cache file and reuse rule), `app/transcriber.py` (worker: FFmpeg → 16 kHz WAV → faster-whisper over 300 s windows), `app/whisper_models.py` (model installer), `extract_audio` in `app/mediafile.py`. Dependencies and the Docker build are updated; the image isn't built yet (Task 8).
 - [x] **Task 4, OpenRouter.** `AiSettings`/`load_ai_settings` in `app/config.py` (separate from the download settings; the key is kept out of `repr` and errors), `.env.example` documents every AI variable, `app/openrouter.py` (catalogue and capability check, pricing tiers, chat completions, retries, key check, `UsageMeter`), and 9 new error codes.
-- [ ] Task 5, highlight engine
+- [x] **Task 5, highlight engine.** `app/highlights.py`: chunks (≤ 6,000 estimated tokens, ≤ 20 min, overlap max(60 s, max clip length)), prompts, strict JSON schema, per-item pydantic validation, snapping and length rules, dedupe (> 30 % of the shorter clip), ranking, estimates, and `analyze()` with the spend guard. Also `tests/network/test_openrouter_live.py` (opt-in, needs a key).
 - [ ] Task 6, job integration
 - [ ] Task 7, UI
 - [ ] Task 8, integration testing
@@ -35,6 +35,8 @@ The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with lo
 | `693274c` | feat | Decide when a cached transcript can be reused |
 | `3c6c61a` | feat | Add AI Highlights settings, apart from the download settings |
 | `f69c266` | feat | Add the OpenRouter client with retries and usage accounting |
+| `9a7fd4b` | feat | Add the highlight engine |
+| `a4e34c2` | test | Add an opt-in live OpenRouter analysis check |
 
 ### Test Results
 
@@ -42,9 +44,13 @@ The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with lo
 
 - Task 4: `tests/unit/test_ai_config.py` 33 passed, `tests/unit/test_packaging.py` 16 passed (now also checks the AI variables in `.env.example`, with only the key blank), `tests/unit/test_openrouter.py` 37 passed against `httpx.MockTransport` (`tests/support/openrouter.py` holds catalogue entries shaped like the live ones). Each failed first: missing module, missing `AiSettings`, missing `UsageMeter`.
 
+- Task 5: `tests/unit/test_highlights.py` 43 passed (it failed first on the missing module). One expectation was changed before implementing: when padding would break `max_seconds`, the padding shrinks and speech is never cut. The live test `tests/network/test_openrouter_live.py` is **not run**: no `OPENROUTER_API_KEY` exists in this environment or in `.env`. It skips without one and is deselected by default (`-m 'not network'`).
+
 ### Key Decisions
 
 - **Default model `anthropic/claude-haiku-5.5`**, picked from OpenRouter's live catalogue on 2026-11-24 (474 models): $0.10/$0.50 per million tokens, 1M context, structured outputs on its providers, reasoning optional. It lists no `temperature`, so the client sends only parameters a model lists (with `require_parameters: true`, an unlisted one would exclude every provider).
+- **Prompt injection:** the instruction and transcript sit in `<instruction>`/`<transcript>` blocks, and `<`/`>` inside them become `‹`/`›`, so neither can close its block. The system prompt says both are data. Whatever the model answers, the server enforces segment ranges, lengths, counts, scores and text caps.
+- **Unusable answers:** retried once, then that part is skipped with a notice. The analysis fails (`ai_invalid_response`) only if every part fails.
 - **The model returns segment numbers, not seconds.** The server maps them to real segment times, so clips start and end on speech boundaries and can't point outside the transcript.
 - **Own transcription worker** (`python -m app.transcriber`) run by the existing `run_worker`: a model-sized memory cap (the download worker's 1 GiB hard cap can't be raised), a connect guard that refuses every connection, and nice(10).
 - **300 s windows with VAD**, from the measurements above.
