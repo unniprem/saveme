@@ -18,6 +18,7 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 | `46f9878` | feat | Add a worker probe mode that checks and remuxes uploaded videos |
 | `f7bcebd` | feat | Add a worker clip mode that cuts by stream copy with progress |
 | `06424ea` | feat | Keep clip sources in the job manager with close, idle expiry and a cap |
+| `8e53efa` | feat | Run clip and upload jobs in the job manager |
 
 ### Test Results
 
@@ -26,6 +27,7 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 - Task 2 (`46f9878`): 495 passed, 2 skipped, 7 deselected. The new probe tests cover MP4 kept, MKV and TS remuxed to MP4, WebM, audio-only (`no_video`), random bytes (`unreadable_media`), a source outside the folder or symlinked (`internal`), and the container mapping.
 - Task 3 (`f7bcebd`): 511 passed, 2 skipped, 7 deselected. A 3.3–7.3 s cut of a 10 s video (keyframe every second) shows 102 frames (4.08 s at 25 fps), its first shown frame is at 0, and its audio is 4.01 s long.
 - Task 4 (`06424ea`): 526 passed, 2 skipped, 7 deselected. 15 new source tests: link source to ready, progress and failure, separate ID spaces, not delivered or counted as a ready file, not evicted for disk room, idle expiry and touch, close in each state, cap replace and busy, queue places, and `MAX_CLIP_SOURCES` bounds.
+- Task 5 (`8e53efa`): 551 passed, 2 skipped, 7 deselected. New tests: clip request and progress, delivery and naming; each range rule; end clamping; no resume; closing a source cancels its running and queued clips; a pending clip keeps its source alive; upload clips drop tags; the upload lifecycle, failure, abort, close-then-finish, disk admission counting active jobs, and the source cap.
 
 ### Key Decisions
 
@@ -42,7 +44,8 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 
 ### Pending Work
 
-- Tasks 5–10 of the plan (Tasks 1–4 done).
+- Tasks 6–10 of the plan (Tasks 1–5 done).
+- Known gap: an upload source that fails while waiting for a slot (`disk_full` at its deadline) leaves its folder until the next sweep (at most `sweep_interval`, 60 s), not at once.
 
 ### Handoff
 
