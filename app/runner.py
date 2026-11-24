@@ -57,7 +57,10 @@ def _replace_lone_surrogates(value):
 
 
 def _clean_env() -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}
+    """The environment for a worker: no proxy settings, and no OpenRouter settings (the key is
+    for the API process only; workers handle hostile pages and media)."""
+    env = {k: v for k, v in os.environ.items()
+           if not k.lower().endswith("_proxy") and not k.upper().startswith("OPENROUTER_")}
     existing = env.get("PYTHONPATH")
     env["PYTHONPATH"] = (
         _PROJECT_ROOT + os.pathsep + existing if existing else _PROJECT_ROOT)

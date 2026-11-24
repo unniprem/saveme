@@ -249,6 +249,18 @@ async def test_proxy_env_stripped(monkeypatch):
     assert "http_proxy" not in data["keys"]
 
 
+async def test_openrouter_settings_never_reach_a_worker(monkeypatch):
+    # Workers parse hostile pages and media; the AI key has no business there.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-secret")
+    monkeypatch.setenv("OPENROUTER_MODEL", "x/y")
+    script = (
+        "import os, json\n"
+        "print(json.dumps({'event':'result','data':{'keys':list(os.environ)}}))\n"
+    )
+    data = await run_worker({}, cmd=fake(script), timeout=10)
+    assert not [k for k in data["keys"] if k.upper().startswith("OPENROUTER_")]
+
+
 async def test_cancellation_kills_worker(tmp_path):
     pidfile = tmp_path / "pid"
     script = (
