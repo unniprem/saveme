@@ -2,6 +2,7 @@
 @import "tailwindcss" source(none);
 @source "../index.html";
 @source "../app.js";
+@source "../studio.js";
 
 /* SaveMe brand: indigo and coral from the logo, on a lightly purple-tinted neutral ("ink"). */
 @theme {
@@ -38,7 +39,7 @@
   --shadow-field: 0 6px 20px rgb(10 0 50 / 0.35);
 }
 
-/* "How it works" is for a fresh page: it steps aside once a result or a download is showing. */
-main:has(> #result:not([hidden]), > #job:not([hidden])) > #how {
+/* "How it works" is for a fresh page: it steps aside once a result, a download or the studio shows. */
+main:has(> #result:not([hidden]), > #job:not([hidden]), > #studio:not([hidden])) > #how {
   display: none;
 }

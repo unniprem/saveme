@@ -66,7 +66,7 @@ def test_footer_copy_is_exact():
     assert FOOTER in _html()
 
 
-SCRIPTS = ["common.js", "app.js"]  # deferred, so they run in this order
+SCRIPTS = ["common.js", "studio.js", "app.js"]  # deferred, so they run in this order
 
 
 def test_references_built_css_and_deferred_scripts():
@@ -158,3 +158,56 @@ def test_job_panel_has_cancel_and_resume_buttons():
     assert "/cancel`" in js and "/resume`" in js
     assert "resume_seconds" in js
     assert "The partial download was removed from the server." in js
+
+
+STUDIO_IDS = [
+    "clip", "upload-file", "upload-label", "studio", "studio-title", "studio-close",
+    "studio-loading", "studio-load-status", "studio-load-percent", "studio-load-bar", "studio-load-fill",
+    "studio-load-meta", "studio-load-error", "studio-load-cancel",
+    "studio-editor", "studio-video", "studio-preview-note", "timeline", "timeline-range",
+    "timeline-playhead", "handle-start", "handle-end", "clip-start", "clip-end", "set-start", "set-end",
+    "clip-length", "play-clip", "export-clip", "clip-msg",
+    "export", "export-status", "export-percent", "export-bar", "export-fill", "export-meta",
+    "export-save", "export-error", "export-cancel",
+]
+STUDIO_COPY = [
+    "Clips are cut without re-encoding, so they keep the original quality. "
+    "A few players may show up to a few seconds before your start.",
+    "Clip saved. Mark another part, or close the studio.",
+    "Your browser can't preview this video. You can still type a start and end.",
+]
+
+
+def test_studio_markup():
+    by_id = {a["id"]: (t, a) for t, a in _parsed().tags if a.get("id")}
+    for name in STUDIO_IDS:
+        assert name in by_id, name
+    for tag, attrs in by_id.values():
+        if tag == "button":
+            assert attrs.get("type") == "button" or attrs.get("id") == "inspect", attrs
+    for name in ("studio", "studio-editor", "export"):
+        assert "hidden" in by_id[name][1], name
+    tag, upload = by_id["upload-file"]
+    assert tag == "input" and upload.get("type") == "file" and "video/*" in upload.get("accept", "")
+    for name in ("handle-start", "handle-end"):
+        tag, attrs = by_id[name]
+        assert attrs.get("role") == "slider" and attrs.get("tabindex") == "0" and attrs.get("aria-label"), name
+    tag, video = by_id["studio-video"]
+    assert tag == "video" and "controls" in video and video.get("preload") == "metadata"
+    assert "Clip a video from your computer" in _html()
+
+
+def test_studio_copy_is_pinned():
+    page, studio = _html(), (STATIC / "studio.js").read_text(encoding="utf-8")
+    for text in STUDIO_COPY:
+        assert text in page or text in studio, text
+    assert "/api/sources" in studio and "sessionStorage" in studio and "XMLHttpRequest" in studio
+    assert "window.SaveMeStudio = Object.freeze(" in studio
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "Close Clip Studio to fetch another link." in app and "SaveMeStudio" in app
+
+
+def test_tailwind_scans_every_page_file():
+    css = (STATIC / "src" / "input.css").read_text(encoding="utf-8")
+    for name in ("index.html", "app.js", "studio.js"):
+        assert f'@source "../{name}";' in css, name

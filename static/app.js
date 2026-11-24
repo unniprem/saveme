@@ -9,6 +9,9 @@
 // storage meanwhile, so a reload still offers Resume.
 // A job that turns ready is saved to the device straight away, once per job; the
 // "Save file" link is the fallback when the browser holds the download back.
+// Clip Studio (studio.js, window.SaveMeStudio) opens from the result card's Clip button or the
+// "Clip a video from your computer" control. While it is open the page is in the "studio"
+// state: the link form is locked and the result and job panels step aside until it closes.
 "use strict";
 
 (() => {
@@ -33,6 +36,7 @@
     noAudio: "This media has no audio track.",
     noVideo: "This media has no video track.",
     emptyUrl: "Paste a link first.",
+    closeStudio: "Close Clip Studio to fetch another link.",
     retrying: "Waiting for SaveMe to respond. Retrying…",
     gaveUp: "Can't reach SaveMe. Check that it's running, then reload this page to pick the download back up.",
     badReply: MSG_BAD_REPLY,
@@ -69,7 +73,7 @@
     "result-title", "source", "notices", "formats", "format-note", "download", "action-msg", "chip-tpl",
     "job", "job-kind", "job-name", "job-spin", "job-done", "job-fail", "job-status", "job-percent", "bar",
     "bar-fill", "job-detail", "job-meta", "save-row", "save", "job-notice", "job-error", "job-actions",
-    "resume", "cancel", "again", "announcer",
+    "resume", "cancel", "again", "announcer", "clip", "upload-file",
   ]) {
     el[id.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = document.getElementById(id);
   }
@@ -146,11 +150,14 @@
 
   function setState(next) {
     state = next;
-    const busy = next === "inspecting" || next === "job";
+    const busy = next === "inspecting" || next === "job" || next === "studio";
     el.inspect.disabled = busy || degraded;
     el.url.readOnly = busy;
+    el.uploadFile.disabled = busy || degraded;
     const canDownload = Boolean(inspected) && !degraded && ["inspected", "saved", "failed", "cancelled"].includes(next);
-    el.download.disabled = !(canDownload && chosenFormat());
+    const choice = chosenFormat();
+    el.download.disabled = !(canDownload && choice);
+    el.clip.disabled = !(canDownload && choice && choice.output === "video");
   }
 
   // The checked format choice as { output, quality }, or null when none is usable.
@@ -282,7 +289,7 @@
 
   async function inspect(event) {
     event.preventDefault();
-    if (state === "inspecting" || state === "job" || degraded) return;
+    if (state === "inspecting" || state === "job" || state === "studio" || degraded) return;
     const url = el.url.value.trim();
     if (!url) {
       say(MSG.emptyUrl, "error");
@@ -626,6 +633,46 @@
     el.bar.setAttribute("aria-valuetext", text);
   }
 
+  // ---- Clip Studio ----------------------------------------------------------------------
+
+  // The studio takes over the page below the link field until it closes.
+  function enterStudio() {
+    dropJob();
+    show(el.result, false);
+    setLine(el.actionMsg, "");
+    setState("studio");
+    say(MSG.closeStudio);
+  }
+
+  function leaveStudio() {
+    if (inspected) {
+      show(el.result, true);
+      setState("inspected");
+    } else {
+      setState("idle");
+    }
+    say("");
+    (inspected ? el.clip : el.url).focus();
+  }
+
+  // Open the inspected link in the studio at the chosen video quality.
+  function onClip() {
+    const choice = chosenFormat();
+    if (!inspected || el.clip.disabled || !choice || choice.output !== "video") return;
+    if (!inspected.info.video.qualities.some((q) => q.id === choice.quality)) return;
+    const { url, info } = inspected;
+    enterStudio();
+    window.SaveMeStudio.openLink({ url, quality: choice.quality, title: info.title });
+  }
+
+  function onUploadPick() {
+    const file = el.uploadFile.files && el.uploadFile.files[0];
+    el.uploadFile.value = ""; // picking the same file again later still fires "change"
+    if (!file || el.uploadFile.disabled) return;
+    enterStudio();
+    window.SaveMeStudio.openFile(file);
+  }
+
   // ---- wiring ---------------------------------------------------------------------------
 
   function enterDegraded(message) {
@@ -685,8 +732,17 @@
     el.resume.addEventListener("click", onResume);
     el.again.addEventListener("click", onAgain);
     el.thumb.addEventListener("error", () => placeMedia(false));
+    el.clip.addEventListener("click", onClip);
+    el.uploadFile.addEventListener("change", onUploadPick);
+    window.SaveMeStudio.onClosed(leaveStudio);
     setState("idle");
 
+    if (window.SaveMeStudio.restore()) { // a studio from before a reload wins over a stored download
+      setState("studio");
+      say(MSG.closeStudio);
+      checkHealth();
+      return;
+    }
     const saved = loadJob();
     if (saved) {
       job = saved;
