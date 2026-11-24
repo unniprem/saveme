@@ -2,6 +2,211 @@
 
 ---
 
+## 2026-11-24 13:29 IST — Session: Phase 2, AI smart clipping (OpenRouter)
+
+### Summary
+
+The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with local faster-whisper transcription and OpenRouter as the only AI provider, built test-first in small commits on `feature/ai-clipping`, with this journal updated after every task. The brief was taken as a go-ahead without a question round; design calls are under Key Decisions.
+
+**Status: Phase 2 complete. At the owner's request, `feature/ai-clipping` was pushed to GitHub, then merged into `main` with `--no-ff` and pushed.** All 9 tasks are done. The 12 acceptance criteria were shown in Chrome against the real transcriber with a simulated OpenRouter. Most were also shown in-process against a mocked OpenRouter, and transcription in the hardened container. The one thing not exercised is a real OpenRouter call: no key exists in this environment. An independent review found 2 important and 8 minor problems, all fixed with tests.
+
+### Progress by task
+
+- [x] **Task 1, audit.** Phase 1 is on `main` at `206d26b`. Integration points, dependencies and risks are in §1 of `docs/AI_CLIPPING_DESIGN.md`. Measured on this M2 (8 GB), 20 min of speech, `base`, int8, 2 threads: 600 s windows peaked at 1.10 GB RSS, 300 s at 0.74 GB, 120 s at 0.62 GB; VAD on took 76–81 s, VAD off 228 s.
+- [x] **Task 2, design.** `docs/AI_CLIPPING_DESIGN.md`: architecture, API contracts, schemas, lifecycle, limits.
+- [x] **Task 3, transcription.** `app/transcript.py` (schema, SRT/WebVTT import, language codes, cache file and reuse rule), `app/transcriber.py` (worker: FFmpeg → 16 kHz WAV → faster-whisper over 300 s windows), `app/whisper_models.py` (model installer), `extract_audio` in `app/mediafile.py`. Dependencies and the Docker build are updated; the image isn't built yet (Task 8).
+- [x] **Task 4, OpenRouter.** `AiSettings`/`load_ai_settings` in `app/config.py` (separate from the download settings; the key is kept out of `repr` and errors), `.env.example` documents every AI variable, `app/openrouter.py` (catalogue and capability check, pricing tiers, chat completions, retries, key check, `UsageMeter`), and 9 new error codes.
+- [x] **Task 5, highlight engine.** `app/highlights.py`: chunks (≤ 6,000 estimated tokens, ≤ 20 min, overlap max(60 s, max clip length)), prompts, strict JSON schema, per-item pydantic validation, snapping and length rules, dedupe (> 30 % of the shorter clip), ranking, estimates, and `analyze()` with the spend guard. Also `tests/network/test_openrouter_live.py` (opt-in, needs a key).
+- [x] **Task 6, job integration.** `JobManager` hooks: `hold_source`/`release_source`, `add_source_listener` and `make_room`. `app/ai_jobs.py` `AiManager` runs the stages with its own semaphore. `app/ai_routes.py` adds the routes. `app/main.py` wires them in, lets the subtitle import read its own body, and gives AI fields their own validation messages.
+- [x] **Task 7, UI.** A Manual / AI Highlights tab switch in Clip Studio (`static/index.html`) and `static/ai.js`. `window.SaveMeStudioBridge` in `static/studio.js` lets the AI tab reuse the editor, clip list and export. The design is in §11 of the design doc.
+- [x] **Task 8, integration testing.** The whole suite, the image's FFmpeg check, the Docker smoke test, a real transcription and a cancel in the hardened container, and Chrome walkthroughs of AI Highlights, Phase 1 clipping and the downloader.
+- [x] **Task 9, docs and review.**
+  - Docs: `README.md`, `docs/OPENROUTER_SETUP.md`, `docs/AI_CLIPPING_IMPLEMENTATION.md`, plus the design doc aligned with the code.
+  - An independent read-only review (a fresh general-purpose agent, given the code and the requirements, not my conclusions) found 2 important and 8 minor problems. All 10 are fixed (`2bb763e`–`9cf5b3a`). Final verification is below.
+
+### Changes Made
+
+| Commit    | Type | Description |
+| --------- | ---- | ----------- |
+| `a8a035d` | docs | Add the AI smart clipping design |
+| `9641cd6` | feat | Add the transcript schema and SRT/WebVTT import |
+| `3c4c909` | feat | Add the local transcriber worker |
+| `3429ad1` | feat | Add a command that installs Whisper models |
+| `ee273d4` | test | Check a cancelled transcription by the worker's own PID |
+| `9434809` | build | Add faster-whisper, httpx, a baked Whisper model and WAV output |
+| `693274c` | feat | Decide when a cached transcript can be reused |
+| `3c6c61a` | feat | Add AI Highlights settings, apart from the download settings |
+| `f69c266` | feat | Add the OpenRouter client with retries and usage accounting |
+| `9a7fd4b` | feat | Add the highlight engine |
+| `a4e34c2` | test | Add an opt-in live OpenRouter analysis check |
+| `300e5bf` | feat | Let an analysis hold a source and hear when it ends |
+| `a2a6ec9` | feat | Run AI Highlights analyses as their own job lifecycle |
+| `dba2550` | feat | Add the AI Highlights API routes |
+| `16d59eb` | fix | Answer a missing transcript with null instead of 404 |
+| `a4134c3` | feat | Add the AI Highlights tab to Clip Studio |
+| `e2829d2` | fix | Retry a Whisper model download that fails for a moment |
+| `802b769` | test | Check AI Highlights in the Docker smoke test |
+| `55a8acd` | docs | Describe AI Highlights in the README |
+| `0dccfe4` | docs | Add the OpenRouter setup guide |
+| `7049622` | docs | Add AI clipping implementation notes and align the design's API |
+| `c284abe` | fix | Let the smoke test read the whole model list |
+| `2bb763e` | fix | Refuse a malformed OPENROUTER_BASE_URL as a setting error |
+| `258ea37` | fix | Scrub the OpenRouter key before cutting a message to length |
+| `0bafe02` | fix | Keep OpenRouter settings out of every worker's environment |
+| `e717a6e` | fix | Refuse an incomplete Whisper model folder before loading it |
+| `0bf48fb` | fix | Refuse odd subtitle times as invalid instead of failing with 500 |
+| `a618027` | fix | Refuse a model whose answer length can't be capped |
+| `10266b1` | fix | Make the spending bound a true upper bound for any tokenizer |
+| `4cba86d` | fix | Count possibly billed failed attempts and check the limit before a retry |
+| `9cf5b3a` | fix | Hold an analysis's disk reservation until it ends |
+| `04d43d5` | docs | Describe the true spending bound, held disk reservation and network block |
+
+### Test Results
+
+- Task 3: `tests/unit/test_transcript.py` 28 passed, `tests/unit/test_whisper_models.py` 6 passed, `tests/integration/test_transcriber.py` 26 passed (real FFmpeg 8.0.1; fake Whisper model through `tests/support/transcriber_entry.py`). Each new file failed first on the missing module. The opt-in real-model test also passed: `base` (installed with `python -m app.whisper_models base` into `~/.cache/huggingface`) transcribed macOS `say` speech as English and found "intelligence" and "vehicles".
+
+- Task 4: `tests/unit/test_ai_config.py` 33 passed, `tests/unit/test_packaging.py` 16 passed (now also checks the AI variables in `.env.example`, with only the key blank), `tests/unit/test_openrouter.py` 37 passed against `httpx.MockTransport` (`tests/support/openrouter.py` holds catalogue entries shaped like the live ones). Each failed first: missing module, missing `AiSettings`, missing `UsageMeter`.
+
+- Task 5: `tests/unit/test_highlights.py` 43 passed (it failed first on the missing module). One expectation was changed before implementing: when padding would break `max_seconds`, the padding shrinks and speech is never cut. The live test `tests/network/test_openrouter_live.py` is **not run**: no `OPENROUTER_API_KEY` exists in this environment or in `.env`. It skips without one and is deselected by default (`-m 'not network'`).
+
+- Task 6: `tests/integration/test_source_holds.py` 10 passed, `tests/integration/test_ai_jobs.py` 32 passed, `tests/integration/test_ai_api.py` 27 passed. Each failed first on the missing method, module or route. `test_ai_api.py` runs the acceptance flow in-process: source, then analysis, then highlights, then one clip and a 2-clip ZIP through the Phase 1 routes, then a second analysis that reuses the transcript.
+- **Whole suite at `dba2550`: 908 passed, 2 skipped, 8 deselected (109 s).** The baseline was 673 passed, and every Phase 1 and downloader test still passes.
+
+- Task 7: `tests/unit/test_page.py` 17 passed. The new AI markup and copy tests failed first. Real-browser walkthrough `check-ai.js` (installed Chrome, Playwright) against `serve_ai.py`, both in `$CLAUDE_JOB_DIR/tmp/dev/ai/`. It runs the **real transcriber** (Whisper `base`, Homebrew FFmpeg) on a 100 s `say`-generated talk, with a **simulated OpenRouter**, because no key exists here. It showed:
+  - **Desktop 1200 px, light:**
+    - ArrowRight switches to the AI tab. The estimate reads "about $0.0007, at most $0.0013, from the video's length".
+    - Find highlights moved focus to the progress panel, and stages advanced with real percentages. Ready took 11–25 s.
+    - 3 cards. A bad end time showed "Type a time like 1:05 or 65.5." with `aria-invalid`. Preview played from 0:05.7. Load into editor switched to Manual with the marks set and focus on Start.
+    - Add selected put 3 rows in the list; a second press said "3 were already in it". The ZIP held 3 entries, and Export on a card saved one clip.
+    - Transcript search "electric" found 3 lines, and clicking a time seeked to 57.6 s.
+    - Regenerating skipped extracting and transcribing. Cancelling a re-transcription showed where it stopped and kept the earlier highlights.
+    - Subtitle import worked, and a reload restored the AI tab with its highlights.
+  - **Phone 375 px, dark:** `scrollWidth` 375, card buttons 40 px.
+  - **No key** (second server): the setup message shows, Find highlights and Test connection are disabled, and Transcribe only is enabled.
+  - Screenshots are in `$CLAUDE_JOB_DIR/tmp/dev/ai/shots/`. Console errors: none in the final run.
+- Issues the walkthrough found, now fixed before the UI commit:
+  - a reload lost the AI state;
+  - a 404 console error came from the "any transcript yet?" probe (`16d59eb`);
+  - stopped runs didn't show where they stopped;
+  - a cancelled run hid the earlier highlights.
+
+- **Task 8:**
+  - **Phase 1 regression in Chrome.** `check-zip.js` against `serve.py` (in `$CLAUDE_JOB_DIR/tmp/dev/`), with no console problems:
+    - three clips added and sorted, and a repeat refused;
+    - Load, Remove, and a reload restoring the list;
+    - a ZIP of 3 stored H.264+AAC entries;
+    - cancel winning the race with no download;
+    - Close clearing storage;
+    - phone 375 px, dark, with no horizontal scroll and 40 px row buttons, and a 2-clip ZIP from an upload.
+  - **Downloader in Chrome.** `check-download.js`: a video and an MP3 both reached "Saved", with no console problems.
+  - **Docker.** `saveme:ai-clipping` built. The first build failed on a transient DNS error fetching the Whisper model ("Name or service not known"); DNS worked from containers straight after, and the rebuild passed. `e2829d2` makes the installer retry.
+  - **`scripts/docker-ffmpeg-check.sh saveme:ai-clipping`: FFMPEG CHECK OK.** Every matrix case passed, the 4 new WAV cases included (AAC MP4, Opus WebM, AC-3 MKV to 16 kHz mono PCM), and **535 integration tests passed inside the image** against the minimal FFmpeg 9.0.2. One test skipped: the real-Whisper test, which needs macOS `say`.
+  - **`scripts/docker-smoke.sh`: SMOKE OK**, isolated as `COMPOSE_PROJECT_NAME=saveme-ctest` with an override setting `image: saveme:ai-clipping` and `SAVEME_PORT=8001`. The new AI step's `grep -q` caused a harmless BrokenPipe traceback, fixed in `c284abe`. The live `saveme-saveme-1` wasn't touched, and `saveme-ctest` was taken down afterwards.
+  - **Hardened container** (`container-ai.sh`, `container-ai-cancel.sh` in `$CLAUDE_JOB_DIR/tmp/dev/ai/`):
+    - Analysis without a key was refused with 503 `ai_not_configured`.
+    - Uploading the 100 s talk and running Transcribe only, with the baked `base` model, finished in 11 s. It found English and 20 segments, with correct text ("…now I use an AI assistant every single day…"), and the container's memory peaked near 364 MiB.
+    - The source folder held only `media.mp4` and `ai/transcript.json`. No folders were left after Close.
+    - Cancelling during transcription answered `cancelled`. Within 6 s, 0 transcriber processes remained (1 while it ran) and the `ai/` folder was empty. 0 folders were left after Close.
+  - **Whole suite at `c284abe`: 911 passed, 2 skipped, 8 deselected** (113 s, idle machine).
+  - One earlier whole-suite run, during the Docker build's FFmpeg compile (177 s instead of ~110 s), failed the **existing** `tests/integration/test_api.py::test_aborted_download_keeps_file`. It passed 5/5 alone and 102/102 in its file twice once the machine was idle. Cause: after aborting a download the test sleeps a fixed 1 s, then requests the file again. Under heavy CPU load the server may not have noticed the disconnect yet, so the file is still claimed (409). This predates this branch, and delivery wasn't changed. It's left as is and noted under Pending Work.
+
+- **Review fixes (Task 9).** Each fix had a test that failed first. The findings, and their tests:
+  - **Important.** `OPENROUTER_BASE_URL=https://[openrouter.ai/…` raised `UnboundLocalError`, and `https://openrouter.ai:abc/…` passed validation then broke the httpx client. Either stopped the whole app, downloads included. Both are now `ConfigError`s; 4 new cases plus a startup test.
+  - **Minor, spending:**
+    - retried completions weren't checked against the limit;
+    - possibly billed failed attempts, and replies without usage, counted $0;
+    - a model that can't cap answer length was accepted;
+    - the "upper bound" (bytes/3) wasn't one for byte-fallback tokenizers (Malayalam). It now counts a token per byte.
+  - **Minor, other:**
+    - the key could survive scrubbing at the 300-character cut;
+    - the key reached every worker's environment;
+    - an incomplete model folder made faster-whisper's Rust tokenizer go to the network;
+    - subtitle times with over 4,300 hour digits, or an end that rounds onto its start, gave 500;
+    - the WAV's disk reservation wasn't held.
+  - The reviewer's checks that passed: the key stays out of responses and logs, only transcript text is sent, the guard order, paths, model output handling, clip times, cancellation, slots.
+- **Final verification at `04d43d5`:**
+  - **Whole suite: 932 passed, 2 skipped, 8 deselected** (110 s, idle machine).
+  - **Rebuilt `saveme:ai-clipping`:**
+    - `docker-ffmpeg-check.sh`: FFMPEG CHECK OK, **539 integration tests passed in the image**, 1 skipped (`say`).
+    - Isolated `docker-smoke.sh`: SMOKE OK, with no traceback.
+    - In the hardened container: Transcribe only finished in 11 s (English, 20 segments, peak about 496 MiB). The baked model passed the new completeness check. Without a key the analysis got 503. Cancelling during transcription left 0 processes and an empty `ai/`, and 0 folders remained after Close. `saveme-ctest` was taken down, and `saveme-saveme-1` was untouched.
+  - **Chrome `check-ai.js` on the final code:** every flow passed as before, with **no console problems**.
+
+### Key Decisions
+
+- **Default model `anthropic/claude-haiku-5.5`**, picked from OpenRouter's live catalogue on 2026-11-24 (474 models): $0.10/$0.50 per million tokens, 1M context, structured outputs on its providers, reasoning optional. It lists no `temperature`, so the client sends only parameters a model lists (with `require_parameters: true`, an unlisted one would exclude every provider).
+- **Prompt injection:** the instruction and transcript sit in `<instruction>`/`<transcript>` blocks, and `<`/`>` inside them become `‹`/`›`, so neither can close its block. The system prompt says both are data. Whatever the model answers, the server enforces segment ranges, lengths, counts, scores and text caps.
+- **Unusable answers:** retried once, then that part is skipped with a notice. The analysis fails (`ai_invalid_response`) only if every part fails.
+- **The model returns segment numbers, not seconds.** The server maps them to real segment times, so clips start and end on speech boundaries and can't point outside the transcript.
+- **Own transcription worker** (`python -m app.transcriber`) run by the existing `run_worker`: a model-sized memory cap (the download worker's 1 GiB hard cap can't be raised), a connect guard that refuses every connection, and nice(10).
+- **300 s windows with VAD**, from the measurements above.
+- **AI work doesn't share download slots or the queue.** It has its own semaphore (`AI_MAX_CONCURRENT_JOBS`), and an invalid AI setting turns off only AI.
+- **An analysis holds its source from start to end.** The source then can't idle out or be replaced, and closing it cancels the analysis through a listener that runs before the folder is removed. Work files live in `<source>/ai/<analysis id>/`, so the sweep never sees them as orphans.
+- **The model is checked before transcribing**, so a bad `OPENROUTER_MODEL` fails in seconds, not after minutes of CPU. The spending limit is checked after transcribing, against the real transcript.
+- **Transcript cache in the source's folder** (`ai/transcript.json`), so it ends with the source.
+- **PyAV is installed (a faster-whisper dependency) but never given media.** Audio is decoded by the hardened FFmpeg wrapper.
+- **Retries:** network errors, timeouts, 408, 429, 5xx and errors inside a 200 are retried 3 times (1 s, 2 s, 4 s plus jitter, or `Retry-After` up to 60 s). 401, 402 and other 4xx fail at once. OpenRouter's own messages are shown only for "refused" (4xx), cleaned and scrubbed of the key. A 401's message is never shown.
+- **Usage:** OpenRouter returns `usage.cost` by default (the docs say `usage: {include: true}` is deprecated), so it isn't requested. A call without a reported cost is priced from tokens × catalogue price, and the total is then labelled an estimate.
+- **Find highlights is `type="button"`**, like every studio button except Fetch. Enter in a number field never starts a paid run.
+- **No transcript yet is `200 {"transcript": null}`**, not a 404, because the page asks every time a video opens.
+- **The AI tab drives the existing editor through a small bridge** (`loadRange`, `addRanges`, `exportRange`, `seek`). Highlights become ordinary clip-list rows and exports, with no second export path.
+- **The spending bound counts a token per byte.** No tokenizer makes tokens smaller than a byte, so this bound holds for any model. The page still shows a typical estimate at 3 bytes a token beside it. A retry happens only if it fits. Failed attempts that reached the model (a read timeout, a broken connection after sending, an error inside a 200) count at their usage or bound. A refused connection, or a 429/5xx from OpenRouter, counts as nothing.
+- **The disk reservation is held** (`reserve_disk`/`release_disk`, replacing `make_room`). It counts like an active job's: the larger of what its folder holds and what it reserved.
+- **No OS-level network isolation for the transcriber.** The Python guard, offline HF settings and the model-folder check cover the known paths. A network namespace would need container changes beyond this phase.
+- **`provider.data_collection: "deny"` by default**, so transcripts only go to providers that don't store or train on prompts.
+
+### Issues Encountered
+
+- faster-whisper computes features for the whole input at once, so memory grows with length. Windowing fixes this.
+- The cancel test first used `pgrep`, which the slim image lacks (`scripts/docker-ffmpeg-check.sh` runs the integration tests inside it). It now checks the worker's own PID.
+- The first Docker build failed fetching the Whisper model: "Name or service not known", a transient DNS error in Docker Desktop's build network. DNS worked from containers moments later, the rebuild passed, and `e2829d2` adds retries.
+- The smoke test's `grep -q` made `whisper_models --list` die on a broken pipe (`c284abe`).
+- The Chrome walkthrough found four UI bugs before the UI commit:
+  - a reload lost the AI state;
+  - a 404 console error;
+  - stopped runs didn't show their stage;
+  - a cancelled run hid the earlier highlights.
+- `tests/integration/test_api.py::test_aborted_download_keeps_file` (existing, not changed) failed once under heavy CPU load. See Test Results.
+- **No OpenRouter key exists in this environment**, so no real completion was made. Every OpenRouter path is tested against a mock shaped like the live API (the catalogue entries are copied from `GET /api/v1/models` on 24 Nov 2026), and the browser walkthrough used a simulated OpenRouter.
+
+### Pending Work
+
+- **Run the live check once with a real key** (well under $0.01): `OPENROUTER_API_KEY=sk-or-... .venv/bin/pytest -m network tests/network/test_openrouter_live.py -v`. Then try the AI tab in the live app.
+- **Rebuild the live container** to run Phase 2: `docker compose up -d --build`. `main` is merged and pushed; the live `saveme-saveme-1` still runs the image built before Phase 2.
+
+  Notes for the rebuild:
+  - The image grows from 311 MB (`saveme:local`) to 738 MB: faster-whisper, CTranslate2, onnxruntime, PyAV, NumPy, and the `base` model (141 MB).
+  - The build downloads the model from Hugging Face.
+  - `.env` needs `OPENROUTER_API_KEY` for analysis. Transcription works without it.
+- **For bigger Whisper models,** rebuild with `--build-arg WHISPER_MODELS="base small"` and raise `mem_limit` in `compose.yaml`. The transcriber allows 2.5 GB for `small`, and the container has 2 GB. Only `base` was measured.
+- **Known limitations** (also in `docs/AI_CLIPPING_IMPLEMENTATION.md`):
+  - clip edges follow Whisper segments, with no word timestamps and no diarisation;
+  - the spending limit is a client-side guard, and a cancelled in-flight call may still be billed;
+  - with `auto`, each 300 s window detects its own language;
+  - the transcriber's network block is Python-level, not OS-level;
+  - results end with the source.
+- **Pre-existing:** `test_aborted_download_keeps_file` waits a fixed 1 s after aborting, and can fail under heavy CPU load. Polling for the delivery claim to end would fix it.
+- **Leftover images:** `saveme:ai-clipping` (738 MB) and `saveme-ffmpeg-check` (1.17 GB). Remove them with `docker image rm` when done.
+- **Phase 3** (not started): 9:16 reframing, burned-in subtitles and re-encoding. These need an H.264 encoder in the FFmpeg build, and a security and licensing review.
+
+### Handoff
+
+- `main` now holds Phase 2: `feature/ai-clipping` was merged with `--no-ff` on top of `206d26b`. Both branches are pushed to `origin`. Start new work on a new branch from `main`.
+- **Where to look:**
+  - `docs/AI_CLIPPING_DESIGN.md` for the why;
+  - `docs/AI_CLIPPING_IMPLEMENTATION.md` for the code map, the request flow, the "easy to get wrong" list and the test map;
+  - `docs/OPENROUTER_SETUP.md` for the key, the model, what is sent, and costs.
+- **Environment:** `.venv` is synced to `requirements-dev.txt` (`uv pip sync --python .venv/bin/python requirements-dev.txt`). The `base` model is in `~/.cache/huggingface` (`.venv/bin/python -m app.whisper_models base`), which also enables the opt-in real-Whisper test.
+- **Tests:** `.venv/bin/pytest -q` (offline, about 110 s, 932 tests). Real FFmpeg/ffprobe must be on `PATH` (Homebrew here).
+- **Dev harness** (temporary, in `$CLAUDE_JOB_DIR/tmp/dev/ai/`; recreate it from this description if gone):
+  - `serve_ai.py <repo> <dir> <port> configured|unconfigured`: the real transcriber with a simulated OpenRouter;
+  - `check-ai.js <media URL>`: the Chrome walkthrough, run as `PWCORE=~/.npm/_npx/<id>/node_modules/playwright-core node …`;
+  - `tech-talk.mp4`: a 100 s `say` talk;
+  - `container-ai.sh`, `container-ai-cancel.sh` and `final-docker.sh` for the container checks;
+  - `compose.aitest.yaml`.
+- **Never run `scripts/docker-smoke.sh` bare.** It would replace the live `saveme-saveme-1`. Set `COMPOSE_PROJECT_NAME=saveme-ctest`, `COMPOSE_FILE=compose.yaml:<override with image saveme:ai-clipping>` and `SAVEME_PORT=8001`, then run `docker compose down` with the same variables.
+---
+
 ## 2026-11-24 11:13 IST — Session: Clip Studio, Phase 1 completion (clip list and ZIP export)
 
 ### Summary

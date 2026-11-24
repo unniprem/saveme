@@ -32,6 +32,7 @@ SaveMe is a small web app that runs in Docker on your computer. It puts a simple
 - [Uninstalling](#uninstalling)
 - [Usage](#usage)
 - [Clip Studio](#clip-studio)
+- [AI Highlights](#ai-highlights)
 - [Supported sites](#supported-sites)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
@@ -69,8 +70,9 @@ SaveMe sits in between: yt-dlp's reach, behind a one-page interface, running on 
 - A bounded queue, with limits on file size, job time and disk use
 - Automatic cleanup: files are deleted after you save them, or after a timeout
 - **Clip Studio**: open a link or a video from your computer, preview it, mark a start and an end, and export just that part as MP4. Or collect up to 20 parts in a clip list and export them all as one ZIP. Cutting runs on the server with no re-encoding, with progress and **Cancel**
+- **AI Highlights** in Clip Studio: the video is transcribed on your computer (faster-whisper, many languages including English and Malayalam), and an AI model reached through [OpenRouter](https://openrouter.ai) suggests ranked, editable clips. You can steer it with an instruction ("find the three funniest moments"). Only the transcript text is sent, never the audio or video, and the cost is shown before and after each run
 - Light and dark mode, and a layout that works on a phone
-- No database, accounts, cookies, analytics or external services
+- No database, accounts, cookies or analytics. The only external service is OpenRouter, and only when you use AI Highlights with your own key
 
 ## Installation
 
@@ -195,7 +197,7 @@ If you ran SaveMe without Docker (see [Development](#development)), deleting the
 
 ## Clip Studio
 
-Clip Studio cuts a part out of a video. It's the first step toward automatic clipping; for now you choose the part yourself.
+Clip Studio cuts a part out of a video. Choose the part yourself (the **Manual** tab, below), or let [AI Highlights](#ai-highlights) suggest parts.
 
 1. **Open a video.** After **Fetch**, pick a video quality and choose **Clip**. Or choose **Clip a video from your computer** under the link field to upload a file. Uploads take MP4, MOV, MKV, WebM, TS, FLV and AVI files up to `MAX_FILE_SIZE_MB`.
 2. **Mark the part you want.** Drag the two handles on the timeline, type a start and an end (`65.5`, `1:05.5` or `1:02:05`), or play the video and choose **Set to playhead**. The `I` and `O` keys set the start and end at the playhead. **Play clip** plays just your selection.
@@ -209,6 +211,26 @@ Clip Studio cuts a part out of a video. It's the first step toward automatic cli
 **Size.** A clip, or a whole ZIP, must stay under `MAX_FILE_SIZE_MB`. A ZIP needs room for two files while it's made (the ZIP and the clip being added), like a download, so at the smallest disk budget a ZIP may be refused while single clips still work.
 
 **What's kept, and for how long.** The video you're clipping stays on the server while the studio is open. It's deleted when you choose **Close**, after `JOB_TTL_MINUTES` without use (an open, visible tab counts as use), when you open more than `MAX_CLIP_SOURCES` videos (the least recently used goes first), or when SaveMe restarts. Exported clips and ZIPs are deleted once saved, like downloads.
+
+## AI Highlights
+
+The **AI Highlights** tab in Clip Studio finds the parts of a video worth clipping. You review the suggestions and keep the ones you want, through the same clip list and exports as manual clipping.
+
+1. **Open a video in Clip Studio** and choose the **AI Highlights** tab.
+2. **Say what you want (optional).** For example: "Find the five most interesting moments where the speaker discusses artificial intelligence", "Find the three funniest moments", or "Extract the most useful advice for beginners". Left empty, it looks for the most interesting, useful, surprising, funny or moving moments. Set the shortest and longest clip, how many clips, a minimum score, and the spoken language (or let it detect the language).
+3. **Choose Find highlights.** The estimated cost shows first. Then the stages run, each with real progress: preparing, extracting audio, transcribing, analyzing, ranking. **Cancel** stops it at any stage.
+4. **Review.** Each highlight has a title, a score, its times (which you can edit), a summary, why it works, and tags. **Preview** plays it, **Load into editor** puts it in the Manual tab for fine-tuning, and **Export** saves it as a clip. Select several, then **Add selected to clip list** and **Export N clips as ZIP**.
+5. **Try again with another instruction.** The transcript is reused, so a new run only costs the AI call. Tick **Transcribe again** to make a new transcript, for example in another language.
+
+**Transcription is local.** The video's audio is transcribed on your computer by [faster-whisper](https://github.com/SYSTRAN/faster-whisper), in segments of about five minutes, so memory stays bounded on an 8 GB machine. It detects the language, and Whisper knows about 100 languages, English and Malayalam among them. The Docker image includes the `base` model. `WHISPER_MODEL` picks a bigger one for better accuracy, which must be installed first (see [Configuration](#configuration)). **Transcribe only** makes the transcript without any AI call, and works without an OpenRouter key. The transcript can be searched, and clicking a line plays the video from there. You can also **import subtitles** (SRT or WebVTT, up to 4 MB) to use instead of transcribing.
+
+**What is sent, and where.** To find highlights, SaveMe sends the transcript text (in parts of up to about 20 minutes) and your instruction to [OpenRouter](https://openrouter.ai), which passes them to the AI model. The audio, the video, file names and paths never leave your computer. By default SaveMe asks OpenRouter to use only providers that don't store or train on prompts (`OPENROUTER_DATA_COLLECTION=deny`). The API key stays on the server: it's never sent to the browser or written to the log. See [docs/OPENROUTER_SETUP.md](docs/OPENROUTER_SETUP.md).
+
+**Cost.** The default model, `anthropic/claude-haiku-5.5`, costs about $0.10 per million input tokens and $0.50 per million output tokens (OpenRouter's prices on 24 November 2026). A one-hour talk usually costs well under a cent. Before a run the page shows an estimate and an upper bound; the bound holds for any model, as it counts a token per byte of text. Afterwards it shows the actual cost as OpenRouter reports it, with token counts. SaveMe won't start a run whose upper bound is over `AI_MAX_COST_USD_PER_JOB` ($0.25), and it makes no call or retry that could pass it. That limit is SaveMe's own estimate, not a billing cap; to cap spending for certain, set a credit limit on the key at OpenRouter.
+
+**Scores.** A score (0-100) is the AI model's editorial judgement of how strong and self-contained a moment is for your request. It is not a prediction of views or virality.
+
+**Limits.** A clip starts and ends on Whisper's segment boundaries (with a little lead-in and tail), so it may need a touch in the editor. If fewer moments fit your request than you asked for, you get fewer, never filler. One analysis runs at a time (`AI_MAX_CONCURRENT_JOBS`), apart from downloads, which keep their own slots. Videos up to `AI_MAX_SOURCE_MINUTES` (3 hours) are accepted. Results and transcripts live with the open video and are deleted with it.
 
 ## Supported sites
 
@@ -248,6 +270,24 @@ An invalid value doesn't crash the app. It runs in a degraded mode: the page sho
 | `LOG_LEVEL` | `info` | debug, info, warning, error | Log level |
 | `ALLOWED_HOSTS` | `localhost,127.0.0.1` | comma-separated | Host names the browser may use to reach the app |
 
+**AI Highlights settings.** An invalid value here turns off AI Highlights only, with the message on its tab. Downloads and manual clipping keep working.
+
+| Variable | Default | Range | Meaning |
+|---|---|---|---|
+| `OPENROUTER_API_KEY` | blank | | Your OpenRouter key. Blank turns AI analysis off; transcription still works. Server-side only. |
+| `OPENROUTER_MODEL` | `anthropic/claude-haiku-5.5` | an OpenRouter model id | The AI model. It must take and return text and have a fixed price. |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | `https://` URL | OpenRouter's API address |
+| `OPENROUTER_DATA_COLLECTION` | `deny` | deny, allow | `deny` uses only providers that don't store or train on prompts |
+| `AI_MAX_CLIPS` | `10` | 1-20 | Most highlights one run may return |
+| `AI_MAX_CONCURRENT_JOBS` | `1` | 1-4 | Analyses (transcription included) that run at the same time |
+| `AI_MAX_COST_USD_PER_JOB` | `0.25` | 0.001-100 | Spending guard per run, in US dollars (an estimate, not a billing cap) |
+| `AI_MAX_SOURCE_MINUTES` | `180` | 1-1440 | Longest video AI Highlights takes |
+| `AI_MAX_JOB_SECONDS` | `3600` | 60-86400 | Seconds before a run (transcription included) is stopped |
+| `WHISPER_MODEL` | `base` | tiny, base, small, medium, large-v3, turbo, … | Transcription model. Must be installed (below). |
+| `WHISPER_CPU_THREADS` | `2` | 1-16 | CPU threads transcription may use |
+
+**Whisper models.** The transcriber never downloads anything at runtime. The Docker image includes `base`; to add others, rebuild with `docker compose build --build-arg WHISPER_MODELS="base small"`, then set `WHISPER_MODEL=small`. Outside Docker, run `.venv/bin/python -m app.whisper_models small` (`--list` shows what's installed). Measured on an Apple M2 with 8 GB (native, 2 threads): `base` transcribed 20 minutes of speech in about 80 seconds, peaking near 0.75 GB of memory. Bigger models are more accurate but slower and need more memory: the transcriber allows 1.5 GB for `tiny`/`base`, 2.5 GB for `small`, 5 GB for `medium` and 8 GB for the large models, so for `small` and up, raise `mem_limit` in `compose.yaml` (2 GB by default) to match.
+
 ### Updating yt-dlp
 
 To update yt-dlp for good, bump the `yt-dlp` pin in `requirements.in`, recompile `requirements.txt`, update the default `YTDLP_VERSION` in the `Dockerfile` to match, and rebuild. For a quick one-off override:
@@ -272,6 +312,13 @@ docker compose up -d
 | "These clips add up to more than the … limit" | A ZIP must stay under `MAX_FILE_SIZE_MB`. Export fewer or shorter clips (or export them one at a time), or raise the limit. |
 | A clip starts a little early in one app | That app ignores the MP4 edit list that hides the keyframe lead-in. See [How cutting works](#clip-studio). |
 | Port 8000 is already in use | Set `SAVEME_PORT` in `.env` to a free port, then run `docker compose up -d`. |
+| AI Highlights says it isn't set up | Add `OPENROUTER_API_KEY` to `.env` and run `docker compose up -d`. **Test connection** on the AI tab checks the key and the model. |
+| "OpenRouter didn't accept the API key" / "out of credits" | Check the key at <https://openrouter.ai/keys> and the account's credits. |
+| "OpenRouter refused the request (404): No endpoints found …" | No provider of that model meets the privacy setting. Choose another `OPENROUTER_MODEL`, or set `OPENROUTER_DATA_COLLECTION=allow`. |
+| "The transcription model … isn't installed" | Install it (see **Whisper models** under [Configuration](#configuration)) or set `WHISPER_MODEL=base`. |
+| "This video has no audio track to transcribe" or "No speech was found" | Import the video's subtitles (SRT or WebVTT) on the AI tab instead. |
+| "This analysis could cost up to …, over the … limit" | Analyse a shorter video, ask for fewer clips, or raise `AI_MAX_COST_USD_PER_JOB`. |
+| Transcription is slow | It runs on the CPU, at a lower priority than downloads. Raise `WHISPER_CPU_THREADS`, or use a smaller `WHISPER_MODEL`. |
 
 ## Security
 
@@ -293,6 +340,8 @@ SaveMe fetches whatever URL it's given, so it's designed so that a link can't be
 
 **A ZIP of clips is built from names the server chose.** Its entries are named from the checked times and the source title, through the same file-name cleaning as downloads, and the worker refuses any name with a folder part, a control or Windows-forbidden character, or a leading dot. Python's own `zipfile` writes it inside the worker, uncompressed, so nothing new is added to the image. `zip` is not one of the types a download can be delivered as, so a link to a `.zip` file still can't come out of the downloader.
 
+**AI Highlights keeps your media local.** Transcription runs in its own worker process, whose connection guard refuses every connection Python makes. Models load from the image only: Hugging Face is set offline, and a model folder must be complete before it loads, so no library falls back to downloading. The OpenRouter key isn't passed to any worker process. Its memory is capped by model size, and it runs at a lower priority than downloads. Audio is decoded by the hardened FFmpeg wrapper; the only additions to the FFmpeg build are a PCM encoder and the WAV format for the transcriber's input. faster-whisper installs PyAV, which bundles its own FFmpeg, but SaveMe never gives it a file. Only transcript text and your instruction go to OpenRouter, over HTTPS, from the server (never the browser), and the key never leaves the server. Everything the model sends back is treated as untrusted. It is checked against a strict schema, it can only pick segment numbers from the part of the transcript it was shown, and its text is cleaned, capped and shown as plain text. The times, lengths, number of clips and scores are enforced by the server, so neither an instruction nor text inside a video can change what SaveMe does beyond choosing clips. Subtitle imports have their own route, capped at 4 MB, with the usual Host and Origin checks.
+
 **Files never carry their source link.** The page address and any `comment` tag the source file arrived with are blanked before tagging. The only addition to the FFmpeg build for tags is the `ffmetadata` demuxer, which reads the chapter list.
 
 **One bad link fails only its own job.** A worker reads at most 16 MB from any page, manifest or API response (media downloads aren't affected). Each worker process, including the Deno and FFmpeg it starts, is limited to 1 GB of memory, so a hostile page can't use up the memory the rest of the app shares. The memory limit applies in the Docker image; macOS doesn't allow it, so a native macOS run goes without. The API also caps request bodies at 64 KB, counts link lookups against the inspection and queue limits, and accepts a POST only from the page's own origin.
@@ -313,19 +362,20 @@ Browser ──▶ FastAPI server ──▶ worker process ──▶ FFmpeg ─�
             and runs the queue   connection checked    only
 ```
 
-The server never fetches a remote URL itself; every network request happens in a guarded worker. Clip Studio's probing, cutting and ZIP building run in the same kind of worker, on local files only. Job state lives in memory and files live in `TEMP_DIR`, so nothing is kept across restarts. Any files left behind by a crash are cleaned up on the next start.
+The server never fetches a remote URL itself; every network request happens in a guarded worker. Clip Studio's probing, cutting and ZIP building run in the same kind of worker, on local files only. AI Highlights adds a transcriber worker (faster-whisper, no network at all). The one outside call the server makes itself is to OpenRouter, with transcript text only. See [docs/AI_CLIPPING_DESIGN.md](docs/AI_CLIPPING_DESIGN.md). Job state lives in memory and files live in `TEMP_DIR`, so nothing is kept across restarts. Any files left behind by a crash are cleaned up on the next start.
 
-**Stack:** Python 3.12, FastAPI, Uvicorn, yt-dlp, FFmpeg (minimal build), Deno, Tailwind CSS v4 and vanilla JavaScript.
+**Stack:** Python 3.12, FastAPI, Uvicorn, yt-dlp, FFmpeg (minimal build), Deno, faster-whisper, httpx (OpenRouter), Tailwind CSS v4 and vanilla JavaScript.
 
 ### Project layout
 
 ```text
-app/          FastAPI app, job manager, worker, network guard, settings
+app/          FastAPI app, job manager, workers (download, transcriber), network guard, settings,
+              OpenRouter client and highlight engine
 app/bin/      ffmpeg/ffprobe wrappers that allow local files only
 static/       the page: HTML, JavaScript, Tailwind source and brand assets
 scripts/      CSS build, Docker smoke test and FFmpeg check
 tests/        unit, integration and opt-in real-site tests
-docs/         design spec and implementation plan
+docs/         design specs, implementation notes and OpenRouter setup
 ```
 
 ### Run without Docker
@@ -338,6 +388,7 @@ You need Python 3.12+, `ffmpeg` and `ffprobe` on your `PATH`, [Deno](https://den
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
 scripts/build-css.sh                 # builds static/dist/styles.css
+.venv/bin/python -m app.whisper_models base   # the transcription model, for AI Highlights
 .venv/bin/python -m app              # serves http://127.0.0.1:8000
 ```
 
@@ -359,7 +410,12 @@ scripts/docker-ffmpeg-check.sh
 # Real-site checks: need the container running and internet access
 docker compose up -d --build
 .venv/bin/pytest -m network -v
+
+# One real AI Highlights run against OpenRouter (costs a fraction of a cent)
+OPENROUTER_API_KEY=sk-or-... .venv/bin/pytest -m network tests/network/test_openrouter_live.py -v
 ```
+
+The default run never calls OpenRouter: its tests use a mocked API. The transcriber tests use a fake Whisper model; one more test runs the real `base` model when it's installed and macOS `say` is available to make speech.
 
 The network tests read `SAVEME_BASE_URL` (default `http://127.0.0.1:8000`) and skip if `/health` can't be reached. Their URLs live in `tests/network/urls.py`; if a site removes a video, swap it there.
 

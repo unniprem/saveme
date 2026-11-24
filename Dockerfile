@@ -35,6 +35,8 @@ FROM denoland/deno:bin-${DENO_VERSION}@${DENO_DIGEST} AS deno
 #     format for its vpcC box, and only the decoder can derive it. Without it, ffmpeg
 #     exits 0 but writes an MP4 that won't open.
 #   - for MP3: common web audio decoders, plus libmp3lame.
+#   - for AI Highlights transcription: the same audio decoders, resampled (aresample) to
+#     16 kHz mono 16-bit PCM (pcm_s16le encoder) in a WAV file (wav muxer). Nothing else.
 #   - local files only: no network protocols, and no HLS/DASH/concat demuxers that open
 #     other files. This also shrinks the attack surface for hostile media.
 # After changing these flags, run scripts/docker-ffmpeg-check.sh.
@@ -68,11 +70,11 @@ RUN ./configure \
         --enable-libmp3lame \
         --enable-protocol=file,pipe \
         --enable-demuxer=mov,matroska,mpegts,flv,avi,ogg,mp3,aac,flac,wav,ffmetadata \
-        --enable-muxer=mp4,ipod,mov,matroska,webm,mp3 \
+        --enable-muxer=mp4,ipod,mov,matroska,webm,mp3,wav \
         --enable-parsers \
         --enable-bsfs \
         --enable-decoder=vp9,aac,aac_latm,mp3,mp3float,mp2,mp2float,opus,vorbis,flac,alac,ac3,eac3,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s32le,pcm_f32le,pcm_u8,pcm_alaw,pcm_mulaw \
-        --enable-encoder=libmp3lame \
+        --enable-encoder=libmp3lame,pcm_s16le \
         --enable-filter=aresample,aformat,anull,null,format \
     && make -j"$(nproc)" \
     && make install
@@ -99,6 +101,19 @@ RUN pip install --no-cache-dir -r requirements.txt
 # No-op unless overridden: docker compose build --build-arg YTDLP_VERSION=<new>
 ARG YTDLP_VERSION=2026.10.26
 RUN pip install --no-cache-dir "yt-dlp[default]==${YTDLP_VERSION}"
+
+# AI Highlights: faster-whisper models, fetched at build time into a root-owned Hugging Face
+# cache the app can read but not change. At runtime the transcriber can't open any network
+# connection, so a model must be here: rebuild with --build-arg WHISPER_MODELS="base small"
+# to add one (WHISPER_MODEL picks which is used).
+ARG WHISPER_MODELS=base
+ENV HF_HOME=/opt/huggingface HF_HUB_DISABLE_TELEMETRY=1
+COPY app/transcript.py app/whisper_models.py app/errors.py app/__init__.py /tmp/models/app/
+RUN cd /tmp/models && python -m app.whisper_models ${WHISPER_MODELS} \
+    && rm -rf /tmp/models "${HF_HOME}/xet" \
+    && chmod -R a+rX "${HF_HOME}"
+# Nothing reaches Hugging Face at runtime.
+ENV HF_HUB_OFFLINE=1
 
 # App code stays root-owned, so the app user can read but not modify it.
 COPY app/ app/

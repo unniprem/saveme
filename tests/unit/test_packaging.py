@@ -11,7 +11,7 @@ import textwrap
 import time
 from pathlib import Path
 
-from app.config import Settings, load_settings
+from app.config import AiSettings, Settings, load_ai_settings, load_settings
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -43,14 +43,21 @@ def test_dockerfile_ytdlp_arg_matches_lock():
 _COMPOSE_VARS = ["SAVEME_PORT"]
 
 
+# Variables whose default is blank (a secret the owner adds).
+_BLANK_VARS = ["OPENROUTER_API_KEY"]
+
+
 def test_env_example_matches_settings_defaults():
     pairs = _parse_env_file(_read(".env.example"))
     keys = [k for k, _ in pairs]
     settings_vars = [f.name.upper() for f in dataclasses.fields(Settings)]
-    # exactly the Settings variables plus the compose ones, no duplicates
-    assert sorted(keys) == sorted(settings_vars + _COMPOSE_VARS)
-    assert all(v for _, v in pairs), "every variable carries its default value"
+    ai_vars = [f.name.upper() for f in dataclasses.fields(AiSettings)]
+    # exactly the Settings and AiSettings variables plus the compose ones, no duplicates
+    assert sorted(keys) == sorted(settings_vars + ai_vars + _COMPOSE_VARS)
+    assert all(v for k, v in pairs if k not in _BLANK_VARS), "every variable carries its default value"
+    assert all(not v for k, v in pairs if k in _BLANK_VARS), "no secret in the example"
     assert load_settings(dict(pairs)) == load_settings({})
+    assert load_ai_settings(dict(pairs)) == load_ai_settings({})
 
 
 def test_compose_binds_loopback_only():
@@ -208,6 +215,7 @@ def test_readme_configuration_table_lists_every_setting():
     table = text.split("## Configuration", 1)[1].split("\n### ", 1)[0]
     rows = set(re.findall(r"^\| `([A-Z_]+)` \|", table, re.M))
     settings_vars = {f.name.upper() for f in dataclasses.fields(Settings)}
+    settings_vars |= {f.name.upper() for f in dataclasses.fields(AiSettings)}
     assert settings_vars <= rows, sorted(settings_vars - rows)
 
 

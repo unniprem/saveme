@@ -11,7 +11,8 @@
 // current marks as one clip (a clip job), or the whole list as one ZIP (a batch job). Either is
 // saved to the device like a download. sessionStorage keeps the source, the marks and the list,
 // so a reload comes back to the studio; an upload still in progress can't survive a reload.
-// app.js owns the page around the studio and calls in through window.SaveMeStudio.
+// app.js owns the page around the studio and calls in through window.SaveMeStudio. ai.js (the AI
+// Highlights tab) reuses the editor, clip list and export through window.SaveMeStudioBridge.
 "use strict";
 
 (() => {
@@ -115,6 +116,7 @@
   let deliverBy = 0;
   let exportFilename = "";
   let closedCallback = () => {};
+  let sourceCallback = () => {}; // ai.js: told about the ready source, or null when there is none
 
   // ---- small helpers --------------------------------------------------------------------
 
@@ -366,6 +368,7 @@
     show(el.studio, false);
     unstore();
     source = null;
+    notifySource();
     if (closing) api(`/api/sources/${encodeURIComponent(closing.id)}/close`, {}).catch(() => {});
     closedCallback();
   }
@@ -394,6 +397,7 @@
     dropVideo();
     show(el.studioEditor, false);
     unstore();
+    notifySource();
     paintLoading({ headline, error: message, failed: true });
     announce(`${headline}. ${message}`);
     el.studioClose.focus();
@@ -483,6 +487,7 @@
     renderList();
     render();
     announce(MSG.ready);
+    notifySource();
     scheduleKeepAlive(gen);
     if (!limits) {
       const g = gen;
@@ -526,6 +531,7 @@
       list = tidyList(list); // rows added before the length was known may run past the end
       store();
       renderList();
+      notifySource();
     }
     render();
   }
@@ -991,6 +997,85 @@
     }
     if (g === gen && exportJob && exportJob.id === id) applyExport(view, g);
   }
+
+  // ---- bridge for ai.js -------------------------------------------------------------------
+
+  function notifySource() {
+    sourceCallback(state === "ready" && source ? { id: source.id, title: source.title, duration } : null);
+  }
+
+  // Put a range in the editor (marks, timeline, playhead) and optionally play it. False when the
+  // studio isn't ready or the range can't be a clip.
+  function loadRange(start, end, play = false) {
+    if (state !== "ready" || !isNum(start) || !isNum(end)) return false;
+    const top = duration || Infinity;
+    const s = ms(Math.max(0, Math.min(start, top)));
+    const e = ms(Math.min(end, top));
+    if (!longEnough(s, e)) return false;
+    marks.start = s;
+    marks.end = e;
+    el.clipStart.removeAttribute("aria-invalid");
+    el.clipEnd.removeAttribute("aria-invalid");
+    setLine(el.clipMsg, "");
+    stopPreview();
+    if (el.studioVideo.getAttribute("src")) el.studioVideo.currentTime = s;
+    store();
+    render();
+    if (play && playable) playClip();
+    return true;
+  }
+
+  // Add ranges to the clip list, as Add to list does. Returns what happened to them.
+  function addRanges(ranges) {
+    const result = { added: 0, duplicates: 0, full: 0, total: list.length, max: maxList() };
+    if (state !== "ready") return result;
+    const top = duration > 0 ? ms(duration) : Infinity;
+    for (const range of ranges) {
+      const item = { start: ms(Math.max(0, range.start)), end: ms(Math.min(range.end, top)) };
+      if (!longEnough(item.start, item.end)) continue;
+      if (list.some((c) => c.start === item.start && c.end === item.end)) result.duplicates += 1;
+      else if (list.length >= maxList()) result.full += 1;
+      else {
+        list.push(item);
+        result.added += 1;
+      }
+    }
+    list.sort((a, b) => a.start - b.start || a.end - b.end);
+    result.total = list.length;
+    store();
+    renderList();
+    render();
+    return result;
+  }
+
+  // Export one range as a clip, through the usual export (progress, cancel, save).
+  function exportRange(start, end) {
+    if (exportRunning() || !loadRange(start, end)) return false;
+    startExport("clip");
+    return true;
+  }
+
+  function seek(seconds) {
+    if (state !== "ready" || !isNum(seconds) || !el.studioVideo.getAttribute("src")) return;
+    stopPreview();
+    el.studioVideo.currentTime = Math.max(0, Math.min(seconds, duration || seconds));
+    render();
+  }
+
+  window.SaveMeStudioBridge = Object.freeze({
+    onSource(callback) {
+      sourceCallback = typeof callback === "function" ? callback : () => {};
+      notifySource();
+    },
+    loadRange,
+    addRanges,
+    exportRange,
+    seek,
+    fmtTime,
+    parseTime,
+    isExporting: () => exportRunning(),
+    minClip: MIN_CLIP,
+  });
 
   // ---- wiring -------------------------------------------------------------------------------
 

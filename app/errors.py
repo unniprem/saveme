@@ -20,6 +20,7 @@ CATALOG: dict[str, tuple[int, str]] = {
     "source_not_ready": (409, "The video is still loading. Wait until it's ready, then try again."),
     "invalid_clip": (400, "Choose a start before the end, inside the video."),
     "upload_incomplete": (400, "The upload stopped before the whole file arrived. Please try again."),
+    "invalid_subtitles": (400, "SaveMe can't read this as subtitles. Use an SRT or WebVTT (.vtt) file."),
     "unsupported": (422, "This link isn't supported, or it doesn't contain downloadable media."),
     "login_required": (422, "This media requires a login or is private, so it can't be downloaded."),
     "unavailable": (422, "This media is unavailable. It may have been removed or doesn't exist."),
@@ -33,6 +34,16 @@ CATALOG: dict[str, tuple[int, str]] = {
     "source_too_large": (422, "The page at this link is too large to read. Try a link to the media itself."),
     "unreadable_media": (422, "SaveMe can't read this file as a video. Try an MP4, MOV, MKV or WebM file."),
     "clip_failed": (422, "Couldn't cut this clip. Try a different start or end."),
+    "no_speech": (422, "No speech was found in this video, so there's nothing to analyse. "
+                       "Import its subtitles instead."),
+    "cost_limit": (422, "This analysis could cost more than the spending limit per analysis."),
+    "analysis_running": (409, "An analysis is already running for this video. Wait for it or cancel it."),
+    "analysis_not_found": (404, "That analysis couldn't be found. It may have finished long ago, or the "
+                                "server may have restarted."),
+    "transcript_not_found": (404, "There's no transcript for this video yet."),
+    "transcription_failed": (422, "Couldn't transcribe this video's audio. Try again, or import its subtitles."),
+    "video_too_long": (422, "This video is too long for AI Highlights."),
+    "whisper_model_missing": (503, "The transcription model isn't installed on the server."),
     "too_large": (413, "This file is larger than the allowed size limit. Try a lower quality or audio only."),
     "busy": (429, "The server is busy right now. Please try again shortly."),
     "rate_limited": (429, "The source site is limiting requests right now. Please try again later."),
@@ -40,6 +51,20 @@ CATALOG: dict[str, tuple[int, str]] = {
     "unreachable": (502, "Couldn't reach the source site. Check the link or try again later."),
     "disk_full": (503, "Server storage is full, try again later."),
     "config_error": (503, "The server is misconfigured. Please contact the owner."),
+    "ai_not_configured": (503, "AI analysis isn't set up. Add OPENROUTER_API_KEY to the server's .env "
+                               "and restart SaveMe."),
+    "ai_config_error": (503, "AI Highlights is turned off because a setting is invalid."),
+    "model_unsupported": (503, "The configured AI model can't be used for AI Highlights."),
+    "openrouter_auth": (502, "OpenRouter didn't accept the API key. Check OPENROUTER_API_KEY in the "
+                             "server's .env."),
+    "openrouter_credits": (502, "The OpenRouter account or key is out of credits. Add credits or raise "
+                                "the key's limit, then try again."),
+    "openrouter_rate_limited": (429, "OpenRouter is limiting requests right now. Wait a minute, then try again."),
+    "openrouter_refused": (502, "OpenRouter refused the request."),
+    "openrouter_unavailable": (502, "Couldn't get an answer from OpenRouter. Check the connection, or try "
+                                    "again later."),
+    "ai_invalid_response": (502, "The AI model returned an answer SaveMe couldn't use. Try again, or "
+                                 "choose another model."),
     "timeout": (504, "The operation took too long and was stopped. Please try again."),
 }
 

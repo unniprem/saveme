@@ -3,6 +3,7 @@
 @source "../index.html";
 @source "../app.js";
 @source "../studio.js";
+@source "../ai.js";
 
 /* SaveMe brand: indigo and coral from the logo, on a lightly purple-tinted neutral ("ink"). */
 @theme {

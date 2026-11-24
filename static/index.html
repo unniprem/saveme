@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/static/dist/styles.css">
   <script src="/static/common.js" defer></script>
   <script src="/static/studio.js" defer></script>
+  <script src="/static/ai.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body class="flex min-h-dvh flex-col bg-ink-50 font-sans text-ink-900 antialiased dark:bg-ink-950 dark:text-ink-100">
@@ -199,40 +200,177 @@
           </div>
         </div>
 
-        <div class="mt-4 grid gap-3 sm:grid-cols-2">
-          <div>
-            <label for="clip-start" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Start</label>
-            <div class="mt-1 flex gap-2">
-              <input id="clip-start" type="text" inputmode="decimal" autocomplete="off" spellcheck="false"
-                     aria-describedby="clip-msg" aria-keyshortcuts="I" class="h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base tabular-nums text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400">
-              <button id="set-start" type="button" aria-label="Set start to playhead" class="h-11 shrink-0 rounded-xl bg-brand-50 px-3 text-sm font-semibold text-brand-700 hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:hover:bg-white/15 dark:focus-visible:outline-brand-400">Set to playhead</button>
-            </div>
-          </div>
-          <div>
-            <label for="clip-end" class="text-xs font-semibold text-ink-700 dark:text-ink-300">End</label>
-            <div class="mt-1 flex gap-2">
-              <input id="clip-end" type="text" inputmode="decimal" autocomplete="off" spellcheck="false"
-                     aria-describedby="clip-msg" aria-keyshortcuts="O" class="h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base tabular-nums text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400">
-              <button id="set-end" type="button" aria-label="Set end to playhead" class="h-11 shrink-0 rounded-xl bg-brand-50 px-3 text-sm font-semibold text-brand-700 hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:hover:bg-white/15 dark:focus-visible:outline-brand-400">Set to playhead</button>
-            </div>
-          </div>
+        <div id="studio-tabs" role="tablist" aria-label="Clip Studio mode" class="mt-5 flex gap-1 rounded-xl bg-ink-100 p-1 dark:bg-white/5">
+          <button id="tab-manual" type="button" role="tab" aria-selected="true" aria-controls="manual-panel" tabindex="0" class="h-10 flex-1 rounded-lg px-4 text-sm font-semibold text-ink-600 hover:text-ink-900 aria-selected:bg-white aria-selected:text-brand-700 aria-selected:shadow-card focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 sm:flex-none dark:text-ink-400 dark:hover:text-ink-100 dark:aria-selected:bg-ink-800 dark:aria-selected:text-ink-50 dark:focus-visible:outline-brand-400">Manual</button>
+          <button id="tab-ai" type="button" role="tab" aria-selected="false" aria-controls="ai-panel" tabindex="-1" class="h-10 flex-1 rounded-lg px-4 text-sm font-semibold text-ink-600 hover:text-ink-900 aria-selected:bg-white aria-selected:text-brand-700 aria-selected:shadow-card focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 sm:flex-none dark:text-ink-400 dark:hover:text-ink-100 dark:aria-selected:bg-ink-800 dark:aria-selected:text-ink-50 dark:focus-visible:outline-brand-400">AI Highlights</button>
         </div>
-        <p class="mt-3 text-sm text-ink-700 dark:text-ink-300">Clip length <span id="clip-length" class="font-semibold tabular-nums"></span></p>
-        <p class="mt-1 hidden text-sm text-ink-600 sm:block dark:text-ink-400">Press I or O to set the start or end at the playhead.</p>
-        <p id="clip-msg" hidden class="mt-2 text-sm break-words data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:data-[tone=error]:text-red-400"></p>
 
-        <div class="mt-4 flex flex-col gap-2 sm:flex-row">
-          <button id="play-clip" type="button" class="h-11 w-full rounded-xl border border-ink-300 bg-white px-5 font-semibold text-ink-700 enabled:hover:border-brand-700/50 enabled:hover:text-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-ink-700 dark:bg-transparent dark:text-ink-200 dark:enabled:hover:border-brand-400/60 dark:enabled:hover:text-brand-300 dark:focus-visible:outline-brand-400">Play clip</button>
-          <button id="add-clip" type="button" aria-describedby="clip-msg" class="h-11 w-full rounded-xl border border-ink-300 bg-white px-5 font-semibold text-ink-700 enabled:hover:border-brand-700/50 enabled:hover:text-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-ink-700 dark:bg-transparent dark:text-ink-200 dark:enabled:hover:border-brand-400/60 dark:enabled:hover:text-brand-300 dark:focus-visible:outline-brand-400">Add to list</button>
-          <button id="export-clip" type="button"
-                  class="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-brand-700 px-6 font-semibold text-white enabled:hover:bg-brand-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:bg-ink-200 disabled:text-ink-600 sm:w-auto dark:bg-brand-500 dark:enabled:hover:bg-brand-600 dark:focus-visible:outline-brand-400 dark:disabled:bg-ink-800 dark:disabled:text-ink-400">
-            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-5 shrink-0">
-            <circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88"/><path d="M14.47 14.48 20 20"/><path d="M8.12 8.12 12 12"/>
-          </svg>
-            Export clip
-          </button>
+        <div id="manual-panel" role="tabpanel" aria-labelledby="tab-manual">
+          <div class="mt-4 grid gap-3 sm:grid-cols-2">
+            <div>
+              <label for="clip-start" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Start</label>
+              <div class="mt-1 flex gap-2">
+                <input id="clip-start" type="text" inputmode="decimal" autocomplete="off" spellcheck="false"
+                       aria-describedby="clip-msg" aria-keyshortcuts="I" class="h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base tabular-nums text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400">
+                <button id="set-start" type="button" aria-label="Set start to playhead" class="h-11 shrink-0 rounded-xl bg-brand-50 px-3 text-sm font-semibold text-brand-700 hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:hover:bg-white/15 dark:focus-visible:outline-brand-400">Set to playhead</button>
+              </div>
+            </div>
+            <div>
+              <label for="clip-end" class="text-xs font-semibold text-ink-700 dark:text-ink-300">End</label>
+              <div class="mt-1 flex gap-2">
+                <input id="clip-end" type="text" inputmode="decimal" autocomplete="off" spellcheck="false"
+                       aria-describedby="clip-msg" aria-keyshortcuts="O" class="h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base tabular-nums text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400">
+                <button id="set-end" type="button" aria-label="Set end to playhead" class="h-11 shrink-0 rounded-xl bg-brand-50 px-3 text-sm font-semibold text-brand-700 hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:hover:bg-white/15 dark:focus-visible:outline-brand-400">Set to playhead</button>
+              </div>
+            </div>
+          </div>
+          <p class="mt-3 text-sm text-ink-700 dark:text-ink-300">Clip length <span id="clip-length" class="font-semibold tabular-nums"></span></p>
+          <p class="mt-1 hidden text-sm text-ink-600 sm:block dark:text-ink-400">Press I or O to set the start or end at the playhead.</p>
+          <p id="clip-msg" hidden class="mt-2 text-sm break-words data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:data-[tone=error]:text-red-400"></p>
+
+          <div class="mt-4 flex flex-col gap-2 sm:flex-row">
+            <button id="play-clip" type="button" class="h-11 w-full rounded-xl border border-ink-300 bg-white px-5 font-semibold text-ink-700 enabled:hover:border-brand-700/50 enabled:hover:text-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-ink-700 dark:bg-transparent dark:text-ink-200 dark:enabled:hover:border-brand-400/60 dark:enabled:hover:text-brand-300 dark:focus-visible:outline-brand-400">Play clip</button>
+            <button id="add-clip" type="button" aria-describedby="clip-msg" class="h-11 w-full rounded-xl border border-ink-300 bg-white px-5 font-semibold text-ink-700 enabled:hover:border-brand-700/50 enabled:hover:text-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-ink-700 dark:bg-transparent dark:text-ink-200 dark:enabled:hover:border-brand-400/60 dark:enabled:hover:text-brand-300 dark:focus-visible:outline-brand-400">Add to list</button>
+            <button id="export-clip" type="button"
+                    class="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-brand-700 px-6 font-semibold text-white enabled:hover:bg-brand-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:bg-ink-200 disabled:text-ink-600 sm:w-auto dark:bg-brand-500 dark:enabled:hover:bg-brand-600 dark:focus-visible:outline-brand-400 dark:disabled:bg-ink-800 dark:disabled:text-ink-400">
+              <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-5 shrink-0">
+              <circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88"/><path d="M14.47 14.48 20 20"/><path d="M8.12 8.12 12 12"/>
+            </svg>
+              Export clip
+            </button>
+          </div>
+          <p class="mt-3 text-xs/relaxed text-ink-600 dark:text-ink-400">Clips are cut without re-encoding, so they keep the original quality. A few players may show up to a few seconds before your start.</p>
         </div>
-        <p class="mt-3 text-xs/relaxed text-ink-600 dark:text-ink-400">Clips are cut without re-encoding, so they keep the original quality. A few players may show up to a few seconds before your start.</p>
+
+        <div id="ai-panel" role="tabpanel" aria-labelledby="tab-ai" hidden class="mt-4">
+          <div class="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
+            <p id="ai-status" class="w-full text-sm sm:w-auto sm:min-w-0 sm:flex-1 text-ink-700 data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:text-ink-300 dark:data-[tone=error]:text-red-400">Checking the AI settings…</p>
+            <button id="ai-test" type="button" class="h-10 shrink-0 rounded-xl bg-brand-50 px-4 text-sm font-semibold text-brand-700 enabled:hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:enabled:hover:bg-white/15 dark:focus-visible:outline-brand-400">Test connection</button>
+          </div>
+          <p id="ai-test-msg" aria-live="polite" hidden class="mt-2 text-sm break-words data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:data-[tone=error]:text-red-400 text-ink-700 dark:text-ink-300"></p>
+          <p id="ai-privacy" class="mt-3 rounded-xl bg-brand-50 px-4 py-3 text-sm text-brand-900 dark:bg-brand-500/10 dark:text-brand-200">Transcription runs on this computer. To find highlights, SaveMe sends the transcript text (never the audio or video) to OpenRouter, which passes it to the AI model.</p>
+
+          <form id="ai-form" novalidate class="mt-4">
+            <label for="ai-instruction" class="text-xs font-semibold text-ink-700 dark:text-ink-300">What should the clips be about? <span class="font-normal text-ink-600 dark:text-ink-400">(optional)</span></label>
+            <textarea id="ai-instruction" rows="3" maxlength="500" spellcheck="true" aria-describedby="ai-instruction-hint"
+                      placeholder="For example: Find the five most interesting moments where the speaker discusses artificial intelligence."
+                      class="mt-1 w-full rounded-xl border border-ink-300 bg-white px-3 py-2 text-base text-ink-900 placeholder:text-ink-500 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:placeholder:text-ink-400 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400"></textarea>
+            <p id="ai-instruction-hint" class="mt-1 text-xs text-ink-600 dark:text-ink-400">Leave it empty to find the most interesting, useful, surprising, funny or moving moments.</p>
+
+            <div class="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div>
+                <label for="ai-min" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Shortest clip (s)</label>
+                <input id="ai-min" type="number" inputmode="decimal" min="3" max="600" step="1" value="20" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base tabular-nums text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400">
+              </div>
+              <div>
+                <label for="ai-max" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Longest clip (s)</label>
+                <input id="ai-max" type="number" inputmode="decimal" min="5" max="900" step="1" value="90" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base tabular-nums text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400">
+              </div>
+              <div>
+                <label for="ai-count" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Number of clips</label>
+                <select id="ai-count" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base tabular-nums text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400"><option value="5">5</option></select>
+              </div>
+              <div>
+                <label for="ai-min-score" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Minimum score</label>
+                <input id="ai-min-score" type="number" inputmode="numeric" min="0" max="100" step="5" value="0" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base tabular-nums text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400">
+              </div>
+            </div>
+            <div class="mt-3 grid gap-3 sm:grid-cols-2">
+              <div>
+                <label for="ai-language" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Spoken language</label>
+                <select id="ai-language" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base tabular-nums text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400"><option value="auto">Detect automatically</option></select>
+              </div>
+              <label for="ai-retranscribe" class="flex items-center gap-2 self-end pb-2.5 text-sm text-ink-700 has-disabled:opacity-60 dark:text-ink-300">
+                <input id="ai-retranscribe" type="checkbox" class="size-4 accent-brand-700 dark:accent-brand-400">
+                Transcribe again (ignore the saved transcript)
+              </label>
+            </div>
+
+            <p id="ai-estimate" class="mt-3 text-sm text-ink-600 data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:text-ink-400 dark:data-[tone=error]:text-red-400"></p>
+            <p id="ai-form-msg" aria-live="polite" hidden class="mt-2 text-sm break-words data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:data-[tone=error]:text-red-400"></p>
+            <div class="mt-3 flex flex-col gap-2 sm:flex-row">
+              <button id="ai-start" type="button" class="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-brand-700 px-6 font-semibold text-white enabled:hover:bg-brand-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:bg-ink-200 disabled:text-ink-600 sm:w-auto dark:bg-brand-500 dark:enabled:hover:bg-brand-600 dark:focus-visible:outline-brand-400 dark:disabled:bg-ink-800 dark:disabled:text-ink-400">
+                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-5 shrink-0">
+                  <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>
+                </svg>
+                Find highlights
+              </button>
+              <button id="ai-transcribe" type="button" class="h-11 w-full rounded-xl border border-ink-300 bg-white px-5 font-semibold text-ink-700 enabled:hover:border-brand-700/50 enabled:hover:text-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-ink-700 dark:bg-transparent dark:text-ink-200 dark:enabled:hover:border-brand-400/60 dark:enabled:hover:text-brand-300 dark:focus-visible:outline-brand-400">Transcribe only</button>
+            </div>
+          </form>
+
+          <section id="ai-progress" hidden tabindex="-1" aria-labelledby="ai-progress-status" class="mt-4 rounded-xl bg-ink-50 p-4 outline-none dark:bg-white/5">
+            <div class="flex items-center justify-between gap-3">
+              <p class="flex min-w-0 items-center gap-2 font-semibold">
+                <span id="ai-progress-spin" class="shrink-0 text-brand-700 dark:text-brand-300">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" class="size-5 animate-spin motion-reduce:animate-none">
+              <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3" stroke-opacity="0.25"/>
+              <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+            </svg>
+                </span>
+                <span id="ai-progress-status"></span>
+              </p>
+              <span id="ai-progress-percent" class="font-bold tabular-nums text-brand-700 dark:text-brand-300"></span>
+            </div>
+            <div id="ai-progress-bar" role="progressbar" aria-labelledby="ai-progress-status" aria-valuemin="0" aria-valuemax="100"
+                 class="mt-3 h-2 overflow-hidden rounded-full bg-brand-100 dark:bg-white/10">
+              <div id="ai-progress-fill" class="h-full w-0 rounded-full bg-linear-to-r from-coral-500 to-tangerine-500 transition-[width] duration-500 ease-out motion-reduce:transition-none data-[indeterminate]:bg-transparent data-[indeterminate]:bg-[repeating-linear-gradient(-45deg,var(--color-coral-500)_0_6px,transparent_6px_12px)] motion-safe:data-[indeterminate]:animate-pulse"></div>
+            </div>
+            <p id="ai-progress-detail" hidden class="mt-2 text-sm break-words text-ink-600 dark:text-ink-400"></p>
+            <ol id="ai-stages" aria-label="Stages" class="mt-3 grid gap-1.5 sm:grid-cols-2">
+              <li data-stage="preparing" data-state="pending" class="group flex items-center gap-2 text-sm text-ink-500 data-[state=active]:font-semibold data-[state=active]:text-ink-900 data-[state=done]:text-ink-700 data-[state=skipped]:text-ink-500 data-[state=failed]:font-semibold data-[state=failed]:text-red-700 dark:text-ink-400 dark:data-[state=active]:text-ink-50 dark:data-[state=done]:text-ink-300 dark:data-[state=failed]:text-red-400"><span aria-hidden="true" class="size-2.5 shrink-0 rounded-full bg-ink-300 group-data-[state=active]:bg-coral-500 group-data-[state=done]:bg-green-600 group-data-[state=skipped]:bg-transparent group-data-[state=skipped]:ring-1 group-data-[state=skipped]:ring-ink-400 group-data-[state=failed]:bg-red-600 motion-safe:group-data-[state=active]:animate-pulse dark:bg-ink-700 dark:group-data-[state=done]:bg-green-500"></span><span>Preparing the video</span><span data-note class="sr-only"></span></li>
+              <li data-stage="extracting" data-state="pending" class="group flex items-center gap-2 text-sm text-ink-500 data-[state=active]:font-semibold data-[state=active]:text-ink-900 data-[state=done]:text-ink-700 data-[state=skipped]:text-ink-500 data-[state=failed]:font-semibold data-[state=failed]:text-red-700 dark:text-ink-400 dark:data-[state=active]:text-ink-50 dark:data-[state=done]:text-ink-300 dark:data-[state=failed]:text-red-400"><span aria-hidden="true" class="size-2.5 shrink-0 rounded-full bg-ink-300 group-data-[state=active]:bg-coral-500 group-data-[state=done]:bg-green-600 group-data-[state=skipped]:bg-transparent group-data-[state=skipped]:ring-1 group-data-[state=skipped]:ring-ink-400 group-data-[state=failed]:bg-red-600 motion-safe:group-data-[state=active]:animate-pulse dark:bg-ink-700 dark:group-data-[state=done]:bg-green-500"></span><span>Extracting audio</span><span data-note class="sr-only"></span></li>
+              <li data-stage="transcribing" data-state="pending" class="group flex items-center gap-2 text-sm text-ink-500 data-[state=active]:font-semibold data-[state=active]:text-ink-900 data-[state=done]:text-ink-700 data-[state=skipped]:text-ink-500 data-[state=failed]:font-semibold data-[state=failed]:text-red-700 dark:text-ink-400 dark:data-[state=active]:text-ink-50 dark:data-[state=done]:text-ink-300 dark:data-[state=failed]:text-red-400"><span aria-hidden="true" class="size-2.5 shrink-0 rounded-full bg-ink-300 group-data-[state=active]:bg-coral-500 group-data-[state=done]:bg-green-600 group-data-[state=skipped]:bg-transparent group-data-[state=skipped]:ring-1 group-data-[state=skipped]:ring-ink-400 group-data-[state=failed]:bg-red-600 motion-safe:group-data-[state=active]:animate-pulse dark:bg-ink-700 dark:group-data-[state=done]:bg-green-500"></span><span>Transcribing</span><span data-note class="sr-only"></span></li>
+              <li data-stage="analyzing" data-state="pending" class="group flex items-center gap-2 text-sm text-ink-500 data-[state=active]:font-semibold data-[state=active]:text-ink-900 data-[state=done]:text-ink-700 data-[state=skipped]:text-ink-500 data-[state=failed]:font-semibold data-[state=failed]:text-red-700 dark:text-ink-400 dark:data-[state=active]:text-ink-50 dark:data-[state=done]:text-ink-300 dark:data-[state=failed]:text-red-400"><span aria-hidden="true" class="size-2.5 shrink-0 rounded-full bg-ink-300 group-data-[state=active]:bg-coral-500 group-data-[state=done]:bg-green-600 group-data-[state=skipped]:bg-transparent group-data-[state=skipped]:ring-1 group-data-[state=skipped]:ring-ink-400 group-data-[state=failed]:bg-red-600 motion-safe:group-data-[state=active]:animate-pulse dark:bg-ink-700 dark:group-data-[state=done]:bg-green-500"></span><span>Analyzing the transcript</span><span data-note class="sr-only"></span></li>
+              <li data-stage="ranking" data-state="pending" class="group flex items-center gap-2 text-sm text-ink-500 data-[state=active]:font-semibold data-[state=active]:text-ink-900 data-[state=done]:text-ink-700 data-[state=skipped]:text-ink-500 data-[state=failed]:font-semibold data-[state=failed]:text-red-700 dark:text-ink-400 dark:data-[state=active]:text-ink-50 dark:data-[state=done]:text-ink-300 dark:data-[state=failed]:text-red-400"><span aria-hidden="true" class="size-2.5 shrink-0 rounded-full bg-ink-300 group-data-[state=active]:bg-coral-500 group-data-[state=done]:bg-green-600 group-data-[state=skipped]:bg-transparent group-data-[state=skipped]:ring-1 group-data-[state=skipped]:ring-ink-400 group-data-[state=failed]:bg-red-600 motion-safe:group-data-[state=active]:animate-pulse dark:bg-ink-700 dark:group-data-[state=done]:bg-green-500"></span><span>Ranking highlights</span><span data-note class="sr-only"></span></li>
+              <li data-stage="ready" data-state="pending" class="group flex items-center gap-2 text-sm text-ink-500 data-[state=active]:font-semibold data-[state=active]:text-ink-900 data-[state=done]:text-ink-700 data-[state=skipped]:text-ink-500 data-[state=failed]:font-semibold data-[state=failed]:text-red-700 dark:text-ink-400 dark:data-[state=active]:text-ink-50 dark:data-[state=done]:text-ink-300 dark:data-[state=failed]:text-red-400"><span aria-hidden="true" class="size-2.5 shrink-0 rounded-full bg-ink-300 group-data-[state=active]:bg-coral-500 group-data-[state=done]:bg-green-600 group-data-[state=skipped]:bg-transparent group-data-[state=skipped]:ring-1 group-data-[state=skipped]:ring-ink-400 group-data-[state=failed]:bg-red-600 motion-safe:group-data-[state=active]:animate-pulse dark:bg-ink-700 dark:group-data-[state=done]:bg-green-500"></span><span>Ready for review</span><span data-note class="sr-only"></span></li>
+            </ol>
+            <div class="mt-3">
+              <button id="ai-cancel" type="button" class="h-11 w-full rounded-xl border border-ink-300 bg-white px-5 font-semibold text-ink-700 enabled:hover:border-red-300 enabled:hover:bg-red-50 enabled:hover:text-red-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-wait disabled:opacity-60 sm:w-auto dark:border-ink-700 dark:bg-transparent dark:text-ink-200 dark:enabled:hover:border-red-400/40 dark:enabled:hover:bg-red-950/40 dark:enabled:hover:text-red-300 dark:focus-visible:outline-brand-400">Cancel</button>
+            </div>
+          </section>
+
+          <section id="ai-results" hidden tabindex="-1" aria-labelledby="ai-results-title" class="mt-5 outline-none">
+            <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+              <h3 id="ai-results-title" class="font-semibold">Highlights</h3>
+              <span id="ai-results-count" class="text-sm tabular-nums text-ink-600 dark:text-ink-400"></span>
+            </div>
+            <p class="mt-1 text-xs/relaxed text-ink-600 dark:text-ink-400">Scores are the AI's editorial judgement of each moment, not a prediction of views.</p>
+            <p id="ai-usage" hidden class="mt-2 text-sm tabular-nums text-ink-700 dark:text-ink-300"></p>
+            <p id="ai-notice" hidden class="mt-3 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:bg-amber-950/40 dark:text-amber-200"></p>
+            <p id="ai-error" hidden class="mt-3 text-sm font-medium break-words text-red-700 dark:text-red-400"></p>
+            <div id="ai-bulk" class="mt-3 flex flex-wrap gap-2">
+              <button id="ai-select-all" type="button" class="h-10 shrink-0 rounded-xl bg-brand-50 px-4 text-sm font-semibold text-brand-700 enabled:hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:enabled:hover:bg-white/15 dark:focus-visible:outline-brand-400">Select all</button>
+              <button id="ai-select-none" type="button" class="h-10 shrink-0 rounded-xl bg-brand-50 px-4 text-sm font-semibold text-brand-700 enabled:hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:enabled:hover:bg-white/15 dark:focus-visible:outline-brand-400">Select none</button>
+              <button id="ai-add-selected" type="button" class="h-10 shrink-0 rounded-xl bg-brand-50 px-4 text-sm font-semibold text-brand-700 enabled:hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:enabled:hover:bg-white/15 dark:focus-visible:outline-brand-400">Add selected to clip list</button>
+            </div>
+            <p id="ai-cards-msg" aria-live="polite" hidden class="mt-2 text-sm break-words data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:data-[tone=error]:text-red-400"></p>
+            <ol id="ai-cards" aria-labelledby="ai-results-title" class="mt-3 space-y-3"></ol>
+          </section>
+
+          <details id="ai-transcript" class="group mt-5 rounded-xl border border-ink-200 dark:border-ink-800">
+            <summary class="flex cursor-pointer items-center justify-between gap-3 rounded-xl px-4 py-3 font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 dark:focus-visible:outline-brand-400">
+              <span id="ai-transcript-summary">Transcript</span>
+              <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-4 shrink-0 transition-transform group-open:rotate-180 motion-reduce:transition-none"><path d="m6 9 6 6 6-6"/></svg>
+            </summary>
+            <div class="border-t border-ink-200 px-4 pt-3 pb-4 dark:border-ink-800">
+              <p id="ai-transcript-empty" class="text-sm text-ink-600 dark:text-ink-400">No transcript yet. Find highlights or Transcribe only makes one on this computer, or import subtitles below.</p>
+              <div id="ai-transcript-body" hidden>
+                <label for="ai-search" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Search the transcript</label>
+                <input id="ai-search" type="search" autocomplete="off" spellcheck="false" aria-describedby="ai-search-count" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base tabular-nums text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400">
+                <p id="ai-search-count" aria-live="polite" class="mt-1 text-xs text-ink-600 dark:text-ink-400"></p>
+                <ol id="ai-lines" aria-label="Transcript lines" class="mt-2 max-h-80 divide-y divide-ink-200 overflow-y-auto overscroll-contain dark:divide-ink-800"></ol>
+              </div>
+              <div class="mt-4">
+                <label for="ai-subs-file" class="inline-flex cursor-pointer items-center gap-2 rounded-md text-sm font-semibold text-brand-700 underline decoration-brand-700/30 underline-offset-4 hover:decoration-brand-700 has-focus-visible:outline-2 has-focus-visible:outline-offset-4 has-focus-visible:outline-brand-700 has-disabled:cursor-not-allowed has-disabled:opacity-60 dark:text-brand-300 dark:decoration-brand-300/40">
+                  <input id="ai-subs-file" type="file" class="sr-only" accept=".srt,.vtt,text/vtt,application/x-subrip">
+                  Import subtitles (SRT or WebVTT)
+                </label>
+                <p id="ai-subs-msg" aria-live="polite" hidden class="mt-1 text-sm break-words data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:data-[tone=error]:text-red-400 text-ink-700 dark:text-ink-300"></p>
+              </div>
+            </div>
+          </details>
+        </div>
 
         <div id="clip-list-wrap" hidden class="mt-5 border-t border-ink-200 pt-4 dark:border-ink-800">
           <div class="flex items-baseline justify-between gap-3">
