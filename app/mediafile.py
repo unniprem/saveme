@@ -92,3 +92,37 @@ def remux_to_mp4(src: Path) -> tuple[Path, str | None]:
     except KeyError:
         raise AppError("unsupported") from None
     return src, f"Delivered as {ext.upper()} (couldn't convert to MP4)."
+
+
+# Codecs a WebM file may hold; anything else in Matroska is MKV.
+_WEBM_CODECS = frozenset({"vp8", "vp9", "av1", "opus", "vorbis"})
+# Containers an upload may arrive in, by ffprobe's format_name, apart from Matroska/WebM.
+_CONTAINERS = {"mov,mp4,m4a,3gp,3g2,mj2": "mp4", "mpegts": "ts", "flv": "flv", "avi": "avi"}
+
+
+def container_ext(found: Probe) -> str | None:
+    """The extension an uploaded file is stored under, or None for a container SaveMe
+    doesn't take. Only mp4, mkv and webm can be delivered; the others are remuxed."""
+    if found.format_name == "matroska,webm":
+        return "webm" if found.codecs and set(found.codecs) <= _WEBM_CODECS else "mkv"
+    return _CONTAINERS.get(found.format_name)
+
+
+def prepare_upload(src: Path, workdir: Path) -> dict:
+    """Check an uploaded file and make it workdir/media.<ext>, remuxed to MP4 where the
+    codecs allow. Returns {"file", "ext", "duration", "notice"}."""
+    found = probe(src)
+    if found is None:
+        raise AppError("unreadable_media")
+    if "video" not in found.kinds:
+        raise AppError("no_video")
+    ext = container_ext(found)
+    if found.duration is None or ext is None:
+        raise AppError("unreadable_media")
+    media = src.rename(workdir / f"media.{ext}")
+    if ext != "mp4":
+        try:
+            media, _notice = remux_to_mp4(media)
+        except AppError:  # a TS, FLV or AVI that won't go into MP4 can't be delivered
+            raise AppError("unreadable_media") from None
+    return {"file": media.name, "ext": media.suffix[1:], "duration": found.duration, "notice": None}

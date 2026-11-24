@@ -49,6 +49,20 @@ def make_media(dir: Path) -> dict[str, Path]:
              "-metadata", "comment=http://leak.example/x", "tagged.mp4"], dir)
     _ffmpeg([*_VIDEO_SRC, "-t", "2", *_H264, "-movflags", "+faststart", "video_only.mp4"], dir)
     _ffmpeg([*_AUDIO_SRC, "-t", "2", "-c:a", "libmp3lame", "-q:a", "4", "sample.mp3"], dir)
+    # Clip Studio sources: other containers an upload may arrive in, and a 10 s video with a
+    # keyframe every second, a title and two chapters, to cut ranges from.
+    _ffmpeg(["-i", "sample.mp4", "-c", "copy", "sample.mkv"], dir)
+    _ffmpeg(["-i", "sample.mp4", "-c", "copy", "-f", "mpegts", "sample.ts"], dir)
+    _ffmpeg([*_VIDEO_SRC, *_AUDIO_SRC, "-t", "2", "-map", "0:v", "-map", "1:a",
+             "-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8", "-b:v", "200k",
+             "-c:a", "libopus", "sample.webm"], dir)
+    (dir / "chapters.meta").write_text(
+        ";FFMETADATA1\ntitle=Long Clip\n"
+        "[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=5000\ntitle=One\n"
+        "[CHAPTER]\nTIMEBASE=1/1000\nSTART=5000\nEND=10000\ntitle=Two\n")
+    _ffmpeg([*_VIDEO_SRC, *_AUDIO_SRC, "-i", "chapters.meta", "-t", "10", "-map", "0:v", "-map", "1:a",
+             "-map_metadata", "2", "-map_chapters", "2", *_H264, "-g", "25", "-keyint_min", "25",
+             "-sc_threshold", "0", "-c:a", "aac", "-movflags", "+faststart", "long.mp4"], dir)
     for image in ("cover.jpg", "cover.png"):
         _ffmpeg(["-f", "lavfi", "-i", "color=c=red:size=64x64", "-frames:v", "1", image], dir)
     (dir / "junk.jpg").write_bytes(b"not an image")
@@ -65,7 +79,8 @@ def make_media(dir: Path) -> dict[str, Path]:
     opus = hls / "opus"
     opus.mkdir()
     (opus / "master.m3u8").write_text(_master("../aac/a.m3u8", "opus"))
-    names = ["sample.mp4", "tagged.mp4", "video_only.mp4", "sample.mp3",
+    names = ["sample.mp4", "tagged.mp4", "video_only.mp4", "sample.mp3", "sample.mkv", "sample.ts",
+             "sample.webm", "long.mp4",
              "cover.jpg", "cover.png", "junk.jpg", "big.jpg", "big.mp4", "hls/master.m3u8",
              "hls/aac/master.m3u8", "hls/opus/master.m3u8"]
     out = {name: dir / name for name in names}

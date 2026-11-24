@@ -3,8 +3,10 @@ happens here, behind the connect-time guard (spec §4.3).
 
 Protocol: the parent writes one JSON request to stdin and closes it. The worker
 writes only JSON lines to stdout and ends with exactly one `result` event
-(exit 0) or `error` event (exit 1). Modes: `inspect` (run_inspect) and
-`download` (run_download, which also emits `progress` and `phase` events).
+(exit 0) or `error` event (exit 1). Modes: `inspect` (run_inspect), `download`
+(run_download, which also emits `progress` and `phase` events), and for Clip Studio
+`probe` (run_probe, an uploaded file) and `clip` (run_clip). Only inspect and download
+take a URL; probe and clip work on local files and never touch the network.
 
 yt-dlp (and app.ytdl, which imports it) is imported lazily inside the functions
 that run after the guard is installed, never at module import time.
@@ -26,7 +28,7 @@ from urllib.parse import urlsplit
 
 from app.cover import cover_opener, embed_cover, fetch_cover
 from app.errors import BLOCKED_MARKER, AppError, classify_ytdlp_error, too_large_message
-from app.mediafile import probe, remux_to_mp4
+from app.mediafile import prepare_upload, probe, remux_to_mp4
 from app.netguard import BlockedAddressError, check_url_syntax, install_connect_guard
 
 if TYPE_CHECKING:
@@ -469,15 +471,57 @@ def run_download(req: dict, emit: Callable[[dict], None]) -> dict:
     return result
 
 
+def _local_file(req: dict, key: str) -> Path:
+    """req[key] as a regular, non-symlink file with an absolute path, else internal."""
+    value = req.get(key)
+    if (not isinstance(value, str) or not os.path.isabs(value) or os.path.islink(value)
+            or not os.path.isfile(value)):
+        print(f"worker: malformed request ({key})", file=sys.stderr)
+        raise AppError("internal")
+    return Path(value)
+
+
+def _workdir(req: dict) -> Path:
+    value = req.get("workdir")
+    if not isinstance(value, str) or not os.path.isabs(value) or not os.path.isdir(value):
+        print("worker: malformed request (workdir)", file=sys.stderr)
+        raise AppError("internal")
+    return Path(value)
+
+
+def run_probe(req: dict, emit: Callable[[dict], None]) -> dict:
+    """Check the upload req["source"], which must sit directly in req["workdir"], and
+    leave only workdir/media.<ext> (spec §6.5). On failure the workdir is left empty."""
+    workdir, source = _workdir(req), _local_file(req, "source")
+    if os.path.realpath(source.parent) != os.path.realpath(workdir):
+        print("worker: probe source is outside the workdir", file=sys.stderr)
+        raise AppError("internal")
+    try:
+        result = prepare_upload(source, workdir)
+    except BaseException:
+        _clear(workdir)
+        raise
+    _clear(workdir, keep=result["file"])
+    return result
+
+
 def _read_request(stdin: TextIO) -> dict:
     try:
         req = json.loads(stdin.read())
     except ValueError:
         req = None
-    if not isinstance(req, dict) or not isinstance(req.get("url"), str):
+    if not isinstance(req, dict) or not isinstance(req.get("mode"), str):
         print("worker: malformed request", file=sys.stderr)
         raise AppError("internal")
     return req
+
+
+def _url(req: dict) -> str:
+    url = req.get("url")
+    if not isinstance(url, str):
+        print("worker: malformed request (url)", file=sys.stderr)
+        raise AppError("internal")
+    return check_url_syntax(url)
 
 
 def _to_app_error(exc: Exception) -> AppError:
@@ -513,12 +557,13 @@ def serve(stdin: TextIO, out: TextIO) -> int:
     emit = _writer(out)
     try:
         req = _read_request(stdin)
-        url = check_url_syntax(req["url"])
-        mode = req.get("mode")
+        mode = req["mode"]
         if mode == "inspect":
-            data = run_inspect(url)
+            data = run_inspect(_url(req))
         elif mode == "download":
-            data = run_download({**req, "url": url}, emit)
+            data = run_download({**req, "url": _url(req)}, emit)
+        elif mode == "probe":
+            data = run_probe(req, emit)
         else:
             print(f"worker: unknown mode {mode!r}", file=sys.stderr)
             raise AppError("internal")
