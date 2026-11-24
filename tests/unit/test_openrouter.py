@@ -308,3 +308,12 @@ async def test_a_key_near_the_message_cut_is_scrubbed_whole():
     with pytest.raises(AppError) as exc:
         await client.complete(MESSAGES, model=model_info(HAIKU), schema=SCHEMA, schema_name="h", max_tokens=50)
     assert KEY[:8] not in exc.value.message and "[key]" in exc.value.message
+
+
+def test_check_model_needs_a_way_to_cap_the_answer():
+    uncapped = model_info({**PLAIN, "supported_parameters": ["temperature", "response_format"]})
+    with pytest.raises(AppError) as exc:
+        check_model(uncapped, needed_tokens=1000)
+    assert exc.value.code == "model_unsupported" and "length" in exc.value.message
+    check_model(model_info({**PLAIN, "supported_parameters": ["max_completion_tokens"]}), needed_tokens=1000)
+    check_model(model_info({**PLAIN, "supported_parameters": []}), needed_tokens=1000)  # unknown: max_tokens sent

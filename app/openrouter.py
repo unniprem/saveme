@@ -167,6 +167,9 @@ def check_model(info: ModelInfo, *, needed_tokens: int) -> None:
         raise unsupported("it doesn't take and return text.")
     if info.pricing is None:
         raise unsupported("its price isn't fixed, so SaveMe can't keep to the spending limit.")
+    if info.parameters and not {"max_tokens", "max_completion_tokens"} & info.parameters:
+        raise unsupported("it can't be given a maximum answer length, so SaveMe can't keep to the "
+                          "spending limit.")
     if info.context_length < needed_tokens:
         raise unsupported(f"its context window ({info.context_length:,} tokens) is too small.")
 
