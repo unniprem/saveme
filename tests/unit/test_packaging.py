@@ -201,3 +201,18 @@ def test_runtime_stage_disables_deno_update_check():
     # Deno must not phone home: everything after the last FROM is the runtime stage.
     runtime = _read("Dockerfile").rsplit("\nFROM ", 1)[1]
     assert re.search(r"^ENV DENO_NO_UPDATE_CHECK=1$", runtime, re.M)
+
+
+def test_readme_configuration_table_lists_every_setting():
+    text = _read("README.md")
+    table = text.split("## Configuration", 1)[1].split("\n### ", 1)[0]
+    rows = set(re.findall(r"^\| `([A-Z_]+)` \|", table, re.M))
+    settings_vars = {f.name.upper() for f in dataclasses.fields(Settings)}
+    assert settings_vars <= rows, sorted(settings_vars - rows)
+
+
+def test_readme_describes_clip_studio_limits_honestly():
+    # Cuts are stream copies: the README must say so, and say what that means for the start.
+    text = _read("README.md")
+    assert "## Clip Studio" in text or "### Clip Studio" in text
+    assert "without re-encoding" in text and "keyframe" in text
