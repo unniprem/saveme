@@ -73,7 +73,8 @@ class MockOpenRouter:
         self.chat: list = []
         self.catalogue = list(CATALOGUE)
         self.key_status = 200
-        self.delay = 0.0
+        self.delay = 0.0  # seconds before any answer
+        self.chat_delay = 0.0  # seconds before a chat completion's answer
 
     def paths(self) -> list[str]:
         return [r.url.path for r in self.requests]
@@ -96,6 +97,8 @@ class MockOpenRouter:
                                                       "limit": 10, "limit_remaining": 8.75,
                                                       "is_free_tier": False}})
         if path.endswith("/chat/completions"):
+            if self.chat_delay:
+                await asyncio.sleep(self.chat_delay)
             if not self.chat:
                 return httpx.Response(500, json={"error": {"code": 500, "message": "no reply queued"}})
             item = self.chat.pop(0)

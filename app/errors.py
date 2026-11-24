@@ -34,6 +34,13 @@ CATALOG: dict[str, tuple[int, str]] = {
     "source_too_large": (422, "The page at this link is too large to read. Try a link to the media itself."),
     "unreadable_media": (422, "SaveMe can't read this file as a video. Try an MP4, MOV, MKV or WebM file."),
     "clip_failed": (422, "Couldn't cut this clip. Try a different start or end."),
+    "no_speech": (422, "No speech was found in this video, so there's nothing to analyse. "
+                       "Import its subtitles instead."),
+    "cost_limit": (422, "This analysis could cost more than the spending limit per analysis."),
+    "analysis_running": (409, "An analysis is already running for this video. Wait for it or cancel it."),
+    "analysis_not_found": (404, "That analysis couldn't be found. It may have finished long ago, or the "
+                                "server may have restarted."),
+    "transcript_not_found": (404, "There's no transcript for this video yet."),
     "transcription_failed": (422, "Couldn't transcribe this video's audio. Try again, or import its subtitles."),
     "video_too_long": (422, "This video is too long for AI Highlights."),
     "whisper_model_missing": (503, "The transcription model isn't installed on the server."),
