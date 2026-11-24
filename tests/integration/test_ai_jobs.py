@@ -64,6 +64,7 @@ async def test_analysis_runs_every_stage_and_caches_the_transcript(setup):
     await transcriber.started.wait()
     assert analysis.status == "transcribing"
     assert (source.workdir / "ai" / analysis.id / "audio.wav").exists()
+    assert list(jobs._held_disk) == [analysis.id]  # the audio's disk is held while it runs
     transcriber.gate.set()
     await finished(analysis)
     assert analysis.status == "ready", ai.view(analysis)
@@ -195,6 +196,7 @@ async def test_cancel_while_transcribing_kills_the_run_and_cleans_up(setup):
     assert not (source.workdir / "ai" / analysis.id).exists()
     assert ai.cancel(analysis.id).status == "cancelled"  # a repeat is harmless
     assert not jobs._in_use(source)  # the hold is released
+    assert jobs._held_disk == {}  # and the disk reservation
 
 
 async def test_cancel_while_analyzing(setup):
@@ -326,7 +328,7 @@ async def test_too_long_a_video_is_refused_before_transcribing(setup):
 
 async def test_no_disk_room_for_the_audio(setup):
     jobs, source, make_ai, _ = setup
-    jobs.make_room = lambda nbytes: False
+    jobs.reserve_disk = lambda key, path, nbytes: False
     ai, transcriber, _ = make_ai()
     analysis = ai.start(source.id, request())
     await finished(analysis)

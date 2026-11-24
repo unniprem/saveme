@@ -325,6 +325,7 @@ class AiManager:
             self._end(analysis, "failed", AppError("internal"))
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
+            self._jobs.release_disk(analysis.id)
             self._jobs.release_source(source)
 
     async def _work(self, analysis: Analysis, source: Job, workdir, ai: AiSettings) -> None:
@@ -392,7 +393,7 @@ class AiManager:
                           max_seconds: int) -> Transcript:
         length = source.duration or max_seconds
         reserve = int(WAV_BYTES_PER_SECOND * length) + _SLACK_BYTES
-        if not self._jobs.make_room(reserve):
+        if not self._jobs.reserve_disk(analysis.id, workdir, reserve):  # held until the run ends
             raise AppError("disk_full")
         workdir.mkdir(parents=True, exist_ok=True)
 

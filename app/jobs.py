@@ -26,8 +26,9 @@ queue, the slots and the disk budget.
 AI Highlights (app.ai_jobs) uses ready sources without taking a slot or a queue place: an
 analysis *holds* its source (hold_source/release_source), which then counts as in use (no idle
 expiry, no replacement), hears through add_source_listener when the source ends (closed, idle,
-replaced; before its folder is removed), and reserves disk for its audio with make_room. Its
-files live in the source's folder, so they end with it.
+replaced; before its folder is removed), and holds a disk reservation for its audio
+(reserve_disk/release_disk) that every later disk check counts. Its files live in the source's
+folder, so they end with it.
 """
 import asyncio
 import logging
@@ -218,6 +219,7 @@ class JobManager:
         self._sweeper: asyncio.Task | None = None
         self._holds: dict[str, int] = {}  # source ID -> analyses using it
         self._source_listeners: list[Callable[[str], None]] = []
+        self._held_disk: dict[str, tuple[Path, int]] = {}  # reservations by analyses: key -> (folder, bytes)
 
     # --- Lifecycle ------------------------------------------------------------
 
@@ -430,10 +432,18 @@ class JobManager:
         """Call callback(source_id) when a source ends, before its folder is removed."""
         self._source_listeners.append(callback)
 
-    def make_room(self, nbytes: int) -> bool:
-        """True if `nbytes` more fit the disk budget now (active jobs counted), evicting unsaved
-        ready files if that is enough."""
-        return self._make_room(count_active=True, reserve=nbytes)
+    def reserve_disk(self, key: str, path: Path, nbytes: int) -> bool:
+        """Hold `nbytes` of the disk budget for files written under `path` (inside a source's
+        folder) until release_disk(key). True if it fits now, counting active jobs and other
+        reservations (unsaved ready files are evicted if that is enough); False leaves nothing held.
+        While held it counts like an active job's: max(what `path` holds, `nbytes`)."""
+        if not self._make_room(count_active=True, reserve=nbytes):
+            return False
+        self._held_disk[key] = (path, nbytes)
+        return True
+
+    def release_disk(self, key: str) -> None:
+        self._held_disk.pop(key, None)
 
     def _open_sources(self) -> list[Job]:
         return [j for j in self._jobs.values() if j.kind == "source" and j.status not in _TERMINAL]
@@ -610,6 +620,7 @@ class JobManager:
         usage = self._disk_usage
         active = [(usage(j.workdir), self._reserve_for(j.kind))
                   for j in self._jobs.values() if j.status in _ACTIVE and j is not job]
+        active += [(usage(path), held) for path, held in self._held_disk.values()]
         own = usage(job.workdir) if job is not None else 0
         outside = usage(self._temp_dir) - sum(used for used, _ in active) - own
         projected = max(0, outside) + max(own, reserve)

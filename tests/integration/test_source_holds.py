@@ -113,14 +113,42 @@ async def test_listeners_ignore_jobs_that_are_not_sources(make_manager):
     assert heard == []
 
 
-async def test_make_room_uses_the_shared_disk_budget(make_manager, settings, temp_dir):
+async def test_a_disk_reservation_holds_until_released(make_manager, settings, temp_dir):
+    tight = dataclasses.replace(settings, max_file_size_mb=1, max_total_disk_mb=4)
+    MiB = 1024 * 1024
+    runner = StubRunner()
+    manager = await make_manager(tight, run_worker=runner, disk_usage=lambda path: 0)
+    assert manager.reserve_disk("analysis-1", temp_dir / "x" / "ai" / "a", 3 * MiB)
+    assert not manager.reserve_disk("analysis-2", temp_dir / "y" / "ai" / "b", 2 * MiB)  # 3 + 2 > 4
+    # A download needs 2 MiB while it runs: with 3 MiB held it waits for room.
+    job = manager.submit(URL, "video", "best")
+    await wait_until(lambda: job.detail == "Waiting for storage space")
+    assert runner.calls == []
+    manager.release_disk("analysis-1")
+    manager.release_disk("analysis-1")  # a repeat is harmless
+    await wait_until(lambda: runner.calls)
+    runner.calls[0].finish()
+    await wait_until(lambda: job.status == "ready")
+
+
+async def test_a_reservation_counts_its_own_files_once(make_manager, settings, temp_dir):
+    tight = dataclasses.replace(settings, max_file_size_mb=1, max_total_disk_mb=4)
+    MiB = 1024 * 1024
+    sizes: dict[str, int] = {}
+    manager = await make_manager(tight, run_worker=StubRunner(auto_finish=True),
+                                 disk_usage=lambda path: sizes.get(path.name, 0))
+    assert manager.reserve_disk("analysis-1", temp_dir / "src" / "ai" / "a", 2 * MiB)
+    # Its WAV grows to 1.5 MiB inside TEMP_DIR: counted as the 2 MiB held, not 2 + 1.5.
+    sizes[temp_dir.name] = sizes["a"] = int(1.5 * MiB)
+    assert manager.reserve_disk("analysis-2", temp_dir / "src2" / "ai" / "b", 2 * MiB)
+
+
+async def test_a_reservation_may_evict_unsaved_files(make_manager, settings, temp_dir):
     tight = dataclasses.replace(settings, max_file_size_mb=1, max_total_disk_mb=4)
     sizes: dict[str, int] = {}
     runner = StubRunner(auto_finish=True)
     manager = await make_manager(tight, run_worker=runner, disk_usage=lambda path: sizes.get(path.name, 0))
-    assert manager.make_room(3 * 1024 * 1024)
-    assert not manager.make_room(5 * 1024 * 1024)
-    job = await ready_job(manager, runner)  # an unsaved file may be evicted to make room
+    job = await ready_job(manager, runner)
     sizes[temp_dir.name] = sizes[job.workdir.name] = 2 * 1024 * 1024
-    assert manager.make_room(3 * 1024 * 1024)
+    assert manager.reserve_disk("analysis-1", temp_dir / "s" / "ai" / "a", 3 * 1024 * 1024)
     assert (job.status, job.reason) == ("expired", "evicted")
