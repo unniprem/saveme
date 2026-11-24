@@ -1,14 +1,14 @@
-// SaveMe AI Highlights: the second tab of Clip Studio. Transcribe the open video on the server
-// (locally, with faster-whisper), ask OpenRouter for highlights in the transcript, then review,
-// adjust, preview and keep them. Plain browser JavaScript; shared helpers come from common.js
-// (window.SaveMe), and the studio's editor, clip list and export from studio.js
-// (window.SaveMeStudioBridge). Text is set with textContent only: titles, summaries and
+// SaveMe Make shorts, finding moments: steps 1 and 2 of Clip Studio's Make shorts tab. Transcribe the
+// open video on the server (locally, with faster-whisper), ask OpenRouter for moments in the transcript,
+// then show them as cards to pick from. shorts.js makes the picked ones into shorts. Plain browser
+// JavaScript; shared helpers come from common.js (window.SaveMe), and the studio's editor and export from
+// studio.js (window.SaveMeStudioBridge). Text is set with textContent only: titles, summaries and
 // transcript lines come from an AI model and a video, so they are never treated as HTML.
 //
 // An analysis runs on the server (POST /api/sources/{id}/analyses) and is followed by polling
 // GET /api/analyses/{id}: queued → preparing → extracting → transcribing → analyzing → ranking →
-// ready (or failed / cancelled). sessionStorage keeps the analysis, the form, the tab and the
-// edits, so a reload comes back to the same highlights.
+// ready (or failed / cancelled). sessionStorage keeps the analysis, the form, the tab, the ticks and
+// the edits, so a reload comes back to the same moments.
 "use strict";
 
 (() => {
@@ -20,7 +20,6 @@
   const MAX_POLL_FAILURES = 30;
   const ESTIMATE_DELAY_MS = 400;
   const MAX_SUBTITLE_BYTES = 4 * 1024 * 1024;
-  const STAGES = ["preparing", "extracting", "transcribing", "analyzing", "ranking", "ready"];
   const PENDING = ["queued", "preparing", "extracting", "transcribing", "analyzing", "ranking"];
   const HEADLINE = {
     starting: "Starting…",
@@ -29,34 +28,33 @@
     extracting: "Extracting audio",
     transcribing: "Transcribing on this computer",
     analyzing: "Analyzing the transcript",
-    ranking: "Ranking highlights",
-    ready: "Highlights ready",
+    ranking: "Ranking moments",
+    ready: "Moments ready",
     transcribed: "Transcript ready",
     failed: "Analysis failed",
     cancelled: "Analysis cancelled",
     cancelling: "Cancelling…",
   };
   const MSG = {
-    notConfigured: "AI analysis isn't set up: add OPENROUTER_API_KEY to the server's .env and restart SaveMe. "
-      + "You can still transcribe and search this video.",
+    notConfigured: "Finding moments needs an OpenRouter key: add OPENROUTER_API_KEY to the server's .env and restart "
+      + "SaveMe (see docs/OPENROUTER_SETUP.md). You can still make shorts from clips you cut by hand in Manual.",
     lost: "This analysis is no longer on the server. Start it again.",
-    noTranscript: "No transcript yet. Find highlights or Transcribe only makes one on this computer, or import subtitles below.",
+    noTranscript: "No transcript yet. Find moments or Transcribe only makes one on this computer, or import subtitles below.",
     badTime: "Type a time like 1:05 or 65.5.",
     startAfterEnd: "The start must be before the end.",
     exportBusy: "Another export is running. Wait for it to finish, or cancel it.",
-    noneSelected: "Select at least one highlight first.",
   };
 
   const el = {};
   for (const id of [
-    "tab-manual", "tab-ai", "tab-shorts", "manual-panel", "ai-panel", "shorts-panel", "ai-status", "ai-test", "ai-test-msg", "ai-form",
+    "tab-manual", "tab-make", "manual-panel", "make-panel", "ai-status", "ai-model", "ai-test", "ai-test-msg", "ai-form",
     "ai-instruction", "ai-min", "ai-max", "ai-count", "ai-min-score", "ai-language", "ai-retranscribe",
     "ai-start", "ai-transcribe", "ai-estimate", "ai-form-msg", "ai-progress", "ai-progress-spin",
     "ai-progress-status", "ai-progress-percent", "ai-progress-bar", "ai-progress-fill", "ai-progress-detail",
-    "ai-stages", "ai-cancel", "ai-results", "ai-results-count", "ai-usage", "ai-notice", "ai-error", "ai-bulk",
-    "ai-select-all", "ai-select-none", "ai-add-selected", "ai-cards-msg", "ai-cards", "ai-transcript",
+    "ai-cancel", "ai-results", "ai-results-count", "ai-usage", "ai-notice", "ai-error", "ai-select-all",
+    "make-no-moments", "ai-cards-msg", "ai-cards", "ai-transcript",
     "ai-transcript-summary", "ai-transcript-empty", "ai-transcript-body", "ai-search", "ai-search-count",
-    "ai-lines", "ai-subs-file", "ai-subs-msg", "studio-video", "announcer", "clip-start",
+    "ai-lines", "ai-subs-file", "ai-subs-msg", "studio-video", "announcer",
   ]) {
     el[id.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = document.getElementById(id);
   }
@@ -73,10 +71,12 @@
   let failures = 0;
   let estimateTimer = 0;
   let estimateSeq = 0;
+  let overLimit = false; // the estimate from the transcript is over the cost limit: Find moments won't run
   let edits = {}; // highlight id -> [start, end] as adjusted by the user
-  let selected = new Set();
+  let selected = new Set(); // the ticked moments: these are made into shorts
+  let pickedFor = ""; // the analysis whose moments the ticks and edits belong to
+  let making = false; // shorts are being made (shorts.js): Find moments waits
   let transcript = null; // { segments, language, origin } of the source
-  let lastStage = ""; // the last stage seen running, to show where a run stopped
 
   const announce = (text) => setText(el.announcer, text);
   const fmtTime = (s) => bridge.fmtTime(s);
@@ -86,12 +86,12 @@
 
   // ---- tabs -------------------------------------------------------------------------------
 
-  // The studio's three tabs: Manual, AI Highlights and Auto Shorts (shorts.js fills the last).
-  const TABS = ["manual", "ai", "shorts"];
+  // The studio's two tabs: Manual and Make shorts (ai.js and shorts.js fill the second).
+  const TABS = ["manual", "make"];
+  const OLD_TABS = { ai: "make", shorts: "make" }; // the tab names stored before Make shorts
 
   function tabParts(name) {
-    return name === "manual" ? [el.tabManual, el.manualPanel] : name === "ai" ? [el.tabAi, el.aiPanel]
-      : [el.tabShorts, el.shortsPanel];
+    return name === "manual" ? [el.tabManual, el.manualPanel] : [el.tabMake, el.makePanel];
   }
 
   function currentTab() {
@@ -133,7 +133,7 @@
     if (!source) return;
     try {
       sessionStorage.setItem(STORE_KEY, JSON.stringify({
-        sourceId: source.id, analysisId, readyId, tab: currentTab(),
+        sourceId: source.id, analysisId, readyId, pickedFor, tab: currentTab(),
         form: formState(), edits, selected: [...selected],
       }));
     } catch {
@@ -178,11 +178,10 @@
     running = false;
     edits = {};
     selected = new Set();
+    pickedFor = "";
     transcript = null;
-    lastStage = "";
     show(el.aiProgress, false);
     show(el.aiResults, false);
-    delete el.aiCards.dataset.analysis;
     setLine(el.aiFormMsg, "");
     setLine(el.aiTestMsg, "");
     setLine(el.aiSubsMsg, "");
@@ -199,12 +198,15 @@
       selected = new Set(Array.isArray(saved.selected) ? saved.selected.filter((s) => typeof s === "string") : []);
       if (typeof saved.analysisId === "string" && JOB_ID_RE.test(saved.analysisId)) analysisId = saved.analysisId;
       if (typeof saved.readyId === "string" && JOB_ID_RE.test(saved.readyId)) readyId = saved.readyId;
-      selectTab(TABS.includes(saved.tab) ? saved.tab : "manual");
+      if (typeof saved.pickedFor === "string" && JOB_ID_RE.test(saved.pickedFor)) pickedFor = saved.pickedFor;
+      const tab = OLD_TABS[saved.tab] || saved.tab;
+      selectTab(TABS.includes(tab) ? tab : "manual");
     } else {
       unstore();
       selectTab("manual");
     }
     const g = gen;
+    publish();
     loadStatus(g);
     loadTranscript(g);
     restoreRuns(g);
@@ -259,15 +261,20 @@
     scheduleEstimate();
   }
 
+  // Step 1 says something only when Find moments can't run; the model line lives under More settings.
   function paintStatus() {
+    const whisper = `Transcription: Whisper ${str(status.whisper_model)}, on this computer.`;
     if (!status.available) {
-      const message = (status.error && str(status.error.message)) || "AI Highlights is turned off.";
-      setLine(el.aiStatus, `AI Highlights is off: ${message} Fix the setting and restart SaveMe.`, "error");
+      const message = (status.error && str(status.error.message)) || "Finding moments is turned off.";
+      setLine(el.aiStatus, `Finding moments is off: ${message} Fix the setting and restart SaveMe (see `
+        + "docs/OPENROUTER_SETUP.md). You can still make shorts from clips you cut by hand in Manual.", "error");
+      setText(el.aiModel, "");
     } else if (!status.configured) {
-      setLine(el.aiStatus, MSG.notConfigured);
+      setLine(el.aiStatus, MSG.notConfigured, "error");
+      setText(el.aiModel, whisper);
     } else {
-      setLine(el.aiStatus, `AI model: ${str(status.model)} (through OpenRouter). Transcription: Whisper `
-        + `${str(status.whisper_model)}, on this computer.`);
+      setLine(el.aiStatus, "");
+      setText(el.aiModel, `AI model: ${str(status.model)} (through OpenRouter). ${whisper}`);
     }
     el.aiTest.disabled = !status.available || !status.configured;
   }
@@ -330,9 +337,9 @@
     for (const input of [el.aiMin, el.aiMax, el.aiMinScore]) input.removeAttribute("aria-invalid");
     let problem = "";
     let bad = null;
-    if (!Number.isFinite(min) || min < 3 || min > 600) [problem, bad] = ["The shortest clip must be 3 to 600 seconds.", el.aiMin];
-    else if (!Number.isFinite(max) || max < 5 || max > 900) [problem, bad] = ["The longest clip must be 5 to 900 seconds.", el.aiMax];
-    else if (max < min + 1) [problem, bad] = ["The longest clip must be at least 1 second longer than the shortest.", el.aiMax];
+    if (!Number.isFinite(min) || min < 3 || min > 600) [problem, bad] = ["The shortest moment must be 3 to 600 seconds.", el.aiMin];
+    else if (!Number.isFinite(max) || max < 5 || max > 900) [problem, bad] = ["The longest moment must be 5 to 900 seconds.", el.aiMax];
+    else if (max < min + 1) [problem, bad] = ["The longest moment must be at least 1 second longer than the shortest.", el.aiMax];
     else if (!Number.isInteger(score) || score < 0 || score > 100) [problem, bad] = ["The minimum score must be a whole number from 0 to 100.", el.aiMinScore];
     if (problem) {
       bad.setAttribute("aria-invalid", "true");
@@ -350,9 +357,9 @@
   function paintButtons() {
     const available = Boolean(status && status.available);
     const configured = available && status.configured;
-    el.aiStart.disabled = !source || running || !configured;
-    el.aiTranscribe.disabled = !source || running || !available;
-    el.aiSubsFile.disabled = !source || running || !available;
+    el.aiStart.disabled = !source || running || making || overLimit || !configured;
+    el.aiTranscribe.disabled = !source || running || making || !available;
+    el.aiSubsFile.disabled = !source || running || making || !available;
     el.aiRetranscribe.disabled = running;
   }
 
@@ -361,14 +368,22 @@
     estimateTimer = setTimeout(estimate, ESTIMATE_DELAY_MS);
   }
 
+  function setOverLimit(on) {
+    if (overLimit === on) return;
+    overLimit = on;
+    paintButtons();
+  }
+
   async function estimate() {
     if (!source || !status || !status.available || !status.configured) {
       setLine(el.aiEstimate, "");
+      setOverLimit(false);
       return;
     }
     const built = request(false);
     if (!built.body) {
       setLine(el.aiEstimate, "");
+      setOverLimit(false);
       return;
     }
     const g = gen;
@@ -377,16 +392,18 @@
     try {
       result = await api(`${sourceBase()}/analyses/estimate`, built.body);
     } catch (err) {
-      if (g === gen && seq === estimateSeq) setLine(el.aiEstimate, `Couldn't estimate the cost. ${err.message}`, "error");
+      if (g === gen && seq === estimateSeq) {
+        setLine(el.aiEstimate, `Couldn't estimate the cost. ${err.message}`, "error");
+        setOverLimit(false);
+      }
       return;
     }
     if (g !== gen || seq !== estimateSeq) return;
-    const basis = result.basis === "transcript" ? "from the transcript"
-      : "from the video's length (checked again once it's transcribed)";
-    const text = `Estimated cost: about ${fmtUsd(result.estimated_usd)}, at most ${fmtUsd(result.max_usd)}, `
-      + `${basis}. Limit: ${fmtUsd(result.limit_usd)} per analysis.`;
+    const text = `Estimated cost: about ${fmtUsd(result.estimated_usd)} (at most ${fmtUsd(result.max_usd)}).`;
     const over = result.within_limit === false && result.basis === "transcript";
-    setLine(el.aiEstimate, over ? `${text} That's over the limit, so it won't run.` : text, over ? "error" : "");
+    setLine(el.aiEstimate, over ? `${text} That's over the ${fmtUsd(result.limit_usd)} limit, so it won't run.` : text,
+      over ? "error" : "");
+    setOverLimit(over);
   }
 
   // ---- analysis -----------------------------------------------------------------------------
@@ -405,9 +422,8 @@
     const hadFocus = document.activeElement === button;
     running = true;
     setLine(el.aiFormMsg, "");
-    lastStage = "";
     paintButtons();
-    paintProgress({ status: "starting", skipped: [] });
+    paintProgress({ status: "starting" });
     if (hadFocus) el.aiProgress.focus(); // the button is now disabled: follow the progress instead
     let created;
     try {
@@ -433,7 +449,7 @@
     analysisId = created.analysis_id;
     failures = 0;
     store();
-    announce(transcribeOnly ? "Transcription started." : "Looking for highlights.");
+    announce(transcribeOnly ? "Transcription started." : "Looking for moments.");
     poll(g, analysisId);
   }
 
@@ -489,7 +505,7 @@
       paintResults(shown || next, onlyTranscript && !shown);
       if (source) loadTranscript(gen, onlyTranscript);
       const found = Array.isArray(next.candidates) ? next.candidates.length : 0;
-      announce(onlyTranscript ? "Transcript ready." : `${count(found, "highlight", "highlights")} found.`);
+      announce(onlyTranscript ? "Transcript ready." : `${count(found, "moment", "moments")} found.`);
     } else {
       if (shown) paintResults(shown, false); // the earlier highlights are still good
       else show(el.aiResults, false);
@@ -536,11 +552,6 @@
     const pending = state === "starting" || PENDING.includes(state);
     const transcribeOnly = Boolean(v.options && v.options.transcribe_only);
     const headline = state === "ready" && transcribeOnly ? HEADLINE.transcribed : HEADLINE[state] || HEADLINE.queued;
-    const skipped = Array.isArray(v.skipped) ? v.skipped : [];
-    if (STAGES.includes(state) && state !== "ready") lastStage = state;
-    const stopped = state === "failed" || state === "cancelled";
-    // A stopped run shows the stages it finished and the one it stopped in.
-    const at = stopped ? STAGES.indexOf(lastStage) : STAGES.indexOf(state);
     const message = (v.error && str(v.error.message)) || "";
     show(el.aiProgress, true);
     setText(el.aiProgressStatus, headline);
@@ -554,20 +565,6 @@
     setText(el.aiProgressDetail, detail);
     show(el.aiProgressDetail, Boolean(detail));
     el.aiProgressDetail.dataset.tone = state === "failed" ? "error" : "";
-    for (const item of el.aiStages.querySelectorAll("[data-stage]")) {
-      const key = item.dataset.stage;
-      const index = STAGES.indexOf(key);
-      let mark = "pending";
-      let note = "";
-      if (transcribeOnly && (key === "analyzing" || key === "ranking")) [mark, note] = ["skipped", " (not needed)"];
-      else if (skipped.includes(key)) [mark, note] = ["skipped", " (saved transcript reused)"];
-      else if (state === "ready") [mark, note] = ["done", " (done)"];
-      else if (at >= 0 && index < at) [mark, note] = ["done", " (done)"];
-      else if (index === at && stopped) [mark, note] = state === "failed" ? ["failed", " (failed)"] : ["pending", " (stopped)"];
-      else if (index === at) [mark, note] = ["active", " (in progress)"];
-      item.dataset.state = mark;
-      setText(item.querySelector("[data-note]"), note);
-    }
     el.aiCancel.disabled = state === "starting";
     show(el.aiCancel, pending);
   }
@@ -580,20 +577,38 @@
     return { start: h.start, end: h.end };
   }
 
+  // A view's moments that can be shown, in rank order.
+  function momentsOf(v) {
+    return (v && Array.isArray(v.candidates) ? v.candidates : []).filter(
+      (h) => h && typeof h.id === "string" && isNum(h.start) && isNum(h.end) && h.end > h.start);
+  }
+
+  function moments() {
+    return momentsOf(shown);
+  }
+
+  // Tell shorts.js which moments are on screen and which are ticked, with their (edited) times and titles.
+  function publish() {
+    const picks = shown ? moments().filter((h) => selected.has(h.id)).map((h) => ({ ...rangeOf(h), title: str(h.title) })) : [];
+    bridge.setMoments({ shown: Boolean(shown), picks });
+  }
+
   function paintResults(v, onlyTranscript) {
     if (onlyTranscript) {
       show(el.aiResults, false);
+      publish();
       return;
     }
-    if (el.aiCards.dataset.analysis && el.aiCards.dataset.analysis !== str(v.analysis_id)) {
-      edits = {}; // edits and choices belong to the highlights they were made on
-      selected = new Set();
+    const highlights = momentsOf(v);
+    if (str(v.analysis_id) !== pickedFor) { // new moments: all ticked, and the old edits don't apply to them
+      pickedFor = str(v.analysis_id);
+      edits = {};
+      selected = new Set(highlights.map((h) => h.id));
+      store();
     }
-    el.aiCards.dataset.analysis = str(v.analysis_id);
-    const highlights = (Array.isArray(v.candidates) ? v.candidates : []).filter(
-      (h) => h && typeof h.id === "string" && isNum(h.start) && isNum(h.end) && h.end > h.start);
     show(el.aiResults, true);
-    setText(el.aiResultsCount, highlights.length ? count(highlights.length, "highlight", "highlights") : "");
+    setText(el.aiResultsCount, highlights.length ? count(highlights.length, "moment", "moments") : "");
+    show(el.makeNoMoments, highlights.length === 0);
     const usage = v.usage;
     if (usage && isNum(usage.cost_usd)) {
       const how = usage.cost_reported ? "reported by OpenRouter" : "estimated from the token counts";
@@ -604,10 +619,18 @@
     }
     setLine(el.aiNotice, str(v.notice));
     setLine(el.aiError, "");
-    show(el.aiBulk, highlights.length > 0);
+    show(el.aiSelectAll, highlights.length > 0);
     setLine(el.aiCardsMsg, "");
     selected = new Set([...selected].filter((id) => highlights.some((h) => h.id === id)));
     el.aiCards.replaceChildren(...highlights.map((h, i) => card(h, i + 1)));
+    paintSelectAll();
+    publish();
+  }
+
+  // One button that selects every moment, or none once they're all selected.
+  function paintSelectAll() {
+    const all = moments();
+    setText(el.aiSelectAll, all.length && all.every((h) => selected.has(h.id)) ? "Select none" : "Select all");
   }
 
   const BUTTON = "h-10 shrink-0 rounded-lg px-3 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 "
@@ -635,9 +658,32 @@
     return b;
   }
 
-  // One highlight: select box, rank, score, title, editable times, summary, reason, tags, actions.
+  const SCORE_NOTE = "Scores are the AI's editorial judgement of each moment, not a prediction of views.";
+  const SUMMARY = "inline-flex h-10 cursor-pointer list-none items-center gap-1.5 rounded-lg px-2 text-sm font-semibold "
+    + "text-ink-700 hover:text-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 "
+    + "dark:text-ink-300 dark:hover:text-brand-300 dark:focus-visible:outline-brand-400 [&::-webkit-details-marker]:hidden";
+  const BADGE = "rounded-md bg-brand-50 px-1.5 py-0.5 font-semibold text-brand-700 dark:bg-white/10 dark:text-ink-50";
+  // The same key shorts.js gives a range, so it can show "Captions edited" on this card (it keeps the edits).
+  const keyOf = (r) => `${Math.round(r.start * 1000)}-${Math.round(r.end * 1000)}`;
+
+  function chevron() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("class", "size-4 shrink-0 transition-transform group-open:rotate-180 motion-reduce:transition-none");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", "m6 9 6 6 6-6");
+    svg.append(path);
+    return svg;
+  }
+
+  // One moment. The face: tick box, title, rank and times, a two-line summary and Play. Behind More: the
+  // times to change, why it was picked, the score, the tags, Edit captions and Save plain cut.
   function card(h, n) {
-    const title = str(h.title) || "Untitled highlight";
+    const title = str(h.title) || "Untitled moment";
     const item = node("li", "rounded-xl border border-ink-200 p-3 sm:p-4 dark:border-ink-800");
     item.dataset.highlight = h.id;
 
@@ -646,24 +692,35 @@
     check.type = "checkbox";
     check.id = `ai-${h.id}-select`;
     check.checked = selected.has(h.id);
-    check.setAttribute("aria-label", `Select highlight ${n}: ${title}`);
+    check.setAttribute("aria-label", `Make moment ${n} into a short: ${title}`);
     check.addEventListener("change", () => {
       if (check.checked) selected.add(h.id);
       else selected.delete(h.id);
+      paintSelectAll();
       store();
+      publish();
     });
-    const heading = node("div", "min-w-0 flex-1");
-    const meta = node("p", "flex flex-wrap items-center gap-2 text-xs text-ink-600 dark:text-ink-400");
-    meta.append(node("span", "font-semibold tabular-nums", `#${n}`));
-    const score = node("span", "rounded-md bg-brand-100 px-1.5 py-0.5 font-bold tabular-nums text-brand-700 dark:bg-brand-500/20 dark:text-brand-300",
-      `Score ${isNum(h.score) ? Math.round(h.score) : "–"}`);
-    meta.append(score);
-    const when = node("span", "tabular-nums");
-    meta.append(when);
-    heading.append(meta, node("h4", "mt-1 font-semibold break-words", title));
-    top.append(check, heading);
+    const face = node("div", "min-w-0 flex-1");
+    const when = node("p", "mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs tabular-nums text-ink-600 dark:text-ink-400");
+    const whenText = node("span");
+    const badge = node("span", BADGE, "Captions edited");
+    badge.hidden = true;
+    when.append(whenText, badge);
+    face.append(node("h4", "font-semibold break-words", title), when);
+    if (str(h.summary)) face.append(node("p", "mt-1 line-clamp-2 text-sm break-words text-ink-900 dark:text-ink-50", str(h.summary)));
+    top.append(check, face);
 
-    const times = node("div", "mt-3 flex flex-wrap items-end gap-3");
+    const actions = node("div", "mt-2 flex flex-wrap items-center gap-2 pl-7");
+    actions.append(button("▶ Play", `Play moment ${n}`, SOFT, () => preview(h)));
+
+    const more = node("details", "group mt-1 pl-7");
+    const summary = node("summary", SUMMARY);
+    summary.setAttribute("aria-label", `More about moment ${n}`);
+    summary.append(node("span", "", "More"), chevron());
+    const inside = node("div", "mt-2 space-y-3");
+    more.append(summary, inside);
+
+    const times = node("div", "flex flex-wrap items-end gap-3");
     const fields = {};
     for (const which of ["start", "end"]) {
       const wrap = node("div");
@@ -681,7 +738,7 @@
     }
     const length = node("span", "pb-2.5 text-sm tabular-nums text-ink-600 dark:text-ink-400");
     times.append(length);
-    const msg = node("p", "mt-2 text-sm font-medium text-red-700 dark:text-red-400");
+    const msg = node("p", "text-sm font-medium text-red-700 dark:text-red-400");
     msg.hidden = true;
     msg.id = `ai-${h.id}-msg`;
     fields.start.setAttribute("aria-describedby", msg.id);
@@ -692,7 +749,8 @@
       if (document.activeElement !== fields.start) fields.start.value = fmtTime(r.start);
       if (document.activeElement !== fields.end) fields.end.value = fmtTime(r.end);
       setText(length, `Length ${fmtTime(r.end - r.start)}`);
-      setText(when, `${fmtTime(r.start)} – ${fmtTime(r.end)}`);
+      setText(whenText, `#${n} · ${fmtTime(r.start)} – ${fmtTime(r.end)} · ${fmtTime(r.end - r.start)}`);
+      badge.dataset.captionsKey = keyOf(r); // shorts.js shows the badge when this range's captions were edited
     }
 
     function fromField(which) {
@@ -701,9 +759,9 @@
       const r = rangeOf(h);
       const next = { ...r, [which]: value };
       let problem = value === null ? MSG.badTime : "";
-      const top = source && source.duration > 0 ? source.duration : Infinity;
+      const end = source && source.duration > 0 ? source.duration : Infinity;
       if (!problem && Math.round(next.end * 1000) - Math.round(next.start * 1000) < Math.round(bridge.minClip * 1000)) problem = MSG.startAfterEnd;
-      if (!problem && next.end > top + 0.05) problem = `The video is only ${fmtTime(top)} long.`;
+      if (!problem && next.end > end + 0.05) problem = `The video is only ${fmtTime(end)} long.`;
       fields.start.removeAttribute("aria-invalid");
       fields.end.removeAttribute("aria-invalid");
       if (problem) {
@@ -714,11 +772,14 @@
         return;
       }
       msg.hidden = true;
-      edits[h.id] = [Math.round(next.start * 1000) / 1000, Math.round(Math.min(next.end, top) * 1000) / 1000];
+      edits[h.id] = [Math.round(next.start * 1000) / 1000, Math.round(Math.min(next.end, end) * 1000) / 1000];
       store();
       input.value = fmtTime(edits[h.id][which === "start" ? 0 : 1]);
       paintTimes();
-      announce(`Highlight ${n} now ${fmtTime(edits[h.id][0])} to ${fmtTime(edits[h.id][1])}.`);
+      publish();
+      const shorts = window.SaveMeShorts; // an open caption editor follows the new times
+      if (shorts) shorts.moved(r, rangeOf(h), `moment ${n}`);
+      announce(`Moment ${n} now ${fmtTime(edits[h.id][0])} to ${fmtTime(edits[h.id][1])}.`);
     }
     for (const which of ["start", "end"]) {
       fields[which].addEventListener("change", () => fromField(which));
@@ -727,25 +788,31 @@
       });
     }
     paintTimes();
+    inside.append(times, msg);
 
-    const body = node("div", "mt-3 space-y-1 text-sm");
-    if (str(h.summary)) body.append(node("p", "break-words text-ink-900 dark:text-ink-50", str(h.summary)));
-    if (str(h.reason)) body.append(node("p", "break-words text-ink-600 dark:text-ink-400", `Why it works: ${str(h.reason)}`));
+    const about = node("div", "space-y-1 text-sm");
+    if (str(h.reason)) about.append(node("p", "break-words text-ink-700 dark:text-ink-300", `Why it was picked: ${str(h.reason)}`));
+    about.append(node("p", "text-ink-600 dark:text-ink-400", `Score ${isNum(h.score) ? Math.round(h.score) : "–"}. ${SCORE_NOTE}`));
     const tags = Array.isArray(h.tags) ? h.tags.filter((t) => typeof t === "string" && t.trim()) : [];
     if (tags.length) {
       const list = node("ul", "mt-2 flex flex-wrap gap-1.5");
       list.setAttribute("aria-label", "Tags");
       for (const tag of tags) list.append(node("li", "rounded-md bg-ink-100 px-1.5 py-0.5 text-xs text-ink-700 dark:bg-white/10 dark:text-ink-300", tag));
-      body.append(list);
+      about.append(list);
     }
+    inside.append(about);
 
-    const actions = node("div", "mt-3 flex flex-wrap gap-2");
-    actions.append(
-      button("Preview", `Preview highlight ${n}`, SOFT, () => preview(h)),
-      button("Load into editor", `Load highlight ${n} into the editor`, OUTLINE, () => loadIntoEditor(h, n)),
-      button("Export", `Export highlight ${n} as a clip`, OUTLINE, () => exportOne(h, n)),
+    const tools = node("div", "flex flex-wrap gap-2");
+    tools.append(
+      button("Edit captions", `Edit the captions of moment ${n}`, OUTLINE, () => {
+        const shorts = window.SaveMeShorts; // shorts.js loads after this file
+        if (shorts) shorts.editCaptions(rangeOf(h), `moment ${n}`);
+      }),
+      button("Save plain cut", `Save moment ${n} as a plain cut`, OUTLINE, () => exportOne(h, n)),
     );
-    item.append(top, times, msg, body, actions);
+    inside.append(tools);
+
+    item.append(top, actions, more);
     return item;
   }
 
@@ -762,14 +829,6 @@
     }
   }
 
-  function loadIntoEditor(h, n) {
-    const r = rangeOf(h);
-    if (!bridge.loadRange(r.start, r.end)) return;
-    selectTab("manual");
-    el.clipStart.focus();
-    announce(`Highlight ${n} loaded into the editor: ${fmtTime(r.start)} to ${fmtTime(r.end)}.`);
-  }
-
   function exportOne(h, n) {
     const r = rangeOf(h);
     if (bridge.isExporting() || !bridge.exportRange(r.start, r.end)) {
@@ -777,32 +836,18 @@
       announce(MSG.exportBusy);
       return;
     }
-    setLine(el.aiCardsMsg, `Exporting highlight ${n}. Its progress shows under the clip list.`);
+    setLine(el.aiCardsMsg, `Saving moment ${n} as a plain cut. Its progress shows below the steps.`);
   }
 
-  function setAll(on) {
-    const highlights = shown && Array.isArray(shown.candidates) ? shown.candidates : [];
-    selected = new Set(on ? highlights.map((h) => h.id) : []);
+  function toggleAll() {
+    const all = moments();
+    const on = !(all.length && all.every((h) => selected.has(h.id)));
+    selected = new Set(on ? all.map((h) => h.id) : []);
     for (const box of el.aiCards.querySelectorAll("input[type=checkbox]")) box.checked = on;
+    paintSelectAll();
     store();
-    announce(on ? "All highlights selected." : "No highlights selected.");
-  }
-
-  function addSelected() {
-    const highlights = shown && Array.isArray(shown.candidates) ? shown.candidates : [];
-    const chosen = highlights.filter((h) => selected.has(h.id));
-    if (!chosen.length) {
-      setLine(el.aiCardsMsg, MSG.noneSelected, "error");
-      announce(MSG.noneSelected);
-      return;
-    }
-    const result = bridge.addRanges(chosen.map(rangeOf));
-    const parts = [result.added ? `Added ${count(result.added, "clip", "clips")} to the clip list.` : "No clips were added."];
-    if (result.duplicates) parts.push(`${count(result.duplicates, "was", "were")} already in it.`.replace(/^1 was/, "1 was").replace(/^(\d+) were/, "$1 were"));
-    if (result.full) parts.push(`${count(result.full, "clip", "clips")} didn't fit: the list holds up to ${result.max}.`);
-    const text = parts.join(" ");
-    setLine(el.aiCardsMsg, text, result.added ? "" : "error");
-    announce(text);
+    publish();
+    announce(on ? "All moments selected." : "No moments selected.");
   }
 
   // ---- transcript ------------------------------------------------------------------------------
@@ -905,7 +950,7 @@
       return;
     }
     const lines = data && isNum(data.segments) ? data.segments : 0;
-    setLine(el.aiSubsMsg, `Imported ${count(lines, "subtitle line", "subtitle lines")}. Find highlights will use them instead of transcribing.`);
+    setLine(el.aiSubsMsg, `Imported ${count(lines, "subtitle line", "subtitle lines")}. Find moments will use them instead of transcribing.`);
     announce("Subtitles imported.");
     loadTranscript(g, true);
     scheduleEstimate();
@@ -929,11 +974,16 @@
       scheduleEstimate();
     });
   }
-  el.aiSelectAll.addEventListener("click", () => setAll(true));
-  el.aiSelectNone.addEventListener("click", () => setAll(false));
-  el.aiAddSelected.addEventListener("click", addSelected);
+  el.aiSelectAll.addEventListener("click", toggleAll);
   el.aiSearch.addEventListener("input", filterTranscript);
   el.aiSubsFile.addEventListener("change", importSubtitles);
   paintButtons();
+  // shorts.js asks which analysis is running here, so Make can wait for it (it may make the transcript)
+  // instead of trying to start a second one, which the server refuses.
+  window.SaveMeMoments = Object.freeze({ running: () => (running && analysisId ? analysisId : "") });
+  bridge.onMaking((on) => {
+    making = on;
+    paintButtons();
+  });
   bridge.onSource(onSource);
 })();

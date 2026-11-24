@@ -352,6 +352,8 @@ OpenRouter key for a hard cap.
 
 ## 11. UI
 
+Superseded for the page by [the Make shorts design](superpowers/specs/2026-11-24-make-shorts-design.md); the server parts below still hold.
+
 Clip Studio gains a two-tab switch under the preview: **Manual** (Phase 1 controls) and
 **AI Highlights**. The clip list and export area stay below both tabs.
 

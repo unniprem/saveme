@@ -123,7 +123,7 @@ def test_brand_svgs_are_plain_drawings():
 
 def test_format_choice_is_one_radio_group_with_one_download_button():
     tags = _parsed().tags
-    radios = [a for t, a in tags if t == "input" and a.get("type") == "radio"]
+    radios = [a for t, a in tags if t == "input" and a.get("type") == "radio" and a.get("name") != "make-platform"]
     assert radios and all(a.get("name") == "format" for a in radios)
     buttons = [a.get("id") for t, a in tags if t == "button"]
     assert "download" in buttons
@@ -222,39 +222,85 @@ def test_tailwind_scans_every_page_file():
         assert f'@source "../{name}";' in css, name
 
 
-AI_IDS = [
-    "studio-tabs", "tab-manual", "tab-ai", "manual-panel", "ai-panel",
-    "ai-status", "ai-test", "ai-test-msg", "ai-privacy",
-    "ai-form", "ai-instruction", "ai-min", "ai-max", "ai-count", "ai-min-score", "ai-language",
-    "ai-retranscribe", "ai-start", "ai-transcribe", "ai-estimate", "ai-form-msg",
-    "ai-progress", "ai-stages", "ai-progress-status", "ai-progress-percent", "ai-progress-bar",
-    "ai-progress-fill", "ai-progress-detail", "ai-cancel",
-    "ai-results", "ai-results-title", "ai-usage", "ai-notice", "ai-error", "ai-select-all",
-    "ai-select-none", "ai-add-selected", "ai-cards",
-    "ai-transcript", "ai-transcript-summary", "ai-search", "ai-search-count", "ai-lines",
-    "ai-subs-file", "ai-subs-msg",
+def _between(start_id: str, end_id: str) -> str:
+    h = _html()
+    a = h.index(f'id="{start_id}"')
+    return h[a:h.index(f'id="{end_id}"', a)]
+
+
+MAKE_IDS = [
+    "studio-tabs", "tab-manual", "tab-make", "manual-panel", "clip-list-wrap", "make-panel",
+    "make-step-find", "ai-form", "make-platform-chips", "make-platform-youtube_shorts",
+    "make-platform-instagram_reels", "make-platform-tiktok", "make-platform-other", "ai-count", "ai-instruction",
+    "ai-start", "ai-estimate", "ai-form-msg", "make-privacy", "ai-status",
+    "ai-progress", "ai-progress-status", "ai-progress-percent", "ai-progress-bar", "ai-progress-fill",
+    "ai-progress-detail", "ai-cancel",
+    "make-more", "ai-model", "ai-test", "ai-test-msg", "ai-privacy", "ai-min", "ai-max", "ai-min-score",
+    "ai-language", "ai-retranscribe", "ai-transcribe",
+    "ai-transcript", "ai-transcript-summary", "ai-search", "ai-search-count", "ai-lines", "ai-subs-file", "ai-subs-msg",
+    "make-pick", "make-step-pick", "ai-results", "ai-results-title", "ai-results-count", "ai-select-all", "ai-usage",
+    "ai-notice", "ai-error", "make-no-moments", "ai-cards-msg", "ai-cards",
+    "make-step-shorts", "export",
 ]
-AI_COPY = [
-    "Transcription runs on this computer. To find highlights, SaveMe sends the transcript text "
+REMOVED_IDS = [
+    "tab-ai", "tab-shorts", "ai-panel", "shorts-panel", "ai-stages", "ai-select-none", "ai-add-selected", "ai-bulk",
+    "shorts-use-marks", "shorts-select-all", "shorts-clips-empty",
+]
+MAKE_COPY = [
+    "Transcription runs on this computer. To find moments, SaveMe sends the transcript text "
     "(never the audio or video) to OpenRouter, which passes it to the AI model.",
+    "Only the transcript text is sent to the AI, never the video.",
+    "Clips you cut by hand",
+    "1. Find moments", "2. Pick the ones you want", "3. Your shorts",
+    "Where will you post?", "How many shorts?", "What should they be about?",
+    'No moments found. Try other words in "What should they be about?", or other lengths under More settings.',
+    "More settings",
     "Scores are the AI's editorial judgement of each moment, not a prediction of views.",
-    "Add selected to clip list",
+    "Make them without captions",
 ]
 
 
-def test_ai_highlights_markup():
-    by_id = {a["id"]: (t, a) for t, a in _parsed().tags if a.get("id")}
-    for name in AI_IDS:
+def test_make_shorts_markup():
+    tags = _parsed().tags
+    by_id = {a["id"]: (t, a) for t, a in tags if a.get("id")}
+    for name in MAKE_IDS:
         assert name in by_id, name
+    for name in REMOVED_IDS:
+        assert name not in by_id, name
     tag, tabs = by_id["studio-tabs"]
     assert tabs.get("role") == "tablist" and tabs.get("aria-label")
-    for tab, panel in (("tab-manual", "manual-panel"), ("tab-ai", "ai-panel")):
+    assert [a["id"] for t, a in tags if t == "button" and a.get("role") == "tab"] == ["tab-manual", "tab-make"]
+    for tab, panel in (("tab-manual", "manual-panel"), ("tab-make", "make-panel")):
         tag, attrs = by_id[tab]
         assert tag == "button" and attrs.get("role") == "tab" and attrs.get("aria-controls") == panel
         assert by_id[panel][1].get("role") == "tabpanel" and by_id[panel][1].get("aria-labelledby") == tab
     assert by_id["tab-manual"][1].get("aria-selected") == "true"
-    assert by_id["tab-ai"][1].get("aria-selected") == "false" and "hidden" in by_id["ai-panel"][1]
-    labels = {a.get("for") for t, a in _parsed().tags if t == "label"}
+    assert by_id["tab-make"][1].get("aria-selected") == "false" and "hidden" in by_id["make-panel"][1]
+    assert 'id="clip-list-wrap"' in _between("manual-panel", "make-panel")
+    h = _html()
+    order = [h.index(f'id="{name}"') for name in
+             ("make-step-find", "ai-progress", "make-more", "make-pick", "make-step-shorts", "export")]
+    assert order == sorted(order)
+    tag, more = by_id["make-more"]
+    assert tag == "details" and "open" not in more
+    assert "hidden" in by_id["make-pick"][1]  # shown once there are moments or clips cut by hand
+    radios = [a for t, a in tags if t == "input" and a.get("name") == "make-platform"]
+    assert [a.get("type") for a in radios] == ["radio"] * 3
+    assert [a.get("value") for a in radios] == ["youtube_shorts", "instagram_reels", "tiktok"]
+    assert ["checked" in a for a in radios] == [True, False, False]
+    step_one = _between("make-step-find", "make-more")
+    for name in ("ai-count", "ai-instruction", "ai-start", "ai-estimate", "make-privacy", "ai-status"):
+        assert f'id="{name}"' in step_one, name
+    more_settings = _between("make-more", "make-pick")
+    for name in ("ai-model", "ai-test", "ai-min", "ai-max", "ai-min-score", "ai-language", "ai-retranscribe",
+                 "ai-transcribe", "ai-transcript", "ai-subs-file", "shorts-platform", "shorts-template",
+                 "shorts-quality", "shorts-fps", "shorts-layout", "shorts-margin", "shorts-manual", "shorts-captions",
+                 "shorts-burn", "shorts-srt", "shorts-style", "shorts-branding", "shorts-presets",
+                 "shorts-preview-frame"):
+        assert f'id="{name}"' in more_settings, name
+    for heading in (">1. Find moments<", ">2. Pick the ones you want<", ">3. Your shorts<"):
+        assert heading in h, heading
+    labels = {a.get("for") for t, a in tags if t == "label"}
     for name in ("ai-instruction", "ai-min", "ai-max", "ai-count", "ai-min-score", "ai-language",
                  "ai-retranscribe", "ai-search", "ai-subs-file"):
         assert name in labels, name
@@ -262,17 +308,19 @@ def test_ai_highlights_markup():
     assert by_id["ai-subs-file"][1].get("type") == "file" and ".srt" in by_id["ai-subs-file"][1]["accept"]
     assert by_id["ai-cards"][0] == "ol" and by_id["ai-cards"][1].get("aria-labelledby") == "ai-results-title"
     assert by_id["ai-progress-bar"][1].get("role") == "progressbar"
-    for name in ("ai-progress", "ai-results"):  # follow progress when a button disables itself
+    for name in ("ai-progress", "ai-results", "shorts-progress"):  # follow progress when a button disables itself
         assert by_id[name][1].get("tabindex") == "-1", name
-    for name in ("ai-form-msg", "ai-test-msg", "ai-subs-msg"):
+    for name in ("ai-form-msg", "ai-status", "ai-test-msg", "ai-subs-msg", "shorts-render-msg", "shorts-nocaps-msg"):
         assert by_id[name][1].get("aria-live") == "polite", name
     assert by_id["ai-transcript"][0] == "details"
 
 
-def test_ai_copy_is_pinned():
+def test_make_shorts_copy_is_pinned():
     page, ai = _html(), (STATIC / "ai.js").read_text(encoding="utf-8")
-    for text in AI_COPY:
-        assert text in page or text in ai, text
+    shorts = (STATIC / "shorts.js").read_text(encoding="utf-8")
+    for text in MAKE_COPY:
+        assert text in page + ai + shorts, text
+    assert "Add selected to clip list" not in page + ai
     for route in ("/api/ai/status", "/api/ai/test", "/analyses/estimate", "/analyses`", "/transcript",
                   "/cancel`"):
         assert route in ai, route
@@ -281,9 +329,59 @@ def test_ai_copy_is_pinned():
     assert "window.SaveMeStudioBridge = Object.freeze(" in studio
 
 
+def test_moments_handoff_is_wired():
+    studio = (STATIC / "studio.js").read_text(encoding="utf-8")
+    ai = (STATIC / "ai.js").read_text(encoding="utf-8")
+    shorts = (STATIC / "shorts.js").read_text(encoding="utf-8")
+    for name in ("setMoments(", "onMoments(callback)", "setMaking(", "onMaking(callback)"):
+        assert name in studio, name
+    assert "bridge.setMoments(" in ai and "bridge.onMaking(" in ai
+    assert "bridge.onMoments(" in shorts and "bridge.setMaking(" in shorts
+    assert "You can make up to 20 shorts at once." in shorts
+
+
+def test_cards_are_simple():
+    ai = (STATIC / "ai.js").read_text(encoding="utf-8")
+    shorts = (STATIC / "shorts.js").read_text(encoding="utf-8")
+    assert "window.SaveMeShorts = Object.freeze(" in shorts and "editCaptions(" in shorts
+    assert "window.SaveMeShorts" in ai
+    for text in ("▶ Play", "Save plain cut", "Edit captions", "Why it was picked: ", "line-clamp-2"):
+        assert text in ai, text
+    assert "Load into editor" not in ai
+
+
+def test_step_one_copy():
+    page = _html()
+    ai = (STATIC / "ai.js").read_text(encoding="utf-8")
+    shorts = (STATIC / "shorts.js").read_text(encoding="utf-8")
+    assert "syncChips(" in shorts and 'name="make-platform"' in page
+    assert "Finding moments needs an OpenRouter key" in ai
+    assert "Ranking moments" in ai and "highlights found" not in ai
+
+
+def test_step_three():
+    page = _html()
+    shorts = (STATIC / "shorts.js").read_text(encoding="utf-8")
+    assert "captionsGate(" in shorts and "runTranscription(" in shorts
+    assert "/api/ai/status" in shorts
+    assert "Make them without captions" in page
+    assert 'createElement("video")' in shorts
+    assert "Download all" in page
+
+
+def test_copy_says_what_make_shorts_does():
+    page = _html()
+    ai = (STATIC / "ai.js").read_text(encoding="utf-8")
+    shorts = (STATIC / "shorts.js").read_text(encoding="utf-8")
+    readme = (STATIC.parent / "README.md").read_text(encoding="utf-8")
+    for text in ("Auto Shorts", "so shorts get no captions", "(seconds from the clip's start)", "inside the clip.",
+                 ">Moment</label>"):
+        assert text not in page + ai + shorts, text
+    assert "**Select all** ticks them all again" not in readme
+
+
 SHORTS_IDS = [
-    "tab-shorts", "shorts-panel", "shorts-status", "shorts-use-marks", "shorts-select-all", "shorts-clips",
-    "shorts-clips-empty", "shorts-platform", "shorts-template", "shorts-quality", "shorts-fps", "shorts-layout",
+    "shorts-status", "shorts-hand", "shorts-clips", "shorts-platform", "shorts-template", "shorts-quality", "shorts-fps", "shorts-layout",
     "shorts-margin", "shorts-manual", "shorts-manual-x", "shorts-manual-y", "shorts-manual-zoom",
     "shorts-transcript", "shorts-transcribe", "shorts-captions", "shorts-burn", "shorts-srt", "shorts-style",
     "shorts-position", "shorts-size", "shorts-words", "shorts-color", "shorts-highlight", "shorts-highlight-mode",
@@ -295,6 +393,7 @@ SHORTS_IDS = [
     "shorts-preview-clip", "shorts-preview-img", "shorts-preview-video", "shorts-editor", "shorts-cues",
     "shorts-cues-add", "shorts-cues-reset", "shorts-cues-done", "shorts-render", "shorts-render-msg",
     "shorts-progress", "shorts-progress-bar", "shorts-results", "shorts-zip", "shorts-cancel",
+    "shorts-nocaps", "shorts-nocaps-msg", "shorts-nocaps-go",
 ]
 
 
@@ -303,11 +402,10 @@ def test_auto_shorts_markup():
     by_id = {a["id"]: (t, a) for t, a in tags if a.get("id")}
     for name in SHORTS_IDS:
         assert name in by_id, name
-    tag, attrs = by_id["tab-shorts"]
-    assert tag == "button" and attrs.get("role") == "tab" and attrs.get("aria-controls") == "shorts-panel"
-    assert attrs.get("aria-selected") == "false"
-    panel = by_id["shorts-panel"][1]
-    assert panel.get("role") == "tabpanel" and panel.get("aria-labelledby") == "tab-shorts" and "hidden" in panel
+    hand = by_id["shorts-hand"][1]
+    assert "hidden" in hand and hand.get("aria-labelledby") == "shorts-clips-title"
+    assert "hidden" in by_id["shorts-nocaps"][1]
+    assert by_id["shorts-nocaps-go"][0] == "button"
     labels = {a.get("for") for t, a in tags if t == "label"}
     for name in ("shorts-platform", "shorts-template", "shorts-quality", "shorts-fps", "shorts-layout",
                  "shorts-margin", "shorts-style", "shorts-position", "shorts-size", "shorts-words", "shorts-color",

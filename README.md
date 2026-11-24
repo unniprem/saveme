@@ -32,8 +32,7 @@ SaveMe is a small web app that runs in Docker on your computer. It puts a simple
 - [Uninstalling](#uninstalling)
 - [Usage](#usage)
 - [Clip Studio](#clip-studio)
-- [AI Highlights](#ai-highlights)
-- [Auto Shorts](#auto-shorts)
+- [Make shorts](#make-shorts)
 - [Supported sites](#supported-sites)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
@@ -71,10 +70,9 @@ SaveMe sits in between: yt-dlp's reach, behind a one-page interface, running on 
 - A bounded queue, with limits on file size, job time and disk use
 - Automatic cleanup: files are deleted after you save them, or after a timeout
 - **Clip Studio**: open a link or a video from your computer, preview it, mark a start and an end, and export just that part as MP4. Or collect up to 20 parts in a clip list and export them all as one ZIP. Cutting runs on the server with no re-encoding, with progress and **Cancel**
-- **AI Highlights** in Clip Studio: the video is transcribed on your computer (faster-whisper, many languages including English and Malayalam), and an AI model reached through [OpenRouter](https://openrouter.ai) suggests ranked, editable clips. You can steer it with an instruction ("find the three funniest moments"). Only the transcript text is sent, never the audio or video, and the cost is shown before and after each run
-- **Auto Shorts** in Clip Studio: render clips as finished vertical (9:16), portrait (4:5), square or landscape videos on your computer. Framing can be face tracking, speaker focus, split-screen, blurred background or the original, and captions are word-timed from the transcript in six styles (Malayalam included). Optional logo, watermark and intro/outro. Download each MP4 or one ZIP
+- **Make shorts** in Clip Studio, in three steps: say where you'll post, how many shorts and what they should be about, and **Find moments**. The video is transcribed on your computer (faster-whisper, many languages including English and Malayalam), and an AI model reached through [OpenRouter](https://openrouter.ai) finds ranked moments. Only the transcript text is sent, never the audio or video, and the cost is shown before and after each run. Untick any moment you don't want, and **Make** turns the rest into finished vertical (9:16), portrait (4:5), square or landscape videos on your computer, with face-aware framing and word-timed captions in six styles (Malayalam included). They play on the page; save each one or **Download all**. Every other setting (framing, captions, branding, presets, preview) waits under **More settings**
 - Light and dark mode, and a layout that works on a phone
-- No database, accounts, cookies or analytics. The only external service is OpenRouter, and only when you use AI Highlights with your own key
+- No database, accounts, cookies or analytics. The only external service is OpenRouter, and only when you find moments with your own key
 
 ## Installation
 
@@ -199,7 +197,7 @@ If you ran SaveMe without Docker (see [Development](#development)), deleting the
 
 ## Clip Studio
 
-Clip Studio cuts a part out of a video. Choose the part yourself (the **Manual** tab, below), or let [AI Highlights](#ai-highlights) suggest parts.
+Clip Studio cuts a part out of a video. Choose the part yourself (the **Manual** tab, below), or let [Make shorts](#make-shorts) find the moments and make them into finished shorts.
 
 1. **Open a video.** After **Fetch**, pick a video quality and choose **Clip**. Or choose **Clip a video from your computer** under the link field to upload a file. Uploads take MP4, MOV, MKV, WebM, TS, FLV and AVI files up to `MAX_FILE_SIZE_MB`.
 2. **Mark the part you want.** Drag the two handles on the timeline, type a start and an end (`65.5`, `1:05.5` or `1:02:05`), or play the video and choose **Set to playhead**. The `I` and `O` keys set the start and end at the playhead. **Play clip** plays just your selection.
@@ -214,53 +212,52 @@ Clip Studio cuts a part out of a video. Choose the part yourself (the **Manual**
 
 **What's kept, and for how long.** The video you're clipping stays on the server while the studio is open. It's deleted when you choose **Close**, after `JOB_TTL_MINUTES` without use (an open, visible tab counts as use), when you open more than `MAX_CLIP_SOURCES` videos (the least recently used goes first), or when SaveMe restarts. Exported clips and ZIPs are deleted once saved, like downloads.
 
-## AI Highlights
+## Make shorts
 
-The **AI Highlights** tab in Clip Studio finds the parts of a video worth clipping. You review the suggestions and keep the ones you want, through the same clip list and exports as manual clipping.
+The **Make shorts** tab in Clip Studio takes a video to finished short videos in three steps. Only finding moments uses the internet (the transcript text goes to OpenRouter); transcribing and making the shorts run on your computer, and no video or audio is uploaded anywhere.
 
-1. **Open a video in Clip Studio** and choose the **AI Highlights** tab.
-2. **Say what you want (optional).** For example: "Find the five most interesting moments where the speaker discusses artificial intelligence", "Find the three funniest moments", or "Extract the most useful advice for beginners". Left empty, it looks for the most interesting, useful, surprising, funny or moving moments. Set the shortest and longest clip, how many clips, a minimum score, and the spoken language (or let it detect the language).
-3. **Choose Find highlights.** The estimated cost shows first. Then the stages run, each with real progress: preparing, extracting audio, transcribing, analyzing, ranking. **Cancel** stops it at any stage.
-4. **Review.** Each highlight has a title, a score, its times (which you can edit), a summary, why it works, and tags. **Preview** plays it, **Load into editor** puts it in the Manual tab for fine-tuning, and **Export** saves it as a clip. Select several, then **Add selected to clip list** and **Export N clips as ZIP**.
-5. **Try again with another instruction.** The transcript is reused, so a new run only costs the AI call. Tick **Transcribe again** to make a new transcript, for example in another language.
+1. **Find moments.** Answer three questions, then choose **Find moments**.
+   - **Where will you post?** YouTube Shorts (the default), Instagram Reels or TikTok.
+   - **How many shorts?** 1 to `AI_MAX_CLIPS` (10), 5 to start with.
+   - **What should they be about?** Optional. For example: "Find the five most interesting moments where the speaker discusses artificial intelligence", "Find the three funniest moments", or "Extract the most useful advice for beginners". Left empty, it looks for the most interesting, useful, surprising, funny or moving moments.
 
-**Transcription is local.** The video's audio is transcribed on your computer by [faster-whisper](https://github.com/SYSTRAN/faster-whisper), in segments of about five minutes, so memory stays bounded on an 8 GB machine. It detects the language, and Whisper knows about 100 languages, English and Malayalam among them. The Docker image includes the `base` model. `WHISPER_MODEL` picks a bigger one for better accuracy, which must be installed first (see [Configuration](#configuration)). **Transcribe only** makes the transcript without any AI call, and works without an OpenRouter key. The transcript can be searched, and clicking a line plays the video from there. You can also **import subtitles** (SRT or WebVTT, up to 4 MB) to use instead of transcribing.
+   The cost estimate shows on one line before you start. While it runs there's one progress bar, one status line (for example "Transcribing (English)") and **Cancel**.
+2. **Pick the ones you want.** One card per moment, in rank order, all ticked. A card shows the title, its rank, times and length, a two-line summary, and **▶ Play**, which plays that part in the player above. **More** on a card holds the rest: change the start and end, why it was picked, the score, the tags, **Edit captions** (fix any word or time for this moment's short), and **Save plain cut** (an unencoded cut, like **Export clip** in Manual). Untick any you don't want; one button ticks them all (**Select all**) or, once they all are, unticks them (**Select none**). Clips you cut by hand in **Manual** (**Add to list**) show below as "Clips you cut by hand", unticked; tick one to make it a short too. Their times are changed in Manual. **Make N shorts** makes up to 20 at once.
+3. **Your shorts.** Shorts are made one at a time. Each shows its stage, a percentage measured as FFmpeg encodes it, and an estimate of the time left; **Skip** cancels one, and **Cancel** the rest. A finished short plays on the page, and **Save** downloads it (with its SRT file if you asked for one). **Download all** gives one ZIP. Files are named after the moment's title, like `Here is my best advice for beginners (short 2, 0m37.6s-0m55.7s).mp4`. The shorts stay here until the next **Make**, even if you find moments again.
 
-**What is sent, and where.** To find highlights, SaveMe sends the transcript text (in parts of up to about 20 minutes) and your instruction to [OpenRouter](https://openrouter.ai), which passes them to the AI model. The audio, the video, file names and paths never leave your computer. By default SaveMe asks OpenRouter to use only providers that don't store or train on prompts (`OPENROUTER_DATA_COLLECTION=deny`). The API key stays on the server: it's never sent to the browser or written to the log. See [docs/OPENROUTER_SETUP.md](docs/OPENROUTER_SETUP.md).
+**Captions never go missing without asking.** Captions come from the video's transcript. If the video has none yet (only possible when every short is a clip you cut by hand), **Make** transcribes it first, on this computer, with the status in step 3. If captions can't be made, nothing is made yet: when the transcription fails, can't run (the AI settings have an error, or the video is longer than `AI_MAX_SOURCE_MINUTES`), or FFmpeg can't burn in captions. Step 3 then says why and offers **Make them without captions**, which makes the same shorts with captions off for that run only. When the page already knows, it says so above **Make** before anything starts.
+
+### More settings
+
+**More settings**, under step 1, is closed until you open it. With it never opened, you get YouTube Shorts at 9:16, the *Talking head* video type (follows the face, or the centre with none), bold word-by-word captions burned in, Standard quality, the video's own frame rate, and no branding. It holds every other setting:
+
+- **Finding moments:** the shortest and longest moment, a minimum score, the spoken language (or detect it), **Transcribe again** (ignore the saved transcript, for example to try another language), **Test connection**, the full privacy note, the transcript with search, **Import subtitles**, and **Transcribe only**. A new run with another instruction reuses the transcript, so it only costs the AI call.
+- **Look:** every platform (Instagram Reels, TikTok, YouTube Shorts, Instagram / Facebook feed 4:5, Square, Landscape, or as filmed). Choosing one that isn't a chip shows "Other: <name>" beside the chips. Then the video type (Talking head, Two-person interview, Podcast split-screen, Educational explanation, News commentary, or Full frame with blurred background), quality (**Draft**: fast, half size; **Standard**; **High**) and frame rate. The framing:
+  - **Face tracking** follows the faces smoothly, with a dead zone and a speed limit, jumping only at scene cuts.
+  - **Speaker focus** prefers the face whose mouth moves while someone speaks. It is a best effort: SaveMe doesn't identify voices.
+  - The other modes are **Split-screen**, **Blurred background**, **Original framing** and **Center crop**.
+  - With no face, a video type falls back to centre or blur. You can set a safe margin around faces, or set the framing by hand.
+- **Captions:**
+  - New transcripts store when each word is spoken, so captions highlight words in time with the speech. Older transcripts and imported subtitles get evenly shared word timing.
+  - There are six styles: Clean Minimal, Bold Creator, Karaoke Highlight, Podcast Classic, Cinematic and High Contrast. Size, colours, position, capitals and words per caption can be changed.
+  - Captions can be burned in, saved as SRT files too, or left out. **Transcribe this video** makes a transcript here too.
+- **Branding** is off unless you add it: a PNG logo, a watermark text, a brand colour, a title bar (the moment's title), and an intro or outro of up to 15 seconds. SaveMe never adds a watermark of its own.
+- **Presets** save the current settings in this browser (the logo too, if it's small), and can be exported to a JSON file and imported elsewhere. They are checked by the server before use.
+- **Preview** a frame exactly as it will render, or a quick half-size draft, of any ticked moment or clip.
+
+**Transcription is local.** The video's audio is transcribed on your computer by [faster-whisper](https://github.com/SYSTRAN/faster-whisper), in segments of about five minutes, so memory stays bounded on an 8 GB machine. It detects the language, and Whisper knows about 100 languages, English and Malayalam among them. The Docker image includes the `base` model. `WHISPER_MODEL` picks a bigger one for better accuracy, which must be installed first (see [Configuration](#configuration)). **Transcribe only** (under **More settings**) makes the transcript without any AI call, and works without an OpenRouter key. The transcript can be searched, and clicking a line plays the video from there. You can also **import subtitles** (SRT or WebVTT, up to 4 MB) to use instead of transcribing.
+
+**What is sent, and where.** To find moments, SaveMe sends the transcript text (in parts of up to about 20 minutes) and your instruction to [OpenRouter](https://openrouter.ai), which passes them to the AI model. The audio, the video, file names and paths never leave your computer. By default SaveMe asks OpenRouter to use only providers that don't store or train on prompts (`OPENROUTER_DATA_COLLECTION=deny`). The API key stays on the server: it's never sent to the browser or written to the log. See [docs/OPENROUTER_SETUP.md](docs/OPENROUTER_SETUP.md).
 
 **Cost.** The default model, `anthropic/claude-haiku-5.5`, costs about $0.10 per million input tokens and $0.50 per million output tokens (OpenRouter's prices on 24 November 2026). A one-hour talk usually costs well under a cent. Before a run the page shows an estimate and an upper bound; the bound holds for any model, as it counts a token per byte of text. Afterwards it shows the actual cost as OpenRouter reports it, with token counts. SaveMe won't start a run whose upper bound is over `AI_MAX_COST_USD_PER_JOB` ($0.25), and it makes no call or retry that could pass it. That limit is SaveMe's own estimate, not a billing cap; to cap spending for certain, set a credit limit on the key at OpenRouter.
 
 **Scores.** A score (0-100) is the AI model's editorial judgement of how strong and self-contained a moment is for your request. It is not a prediction of views or virality.
 
-**Limits.** A clip starts and ends on Whisper's segment boundaries (with a little lead-in and tail), so it may need a touch in the editor. If fewer moments fit your request than you asked for, you get fewer, never filler. One analysis runs at a time (`AI_MAX_CONCURRENT_JOBS`), apart from downloads, which keep their own slots. Videos up to `AI_MAX_SOURCE_MINUTES` (3 hours) are accepted. Results and transcripts live with the open video and are deleted with it.
-
-## Auto Shorts
-
-The **Auto Shorts** tab in Clip Studio turns clips into finished short videos for YouTube Shorts, Instagram Reels, TikTok and other formats. Everything runs on your computer: no video or audio is uploaded anywhere, and Auto Shorts never calls OpenRouter.
-
-1. **Pick clips.** Rows of the clip list (added in **Manual**, or from **AI Highlights**) appear with checkboxes. **Use current marks** adds the editor's marks.
-2. **Choose a platform and a template.** Platforms set the size and keep captions clear of each app's buttons. The six templates are Talking head, Two-person interview, Podcast split-screen, Educational explanation, News commentary, and Full frame with blurred background. Quality is **Draft** (fast, half size), **Standard** or **High**, and the frame rate can stay the video's own or be set.
-3. **Framing.**
-   - **Face tracking** follows the faces smoothly, with a dead zone and a speed limit, jumping only at scene cuts.
-   - **Speaker focus** prefers the face whose mouth moves while someone speaks. It is a best effort: SaveMe doesn't identify voices.
-   - The other modes are **Split-screen**, **Blurred background**, **Original framing** and **Center crop**.
-   - With no face, a template falls back to centre or blur. You can also set the framing by hand.
-4. **Captions** come from the video's transcript. **Transcribe this video** makes one on this computer if there isn't one.
-   - New transcripts store when each word is spoken, so captions highlight words in time with the speech. Older transcripts and imported subtitles get evenly shared word timing.
-   - There are six styles: Clean Minimal, Bold Creator, Karaoke Highlight, Podcast Classic, Cinematic and High Contrast. Size, colours, position, capitals and words per caption can be changed.
-   - **Edit captions** fixes any word or time for one clip.
-   - Captions can be burned in, saved as SRT files too, or left out.
-5. **Branding** is off unless you add it: a PNG logo, a watermark text, a brand colour, a title bar, and an intro or outro of up to 15 seconds. SaveMe never adds a watermark of its own.
-6. **Preview** a frame exactly as it will render, or a quick half-size draft of the clip.
-7. **Render.** Clips render one at a time. Each shows its stage, a percentage measured as FFmpeg encodes it, and an estimate of the time left. **Skip** cancels one clip, and **Cancel** the rest of the batch; finished shorts stay. Download each MP4 (and SRT), or **Download all (ZIP)**.
-
-**Presets** save the current settings in this browser (the logo too, if it's small), and can be exported to a JSON file and imported elsewhere. They are checked by the server before use.
-
 **Speed.** Measured on an Apple M2 with 8 GB, for 30 s of 1080×1920: Standard (x264 `veryfast`) took about 6 seconds and High (`medium`) 11. Face tracking analysed 30 s of 1080p in 2.4 seconds. A native macOS run encodes with the Mac's video hardware (VideoToolbox) when FFmpeg has it, and falls back to software if that fails; Docker always uses x264. One render runs at a time (`RENDER_MAX_CONCURRENT_JOBS`), apart from downloads, which keep their own slots.
 
 **Fonts.** The Docker image uses Roboto, DejaVu and Manjari (for Malayalam), all freely licensed, installed from Debian. A native run uses your system's fonts. See [docs/RENDERING_PRESETS.md](docs/RENDERING_PRESETS.md) for every preset, and [docs/AUTO_SHORTS_DESIGN.md](docs/AUTO_SHORTS_DESIGN.md) for how it works.
 
-**Limits.** HDR video is converted without tone mapping, so it looks flat. Old MPEG-4 Part 2 (AVI) videos can be clipped but not rendered. Shorts are deleted with the open video, and each video keeps its 4 latest renders.
+**Limits.** A moment starts and ends on Whisper's segment boundaries (with a little lead-in and tail), so its times may need a touch under **More**. If fewer moments fit your request than you asked for, you get fewer, never filler. One analysis runs at a time (`AI_MAX_CONCURRENT_JOBS`), apart from downloads, which keep their own slots. Videos up to `AI_MAX_SOURCE_MINUTES` (3 hours) are accepted. Moments and transcripts live with the open video and are deleted with it. HDR video is converted without tone mapping, so it looks flat. Old MPEG-4 Part 2 (AVI) videos can be clipped but not rendered. Shorts are deleted with the open video, and each video keeps its 4 latest renders.
 
 ## Supported sites
 
@@ -300,7 +297,7 @@ An invalid value doesn't crash the app. It runs in a degraded mode: the page sho
 | `LOG_LEVEL` | `info` | debug, info, warning, error | Log level |
 | `ALLOWED_HOSTS` | `localhost,127.0.0.1` | comma-separated | Host names the browser may use to reach the app |
 
-**AI Highlights settings.** An invalid value here turns off AI Highlights only, with the message on its tab. Downloads and manual clipping keep working.
+**AI settings (finding moments).** An invalid value here turns off finding moments only, with the message on the Make shorts tab. Downloads and manual clipping keep working.
 
 | Variable | Default | Range | Meaning |
 |---|---|---|---|
@@ -352,7 +349,7 @@ docker compose up -d
 | "These clips add up to more than the … limit" | A ZIP must stay under `MAX_FILE_SIZE_MB`. Export fewer or shorter clips (or export them one at a time), or raise the limit. |
 | A clip starts a little early in one app | That app ignores the MP4 edit list that hides the keyframe lead-in. See [How cutting works](#clip-studio). |
 | Port 8000 is already in use | Set `SAVEME_PORT` in `.env` to a free port, then run `docker compose up -d`. |
-| AI Highlights says it isn't set up | Add `OPENROUTER_API_KEY` to `.env` and run `docker compose up -d`. **Test connection** on the AI tab checks the key and the model. |
+| Make shorts says finding moments needs an OpenRouter key | Add `OPENROUTER_API_KEY` to `.env` and run `docker compose up -d`. **Test connection** under Make shorts → **More settings** checks the key and the model. You can still make shorts from clips you cut by hand. |
 | "OpenRouter didn't accept the API key" / "out of credits" | Check the key at <https://openrouter.ai/keys> and the account's credits. |
 | "OpenRouter refused the request (404): No endpoints found …" | No provider of that model meets the privacy setting. Choose another `OPENROUTER_MODEL`, or set `OPENROUTER_DATA_COLLECTION=allow`. |
 | "The transcription model … isn't installed" | Install it (see **Whisper models** under [Configuration](#configuration)) or set `WHISPER_MODEL=base`. |
