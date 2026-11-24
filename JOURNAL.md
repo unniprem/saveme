@@ -17,6 +17,7 @@ The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merg
 | `938a3ff` | docs | Add clip list and ZIP export design for Clip Studio |
 | `6900fb9` | feat | Add a worker batch mode that cuts several clips into one ZIP |
 | `4f7554c` | feat | Run batch exports as a job kind in the job manager |
+| `3665971` | feat | Add the batch export route for Clip Studio |
 
 ### Test Results
 
@@ -36,6 +37,12 @@ The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merg
   - upload batches dropping tags;
   - a download that returns a ZIP failing as `internal`, and a batch returning an MP4 too;
   - the 2× reservation (`disk_full` at the smallest budget while a single clip still fits).
+- `3665971`: `test_studio_api.py` plus `test_api.py` gave 155 passed, and `tests/unit` gave 234 passed. The 16 new API tests failed first (404, no route). They cover:
+  - the batch flow end to end with the stub: 202, kind `batch`, the ZIP filename, `application/zip`, the `Content-Disposition`, one-shot delivery, and the source staying ready;
+  - 12 validation cases, each with its message (for example "Clip 2: start must be a number of seconds, 0 or more", "Send 1 to 20 clips.");
+  - 409 before the source is ready, 404 for a job ID, 403 for a foreign Origin;
+  - cancel through `/api/jobs/{id}/cancel` with no resume and no folder left;
+  - `max_batch_clips` in `/api/studio`.
 
 ### Key Decisions
 
@@ -52,7 +59,7 @@ The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merg
 
 ### Pending Work
 
-- Remaining tasks: the `POST /api/sources/{id}/batch` route, the page's clip list and ZIP export, the cheap deferred minors, docs, full verification.
+- Remaining tasks: the page's clip list and ZIP export, the cheap deferred minors, docs, full verification.
 
 ### Handoff
 
