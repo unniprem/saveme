@@ -56,5 +56,26 @@ def test_reports_a_failed_download(capsys):
     def failing(name, local_files_only=False):
         raise OSError("network down")
 
-    assert whisper_models.main(["base"], download=failing, env={}) == 1
+    assert whisper_models.main(["base"], download=failing, env={}, sleep=lambda s: None) == 1
     assert "network down" in capsys.readouterr().err
+
+
+def test_retries_a_failed_download_before_giving_up(capsys):
+    attempts, waits = [], []
+
+    def flaky(name, local_files_only=False):
+        attempts.append(name)
+        if len(attempts) < 3:
+            raise OSError("Name or service not known")
+        return f"/cache/{name}"
+
+    assert whisper_models.main(["base"], download=flaky, env={}, sleep=waits.append) == 0
+    assert attempts == ["base"] * 3 and waits == [2, 4]
+    attempts.clear()
+
+    def down(name, local_files_only=False):
+        attempts.append(name)
+        raise OSError("network down")
+
+    assert whisper_models.main(["base"], download=down, env={}, sleep=waits.append) == 1
+    assert len(attempts) == whisper_models.ATTEMPTS

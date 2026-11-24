@@ -8,11 +8,15 @@ at build time (build argument WHISPER_MODELS).
 import argparse
 import os
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 
 from app.transcript import WHISPER_MODELS
 
 DEFAULT_MODEL = "base"
+# Downloads are tried this many times, waiting 2 s, 4 s, ... between tries: a build network's DNS
+# can fail for a moment (seen in Docker Desktop), as the Dockerfile's curl retries allow for too.
+ATTEMPTS = 4
 
 
 def _hub_download(name: str, local_files_only: bool = False) -> str:
@@ -30,7 +34,7 @@ def _installed(name: str, download: Callable[..., str]) -> bool:
 
 
 def main(argv: Sequence[str] | None = None, *, download: Callable[..., str] = _hub_download,
-         env: Mapping[str, str] = os.environ) -> int:
+         env: Mapping[str, str] = os.environ, sleep: Callable[[float], object] = time.sleep) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.whisper_models",
                                      description="Install faster-whisper models for AI Highlights.")
     parser.add_argument("models", nargs="*", metavar="MODEL",
@@ -48,11 +52,15 @@ def main(argv: Sequence[str] | None = None, *, download: Callable[..., str] = _h
               file=sys.stderr)
         return 2
     for name in names:
-        try:
-            path = download(name)
-        except Exception as exc:
-            print(f"Couldn't install {name}: {exc}", file=sys.stderr)
-            return 1
+        for attempt in range(1, ATTEMPTS + 1):
+            try:
+                path = download(name)
+                break
+            except Exception as exc:
+                print(f"Couldn't install {name} (try {attempt} of {ATTEMPTS}): {exc}", file=sys.stderr)
+                if attempt == ATTEMPTS:
+                    return 1
+                sleep(2 ** attempt)
         print(f"{name}: {path}")
     return 0
 
