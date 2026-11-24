@@ -2,6 +2,54 @@
 
 ---
 
+## 2026-11-24 12:09 IST — Session: Phase 2, AI smart clipping (OpenRouter)
+
+### Summary
+
+The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with local faster-whisper transcription and OpenRouter as the only AI provider, built test-first in small commits on `feature/ai-clipping`, with this journal updated after every task. The brief was taken as a go-ahead without a question round; design calls are under Key Decisions.
+
+**Status: in progress.** Task 1 (audit) and Task 2 (design) are done.
+
+### Progress by task
+
+- [x] **Task 1, audit.** Phase 1 is on `main` at `206d26b`. Integration points, dependencies and risks are in §1 of `docs/AI_CLIPPING_DESIGN.md`. Measured on this M2 (8 GB), 20 min of speech, `base`, int8, 2 threads: 600 s windows peaked at 1.10 GB RSS, 300 s at 0.74 GB, 120 s at 0.62 GB; VAD on took 76–81 s, VAD off 228 s.
+- [x] **Task 2, design.** `docs/AI_CLIPPING_DESIGN.md`: architecture, API contracts, schemas, lifecycle, limits.
+- [ ] Task 3, transcription
+- [ ] Task 4, OpenRouter client
+- [ ] Task 5, highlight engine
+- [ ] Task 6, job integration
+- [ ] Task 7, UI
+- [ ] Task 8, integration testing
+- [ ] Task 9, docs and review
+
+### Changes Made
+
+| Commit    | Type | Description |
+| --------- | ---- | ----------- |
+| `a8a035d` | docs | Add the AI smart clipping design |
+
+### Key Decisions
+
+- **Default model `anthropic/claude-haiku-5.5`**, picked from OpenRouter's live catalogue on 2026-11-24 (474 models): $0.10/$0.50 per million tokens, 1M context, structured outputs on its providers, reasoning optional. It lists no `temperature`, so the client sends only parameters a model lists (with `require_parameters: true`, an unlisted one would exclude every provider).
+- **The model returns segment numbers, not seconds.** The server maps them to real segment times, so clips start and end on speech boundaries and can't point outside the transcript.
+- **Own transcription worker** (`python -m app.transcriber`) run by the existing `run_worker`: a model-sized memory cap (the download worker's 1 GiB hard cap can't be raised), a connect guard that refuses every connection, and nice(10).
+- **300 s windows with VAD**, from the measurements above.
+- **AI work doesn't share download slots or the queue.** It has its own semaphore (`AI_MAX_CONCURRENT_JOBS`), and an invalid AI setting turns off only AI.
+- **Transcript cache in the source's folder** (`ai/transcript.json`), so it ends with the source.
+- **PyAV is installed (a faster-whisper dependency) but never given media.** Audio is decoded by the hardened FFmpeg wrapper.
+- **`provider.data_collection: "deny"` by default**, so transcripts only go to providers that don't store or train on prompts.
+
+### Issues Encountered
+
+- faster-whisper computes features for the whole input at once, so memory grows with length. Windowing fixes this.
+
+### Handoff
+
+- Branch `feature/ai-clipping`. The task list above is the plan; follow `docs/AI_CLIPPING_DESIGN.md`.
+- faster-whisper 1.2.1 is installed in `.venv` (`uv pip install --python .venv/bin/python faster-whisper==1.2.1`). The `base` model is cached in `$CLAUDE_JOB_DIR/tmp/whisper/models`, which is temporary.
+
+---
+
 ## 2026-11-24 11:13 IST — Session: Clip Studio, Phase 1 completion (clip list and ZIP export)
 
 ### Summary
