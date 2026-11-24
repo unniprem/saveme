@@ -20,7 +20,9 @@
   const POLL_MS = 1000;
   const RETRY_MS = 2000;
   const MAX_POLL_FAILURES = 30;
-  const KEEPALIVE_MS = 60000; // while the tab is visible, an open studio keeps its source alive
+  // While the tab is visible, an open studio keeps its source alive by polling it: a quarter of
+  // the server's idle time (idle_minutes), between 15 s and 60 s.
+  const KEEPALIVE_MS = { min: 15000, max: 60000 };
   const DELIVERY_WAIT_MS = 60000;
   const DEFAULT_LENGTH = 60; // seconds selected when a video opens
   const MIN_CLIP = 0.1;
@@ -483,9 +485,22 @@
     renderList();
     render();
     announce(MSG.ready);
-    if (!limits) api("/api/studio").then((l) => { limits = l; renderList(); }, () => {});
     scheduleKeepAlive(gen);
+    if (!limits) {
+      const g = gen;
+      api("/api/studio").then((l) => {
+        limits = l;
+        if (g !== gen) return;
+        renderList();
+        scheduleKeepAlive(g); // now at the server's pace
+      }, () => {});
+    }
     if (exportJob) pollExport(gen, exportJob.id);
+  }
+
+  function keepAliveMs() {
+    const minutes = limits && isNum(limits.idle_minutes) && limits.idle_minutes > 0 ? limits.idle_minutes : 30;
+    return Math.min(KEEPALIVE_MS.max, Math.max(KEEPALIVE_MS.min, (minutes * 60000) / 4));
   }
 
   function scheduleKeepAlive(g) {
@@ -494,7 +509,7 @@
       if (g !== gen || state !== "ready") return;
       if (document.visibilityState === "visible") pollSource(g);
       else scheduleKeepAlive(g);
-    }, KEEPALIVE_MS);
+    }, keepAliveMs());
   }
 
   function onVisibility() {
