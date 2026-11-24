@@ -2,6 +2,46 @@
 
 ---
 
+## 2026-11-24 17:55 IST — Session: Make shorts, one simple path to finished shorts
+
+### Summary
+
+The owner found AI clipping confusing: getting shorts meant ticking highlights in one tab, adding them to the clip list, ticking the same clips again in Auto Shorts, and working through about 35 controls. They asked to execute the Make shorts plan (`docs/superpowers/plans/2026-11-24-make-shorts.md`, design in `docs/superpowers/specs/2026-11-24-make-shorts-design.md`) inline. Clip Studio now has two tabs, **Manual** and **Make shorts**. Make shorts has three numbered steps: **1. Find moments** (Where will you post? How many shorts? What should they be about?), **2. Pick the ones you want** (moment cards, all ticked, with everything but the face behind **More**, plus "Clips you cut by hand" unticked), and **3. Your shorts** (shorts play on the page, **Save**, **Download all**). Every other setting sits under one closed **More settings**. The ticked moments reach the render with their titles, so files are named after them. If captions are on and there's no transcript, Make transcribes first, and if captions can't be made it stops and offers **Make them without captions**. It was a page-only change: nothing under `app/` was edited. Full suite: 1244 passed, 3 skipped, 8 deselected (the baseline of 1240 plus 4 new page tests). Every task had a real-browser check in Chrome against the dev harness (real Whisper, simulated OpenRouter), and the final walkthrough passed at 1200 px light and 375 px dark with no console errors.
+
+### Changes Made
+
+| Commit    | Type | Description |
+| --------- | ---- | ----------- |
+| `1afaca9` | docs | Add the Make shorts design (one simple path to finished shorts) |
+| `0b4b89c` | docs | Add the Make shorts implementation plan |
+| `718ae53` | feat | Lay out Clip Studio as Manual and Make shorts, with steps and More settings |
+| `c7b86da` | feat | Make the ticked moments into shorts, titles included, without the clip list |
+| `901e0cb` | feat | Show each moment and clip as a simple card, with the rest behind More |
+| `bb02069` | feat | Ask where to post with chips, and keep step 1's status to one line each |
+| `485a32c` | feat | Play finished shorts on the page, and ask before making them without captions |
+| `1a7cf4e` | docs | Describe Make shorts in place of the AI Highlights and Auto Shorts tabs |
+| `7620eb9` | fix  | Let a short's status wrap below its title on a phone |
+
+### Key Decisions
+
+- **Hand-cut clips can still become shorts** (decided after the builder check): step 2 shows Manual's clip list as "Clips you cut by hand", unticked (they may be for a plain ZIP), with only **Edit captions** behind More. Their times change in Manual, so a clip never has two ranges. A clip with a moment's exact range is made once, with the moment's title.
+- **Captions never silently go missing** (decided after the builder check): with captions on and no transcript, Make runs a transcribe-only analysis first, with its status in step 3. If that fails or can't run (AI settings in error, a video over `AI_MAX_SOURCE_MINUTES`), or FFmpeg can't burn in captions, nothing is made: step 3 says why and offers **Make them without captions** (captions off for that request only; the checkbox is left alone). When the page knows ahead, it says so above Make.
+- **A small handoff on the studio bridge replaces the route through the clip list**: `setMoments`/`onMoments` (the moments on screen and the ticked ones, with titles) and `setMaking`/`onMaking` (Find moments waits while shorts are made, including Make's own transcription). Both reset when the video changes or closes.
+- **The AI's moments start ticked**, so the fast path is "look, untick any you don't want, Make". A new analysis ticks all its moments and drops the old card edits; a reload of the same analysis keeps the stored ticks.
+- **"Captions edited" on a moment card is painted by `shorts.js`**, which keeps the caption edits, through a `data-captions-key` marker on the card. That kept the `window.SaveMeShorts` interface to the one `editCaptions` call. Edits are keyed by range, so a moment whose times change gets automatic captions again.
+- **Step 3 stays up from Make to the end**, including "Transcribing on this computer for the captions — <stage>" and "Starting…" before the render's first poll, so focus can follow it from the disabled Make button.
+- All other rulings are in the plan's ledger and the final report; none changed the spec's behaviour.
+
+### Issues Encountered
+
+- The harness prints `MEDIA …/Tech%20talk.mp4`, which its media server answers with 404 (no URL-decoding). The checks used `…/media/tech-talk.mp4`, the same talk.
+- The 100 s talk's moments are about 18 s, under the 20 s default, and an empty instruction makes the server send a default one that the simulated model matches only once. The walkthroughs set 10–40 s under More settings and a three-topic instruction to get three moments.
+- Task 5's browser check found that step 3 hid for one poll between creating a render and fetching it, so focus fell to `<body>`. Fixed in the same task by keeping step 3 up ("Starting…") while a render exists without a view.
+- The final phone walkthrough found a short's title squeezed by its status line in step 3 (words broke mid-word). Fixed in `7620eb9` by letting the status wrap below the title.
+- The server's `video_too_long` message still says "…limit for AI Highlights", and it shows inside "Captions can't be made: …". It is server copy, outside this page-only change; left as a deferred minor.
+
+---
+
 ## 2026-11-24 15:59 IST — Session: Phase 3, Auto Shorts & Reels
 
 ### Summary
