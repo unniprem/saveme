@@ -23,6 +23,8 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 | `049063b` | feat | Accept video uploads for Clip Studio with their own limits |
 | `2e7be93` | refactor | Share the page's API and DOM helpers through `common.js` |
 | `9cc0546` | feat | Add the Clip Studio page |
+| `ae92308` | docs | Describe Clip Studio and check it in the image scripts |
+| `f0c4c75` | test | Read whole replies in the raw-socket upload tests |
 
 ### Test Results
 
@@ -44,6 +46,9 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
   - Uploads: a TS file is remuxed and its clip carries no tags; random bytes show "SaveMe can't read this file as a video…"; an HEVC MOV previews in Chrome. In Chromium (no HEVC) the fallback note shows and a clip still exports from typed times.
   - Cancel while a link source downloads: the server has the source `expired`/`closed`, and the result card returns.
   - Server restart, then a reload: "This video is no longer on the server…", storage cleared, no horizontal scroll at 375 px.
+- Task 10 (`f0c4c75`): 595 passed, 2 skipped, 7 deselected.
+  - `scripts/docker-smoke.sh` passed on the branch image in an isolated Compose project (`saveme-ctest`, port 8001, image tag `saveme:clip-studio`, so the live `saveme-saveme-1` and its `saveme:local` tag weren't touched). That includes the new check: `/api/studio`, and an upload of random bytes refused as `unreadable_media` by the probe inside the hardened container. The project was then removed.
+  - `scripts/docker-ffmpeg-check.sh saveme:clip-studio` passed every matrix case, including the new MP4 and MKV cuts, and 383 integration tests inside the image against the minimal FFmpeg 9.0.2. The clip test's "first shown frame at 0" holds on that build.
 
 ### Key Decisions
 
@@ -58,12 +63,15 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 ### Issues Encountered
 
 - `tests/support/media.py`'s `junk.jpg` isn't junk to a full ffprobe: it opens the file as a one-frame image because of the `.jpg` name. Junk-input tests use `big.mp4` (random bytes) instead.
+- **The plan's "cut H.264 TS into MP4" image check failed.** A TS has no index, so a seek lands after the keyframe; with one keyframe the video track disappears, in Debian's full FFmpeg and the minimal build alike. The app never cuts a TS (uploads are remuxed to MP4 first), so the case became an MKV cut. Single-keyframe MP4, MKV and remuxed-TS cuts were checked in the image. An MKV or WebM source shows the keyframe lead-in (no edit lists), and the README now says so.
+- Two raw-socket upload tests failed once in the full run: one `recv()` returned only the headers. Fixed in `{fix}` by reading to `Content-Length`; stable over 8 reruns.
 - The first fallback check failed: an undecodable HEVC picture raised no `error` event, so the note never showed. Fixed before the commit by checking `videoWidth` once metadata loads.
 - A stream-copy cut's container and track durations read longer than the cut (4.22 s for 4.0 s), because they count the hidden keyframe lead-in. The clip test checks what a viewer gets instead: shown frames, the first shown frame at 0, and the audio length.
 
 ### Pending Work
 
-- Task 10: README and image checks (`scripts/docker-ffmpeg-check.sh`, `scripts/docker-smoke.sh` in an isolated Compose project), then the whole-branch review.
+- The whole-branch review, then merging. Nothing is merged or pushed yet, and the live container still runs `main`.
+- Leftover images from the checks: `saveme:clip-studio` and `saveme-ffmpeg-check` (`docker image rm` them when done).
 - Export Cancel hasn't been tried in a browser; harness cuts finish in under a second. The manager and API cancel tests cover it.
 - Browser checks run through `/tmp/claude-501/saveme-dev/` (outside the repo):
   - `serve.py` runs SaveMe on `127.0.0.1:8123` with loopback allowed, plus the test media server, whose URL it prints.
