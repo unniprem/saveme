@@ -2,6 +2,55 @@
 
 ---
 
+## 2026-11-24 11:13 IST — Session: Clip Studio, Phase 1 completion (clip list and ZIP export)
+
+### Summary
+
+The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merged into local `main` (`b661127`, not pushed), so this session checked the brief's ten features against what shipped. Two were missing, because the first design listed them as non-goals: **#4, several clips from one source as a list**, and **#6, ZIP batch export**. This session adds both on `feature/clip-studio` (fast-forwarded to `main` first). The design is `docs/superpowers/specs/2026-11-24-clip-studio-batch-export-design.md`. The other eight features were already in place, and links and nearly every upload already come out as MP4. Cheap fixes for four of the deferred review minors are also planned. The owner's brief was taken as a go-ahead to proceed without a question round; the design calls are listed under Key Decisions.
+
+**Status: in progress.** See Handoff.
+
+### Changes Made
+
+| Commit    | Type | Description |
+| --------- | ---- | ----------- |
+| `938a3ff` | docs | Add clip list and ZIP export design for Clip Studio |
+| `6900fb9` | feat | Add a worker batch mode that cuts several clips into one ZIP |
+
+### Test Results
+
+- Baseline on `feature/clip-studio` at `b661127`: `.venv/bin/pytest -q` gave 599 passed, 2 skipped, 7 deselected (138 s).
+- `6900fb9`: `tests/unit/test_filenames.py` plus the worker clip, probe and batch tests gave 108 passed. The new batch tests, using the real worker and FFmpeg 8.0.1, check:
+  - 3 ranges into one stored ZIP, with entries in order, H.264+AAC, the right number of shown frames, and the first shown frame at 0;
+  - progress over the whole batch ("Cutting clip n of 3"), with rising percent and bytes;
+  - tags kept or dropped, and MKV entries from an MKV source;
+  - `too_large` when each clip fits but the ZIP doesn't;
+  - 21 malformed requests refused as `internal`, including names with `/`, `\`, `:`, NUL, a leading dot, the wrong extension, 300 bytes, or a repeat;
+  - a failing second cut reported as "Couldn't cut clip 2" (in-process).
+
+### Key Decisions
+
+- **One `batch` job cuts every range and writes `media.zip`.** The other options were N clip jobs zipped at delivery (only 1× disk, but N queue places and a new delivery lifecycle) and zipping in the browser (memory, plus a ZIP writer in JS). One job reuses the queue, slot, progress, cancel, one-shot delivery, TTL and cleanup as they are.
+- **The ZIP is written by Python's `zipfile`, stored (no compression).** No FFmpeg build change and no new dependency. Video doesn't compress further.
+- **`zip` is not a download media type.** `ZIP_MEDIA_TYPE` is separate from `_MEDIA_TYPES`, so a link to a `.zip` file still can't be delivered by the downloader.
+- **Entry names come from the server and are checked again in the worker.** They're numbered (`01 <title> (clip …).mp4`) so they sort in list order and stay unique. `is_plain_filename` refuses separators, control and Windows-forbidden characters, leading dots, over 255 bytes, and repeats (case-insensitive).
+- **The batch's size limit covers the whole ZIP.** Each cut's `-fs` is the room left, with 1 KiB counted per entry for headers, and the finished ZIP is checked again.
+
+### Issues Encountered
+
+- With `-read_intervals %+#5`, a frame check saw nothing: the hidden keyframe lead-in uses the first packets. It now reads 30, as the clip test does.
+
+### Pending Work
+
+- Remaining tasks: the `batch` job kind in `JobManager`, the `POST /api/sources/{id}/batch` route, the page's clip list and ZIP export, the cheap deferred minors, docs, full verification.
+
+### Handoff
+
+- Branch `feature/clip-studio`. Each step is one commit plus a journal update.
+- Tests: `.venv/bin/pytest -q`. Real FFmpeg and ffprobe must be on `PATH` (Homebrew on this Mac).
+
+---
+
 ## 2026-11-24 06:58 IST — Session: Clip Studio, Phase 1 (manual clipping)
 
 ### Summary
