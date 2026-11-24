@@ -23,6 +23,7 @@ The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merg
 | `2115d88` | fix | Poll an open studio's source at a quarter of its idle time |
 | `a5d3d82` | fix | Turn off playhead controls when the browser can't play the source |
 | `daa8c8a` | fix | Tell a too-large clip to choose a shorter part |
+| `1f31a98` | docs | Describe the clip list, ZIP export and their limits |
 
 ### Test Results
 
@@ -66,6 +67,7 @@ The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merg
     - A 1.1–1.2 s range enabled Export and saved `long (clip 0m01.1s-0m01.2s).mp4`.
     - An MPEG-4 Part 2 upload (`Old camera.mp4`, which Chrome can't play: `error.code` 4) showed the note, disabled Set to playhead ×2 and Play clip, and ignored `I`. Typed times still exported it.
     - With a 60 s idle time, the keep-alive polled at 15 s gaps (6 in 100 s), and the source was still `ready` after 100 s.
+- Whole suite at `1f31a98`: `.venv/bin/pytest -q` gave **673 passed, 2 skipped, 7 deselected** (118 s), against the 599-passed baseline. The downloader's tests all still pass.
 
 ### Key Decisions
 
