@@ -8,7 +8,7 @@
 
 The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with local faster-whisper transcription and OpenRouter as the only AI provider, built test-first in small commits on `feature/ai-clipping`, with this journal updated after every task. The brief was taken as a go-ahead without a question round; design calls are under Key Decisions.
 
-**Status: in progress.** Tasks 1–5 (audit, design, transcription, OpenRouter client, highlight engine) are done.
+**Status: in progress.** Tasks 1–6 (audit, design, transcription, OpenRouter client, highlight engine, job integration) are done. The backend is complete. The UI (Task 7) is next.
 
 ### Progress by task
 
@@ -17,7 +17,7 @@ The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with lo
 - [x] **Task 3, transcription.** `app/transcript.py` (schema, SRT/WebVTT import, language codes, cache file and reuse rule), `app/transcriber.py` (worker: FFmpeg → 16 kHz WAV → faster-whisper over 300 s windows), `app/whisper_models.py` (model installer), `extract_audio` in `app/mediafile.py`. Dependencies and the Docker build are updated; the image isn't built yet (Task 8).
 - [x] **Task 4, OpenRouter.** `AiSettings`/`load_ai_settings` in `app/config.py` (separate from the download settings; the key is kept out of `repr` and errors), `.env.example` documents every AI variable, `app/openrouter.py` (catalogue and capability check, pricing tiers, chat completions, retries, key check, `UsageMeter`), and 9 new error codes.
 - [x] **Task 5, highlight engine.** `app/highlights.py`: chunks (≤ 6,000 estimated tokens, ≤ 20 min, overlap max(60 s, max clip length)), prompts, strict JSON schema, per-item pydantic validation, snapping and length rules, dedupe (> 30 % of the shorter clip), ranking, estimates, and `analyze()` with the spend guard. Also `tests/network/test_openrouter_live.py` (opt-in, needs a key).
-- [ ] Task 6, job integration
+- [x] **Task 6, job integration.** `JobManager` hooks: `hold_source`/`release_source`, `add_source_listener` and `make_room`. `app/ai_jobs.py` `AiManager` runs the stages with its own semaphore. `app/ai_routes.py` adds the routes. `app/main.py` wires them in, lets the subtitle import read its own body, and gives AI fields their own validation messages.
 - [ ] Task 7, UI
 - [ ] Task 8, integration testing
 - [ ] Task 9, docs and review
@@ -37,6 +37,9 @@ The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with lo
 | `f69c266` | feat | Add the OpenRouter client with retries and usage accounting |
 | `9a7fd4b` | feat | Add the highlight engine |
 | `a4e34c2` | test | Add an opt-in live OpenRouter analysis check |
+| `300e5bf` | feat | Let an analysis hold a source and hear when it ends |
+| `a2a6ec9` | feat | Run AI Highlights analyses as their own job lifecycle |
+| `dba2550` | feat | Add the AI Highlights API routes |
 
 ### Test Results
 
@@ -45,6 +48,9 @@ The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with lo
 - Task 4: `tests/unit/test_ai_config.py` 33 passed, `tests/unit/test_packaging.py` 16 passed (now also checks the AI variables in `.env.example`, with only the key blank), `tests/unit/test_openrouter.py` 37 passed against `httpx.MockTransport` (`tests/support/openrouter.py` holds catalogue entries shaped like the live ones). Each failed first: missing module, missing `AiSettings`, missing `UsageMeter`.
 
 - Task 5: `tests/unit/test_highlights.py` 43 passed (it failed first on the missing module). One expectation was changed before implementing: when padding would break `max_seconds`, the padding shrinks and speech is never cut. The live test `tests/network/test_openrouter_live.py` is **not run**: no `OPENROUTER_API_KEY` exists in this environment or in `.env`. It skips without one and is deselected by default (`-m 'not network'`).
+
+- Task 6: `tests/integration/test_source_holds.py` 10 passed, `tests/integration/test_ai_jobs.py` 32 passed, `tests/integration/test_ai_api.py` 27 passed. Each failed first on the missing method, module or route. `test_ai_api.py` runs the acceptance flow in-process: source, then analysis, then highlights, then one clip and a 2-clip ZIP through the Phase 1 routes, then a second analysis that reuses the transcript.
+- **Whole suite at `dba2550`: 908 passed, 2 skipped, 8 deselected (109 s).** The baseline was 673 passed, and every Phase 1 and downloader test still passes.
 
 ### Key Decisions
 
@@ -55,6 +61,8 @@ The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with lo
 - **Own transcription worker** (`python -m app.transcriber`) run by the existing `run_worker`: a model-sized memory cap (the download worker's 1 GiB hard cap can't be raised), a connect guard that refuses every connection, and nice(10).
 - **300 s windows with VAD**, from the measurements above.
 - **AI work doesn't share download slots or the queue.** It has its own semaphore (`AI_MAX_CONCURRENT_JOBS`), and an invalid AI setting turns off only AI.
+- **An analysis holds its source from start to end.** The source then can't idle out or be replaced, and closing it cancels the analysis through a listener that runs before the folder is removed. Work files live in `<source>/ai/<analysis id>/`, so the sweep never sees them as orphans.
+- **The model is checked before transcribing**, so a bad `OPENROUTER_MODEL` fails in seconds, not after minutes of CPU. The spending limit is checked after transcribing, against the real transcript.
 - **Transcript cache in the source's folder** (`ai/transcript.json`), so it ends with the source.
 - **PyAV is installed (a faster-whisper dependency) but never given media.** Audio is decoded by the hardened FFmpeg wrapper.
 - **Retries:** network errors, timeouts, 408, 429, 5xx and errors inside a 200 are retried 3 times (1 s, 2 s, 4 s plus jitter, or `Retry-After` up to 60 s). 401, 402 and other 4xx fail at once. OpenRouter's own messages are shown only for "refused" (4xx), cleaned and scrubbed of the key. A 401's message is never shown.
