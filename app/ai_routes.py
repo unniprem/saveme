@@ -95,7 +95,9 @@ def add_ai_routes(router: APIRouter, ai: Callable[[], AiManager], *, idle_second
         """{"transcript": <transcript>}, or {"transcript": null} while there is none (a state the
         page asks about whenever a video opens, so not an error)."""
         try:
-            return {"transcript": ai().transcript(source_id).model_dump()}
+            # Word timestamps stay on the server (Auto Shorts' captions route serves them per clip).
+            return {"transcript": ai().transcript(source_id).model_dump(
+                exclude={"segments": {"__all__": {"words"}}})}
         except AppError as exc:
             if exc.code != "transcript_not_found":
                 raise

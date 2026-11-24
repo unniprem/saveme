@@ -116,7 +116,8 @@
   let deliverBy = 0;
   let exportFilename = "";
   let closedCallback = () => {};
-  let sourceCallback = () => {}; // ai.js: told about the ready source, or null when there is none
+  const sourceCallbacks = []; // ai.js, shorts.js: told about the ready source, or null when there is none
+  const clipCallbacks = []; // shorts.js: told when the clip list changes
 
   // ---- small helpers --------------------------------------------------------------------
 
@@ -804,6 +805,7 @@
       return row;
     });
     el.clipList.replaceChildren(...rows);
+    notifyClips();
     show(el.clipListWrap, list.length > 0);
     setText(el.clipListCount, `${list.length} of ${maxList()}`);
     setText(el.exportZipLabel, `Export ${list.length} clip${list.length === 1 ? "" : "s"} as ZIP`);
@@ -1001,7 +1003,18 @@
   // ---- bridge for ai.js -------------------------------------------------------------------
 
   function notifySource() {
-    sourceCallback(state === "ready" && source ? { id: source.id, title: source.title, duration } : null);
+    const info = state === "ready" && source ? { id: source.id, title: source.title, duration } : null;
+    for (const callback of sourceCallbacks) callback(info ? { ...info } : null);
+  }
+
+  // The clip list (seconds, rounded to whole milliseconds), for shorts.js.
+  function clips() {
+    return list.map((c) => ({ start: c.start, end: c.end }));
+  }
+
+  function notifyClips() {
+    const now = clips();
+    for (const callback of clipCallbacks) callback(now);
   }
 
   // Put a range in the editor (marks, timeline, playhead) and optionally play it. False when the
@@ -1064,9 +1077,18 @@
 
   window.SaveMeStudioBridge = Object.freeze({
     onSource(callback) {
-      sourceCallback = typeof callback === "function" ? callback : () => {};
-      notifySource();
+      if (typeof callback !== "function") return;
+      sourceCallbacks.push(callback);
+      callback(state === "ready" && source ? { id: source.id, title: source.title, duration } : null);
     },
+    onClips(callback) {
+      if (typeof callback !== "function") return;
+      clipCallbacks.push(callback);
+      callback(clips());
+    },
+    clips,
+    marks: () => ({ start: marks.start, end: marks.end }),
+    currentTime: () => el.studioVideo.currentTime || 0,
     loadRange,
     addRanges,
     exportRange,

@@ -115,6 +115,16 @@ in_container sh -c 'python -m app.whisper_models --list | grep -x "${WHISPER_MOD
   || fail "the Whisper model ${WHISPER_MODEL:-base} isn't installed in the image"
 in_container sh -c 'test "$HF_HUB_OFFLINE" = 1' || fail "HF_HUB_OFFLINE isn't 1 in the container"
 
+echo "==> Auto Shorts: options, then a captioned 9:16 short rendered in the container"
+shorts="$(curl -sS --noproxy '*' --max-time 10 "$BASE/api/shorts/options")" || fail "GET /api/shorts/options failed"
+case "$shorts" in
+  *'"available":true'*'"captions_available":true'*) ;;
+  *) fail "GET /api/shorts/options returned: ${shorts:0:300}" ;;
+esac
+in_container python - < scripts/smoke_shorts.py || fail "the Auto Shorts render in the container failed"
+peak="$(in_container cat /sys/fs/cgroup/memory.peak 2>/dev/null || echo unknown)"
+echo "    container memory peak so far: $peak bytes"
+
 echo "==> runs as uid 10001"
 uid="$(in_container id -u)" || fail "id -u failed in the container"
 [ "$uid" = 10001 ] || fail "container runs as uid $uid, expected 10001"

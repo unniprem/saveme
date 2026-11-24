@@ -38,13 +38,16 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.ai_jobs import TRANSCRIBER_CMD, AiManager
 from app.ai_routes import TRANSCRIPT_PATH, add_ai_routes
-from app.config import AiSettings, ConfigError, Settings, load_ai_settings, load_settings
+from app.config import (AiSettings, ConfigError, RenderSettings, Settings, load_ai_settings, load_render_settings,
+                        load_settings)
 from app.errors import CATALOG, AppError
 from app.filenames import content_disposition
 from app.jobs import APP_DIR, JobManager
 from app.mediafile import MAX_BATCH_CLIPS
 from app.netguard import (IpPolicy, Resolver, check_source_address, check_url_syntax, is_public_ip,
                           system_resolver)
+from app.render_jobs import RENDERER_CMD, RenderManager
+from app.render_routes import OWN_BODY_PATHS, add_render_routes
 from app.runner import DEFAULT_WORKER_CMD, RunWorker, run_worker
 from app.schemas import InspectRequest, JobRequest, Output, Quality
 from app.studio_routes import UPLOAD_IDLE_SECONDS, UPLOAD_PATH, add_studio_routes
@@ -296,7 +299,8 @@ class _Guard:
 
 def _reads_own_body(path: str) -> bool:
     """The routes that read their own bodies, with limits of their own."""
-    return path == UPLOAD_PATH or TRANSCRIPT_PATH.fullmatch(path) is not None
+    return (path == UPLOAD_PATH or TRANSCRIPT_PATH.fullmatch(path) is not None
+            or OWN_BODY_PATHS.fullmatch(path) is not None)
 
 
 def _replay(messages: list[Message], receive: Receive) -> Receive:
@@ -319,6 +323,7 @@ class _Runtime:
         self.config_error = config_error
         self.manager: JobManager | None = None
         self.ai: AiManager | None = None
+        self.render: RenderManager | None = None
 
     def unavailable(self) -> AppError | None:
         if self.manager is not None:
@@ -335,6 +340,11 @@ class _Runtime:
         if self.ai is None:
             raise self.unavailable()
         return self.ai
+
+    def render_manager(self) -> RenderManager:
+        if self.render is None:
+            raise self.unavailable()
+        return self.render
 
 
 class _FileDelivery(Response):
@@ -478,6 +488,7 @@ def _api_router(settings: Settings, runtime: _Runtime, *, worker_cmd: tuple[str,
     add_studio_routes(router, settings, runtime.jobs, check_link=check_link,
                       upload_idle_seconds=upload_idle_seconds)
     add_ai_routes(router, runtime.ai_manager, idle_seconds=upload_idle_seconds)
+    add_render_routes(router, runtime.render_manager, idle_seconds=upload_idle_seconds)
     return router
 
 
@@ -498,11 +509,16 @@ def create_app(
     ai_settings: AiSettings | ConfigError | None = None,
     transcriber_cmd: Sequence[str] = TRANSCRIBER_CMD,
     openrouter_transport=None,
+    render_settings: RenderSettings | ConfigError | None = None,
+    renderer_cmd: Sequence[str] = RENDERER_CMD,
+    render_capabilities=None,
 ) -> FastAPI:
-    """`ai_settings` None means AI Highlights with no OpenRouter key (the module-level app reads
-    them from the environment). `openrouter_transport` replaces the network in tests."""
+    """`ai_settings` None means AI Highlights with no OpenRouter key, and `render_settings` None the
+    default Auto Shorts settings (the module-level app reads both from the environment).
+    `openrouter_transport` replaces the network in tests; `render_capabilities` the FFmpeg check."""
     worker_cmd = tuple(worker_cmd)
     ai = load_ai_settings({}) if ai_settings is None else ai_settings
+    rendering = load_render_settings({}) if render_settings is None else render_settings
     healthy_settings = settings if isinstance(settings, Settings) else None
     runtime = _Runtime(settings if healthy_settings is None else None)
 
@@ -522,6 +538,12 @@ def create_app(
                 if isinstance(ai, ConfigError):
                     logger.error("Invalid AI setting: %s AI Highlights is off; downloads and manual "
                                  "clipping work as usual.", _config_message(ai))
+                runtime.render = RenderManager(rendering, manager, healthy_settings, run_worker=run_worker,
+                                               renderer_cmd=renderer_cmd, capabilities=render_capabilities)
+                await runtime.render.start()
+                if isinstance(rendering, ConfigError):
+                    logger.error("Invalid Auto Shorts setting: %s Auto Shorts is off; everything else works "
+                                 "as usual.", _config_message(rendering))
         if runtime.config_error is not None:
             logger.error("Invalid configuration: %s saveme is running in degraded mode "
                          "(the API answers 503) until this is fixed and saveme is restarted.",
@@ -529,6 +551,9 @@ def create_app(
         try:
             yield
         finally:
+            render_manager, runtime.render = runtime.render, None
+            if render_manager is not None:
+                await render_manager.shutdown()
             ai_manager, runtime.ai = runtime.ai, None
             if ai_manager is not None:
                 await ai_manager.shutdown()
@@ -588,4 +613,12 @@ def _ai_settings_or_error() -> AiSettings | ConfigError:
         return exc
 
 
-app = create_app(_settings_or_error(), ai_settings=_ai_settings_or_error())
+def _render_settings_or_error() -> RenderSettings | ConfigError:
+    try:
+        return load_render_settings(os.environ)
+    except ConfigError as exc:
+        return exc
+
+
+app = create_app(_settings_or_error(), ai_settings=_ai_settings_or_error(),
+                 render_settings=_render_settings_or_error())

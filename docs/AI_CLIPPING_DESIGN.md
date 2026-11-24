@@ -398,7 +398,7 @@ Whisper test when the `base` model is cached, and `tests/network/test_openrouter
 
 ## 14. Non-goals and limitations
 
-- No 9:16 reframing, burned-in subtitles or re-encoding (Phase 3; needs an H.264 encoder).
+- 9:16 reframing, burned-in subtitles and re-encoding came in Phase 3 (Auto Shorts): see [AUTO_SHORTS_DESIGN.md](AUTO_SHORTS_DESIGN.md).
 - No speaker diarisation; no word-level timestamps; clip edges follow Whisper segments.
 - Spending limits are client-side estimates; a cancelled request may still be billed.
 - Transcription runs on CPU (int8); Apple GPU (MPS) is not used inside Docker.

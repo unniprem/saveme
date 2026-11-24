@@ -105,7 +105,7 @@ covers:
 ## Limitations (as built)
 
 - Clip edges follow Whisper segments (no word timestamps), with 0.3 s lead-in and 0.5 s tail.
-- No speaker diarisation, no vertical reframing, no burned-in subtitles, no re-encoding (Phase 3).
+- No speaker diarisation. Vertical reframing, burned-in subtitles and re-encoding are Auto Shorts (Phase 3, [AUTO_SHORTS_IMPLEMENTATION.md](AUTO_SHORTS_IMPLEMENTATION.md)).
 - The spend limit is a client-side estimate. A cancelled in-flight request may still be billed.
 - With `auto` language, each 300 s window detects its own language. A window of music can be mislabelled;
   choose the language to avoid it.

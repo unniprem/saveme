@@ -88,7 +88,7 @@ def test_transcribe_writes_the_transcript_and_reports_real_progress(source, work
     monkeypatch.setenv("SAVEME_TEST_WHISPER_LOG", str(log))
     events, rc = run_worker_proc(request(source, workdir), entry=ENTRY)
     data = result_of(events, rc)
-    assert data == {"file": "transcript.json", "segments": 10, "language": "en", "duration": 10.0}
+    assert data == {"file": "transcript.json", "segments": 10, "language": "en", "duration": 10.0, "words": False}
     assert listing(workdir) == ["transcript.json"]  # the WAV is gone
     transcript = load_transcript(workdir / "transcript.json")
     assert transcript is not None
@@ -104,6 +104,31 @@ def test_transcribe_writes_the_transcript_and_reports_real_progress(source, work
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     assert calls[0]["vad_filter"] is True and calls[0]["condition_on_previous_text"] is False
     assert calls[0]["language"] is None and calls[0]["dtype"] == "float32"
+    assert calls[0]["word_timestamps"] is False and transcript.segments[0].words is None
+
+
+def test_word_timestamps_are_kept_in_the_files_time(source, workdir, monkeypatch, tmp_path):
+    # Windows of about 4 s, so later windows' words must be moved by the window's offset.
+    monkeypatch.setenv("SAVEME_TEST_WINDOW_SECONDS", "4")
+    monkeypatch.setenv("SAVEME_TEST_SEARCH_SECONDS", "1")
+    monkeypatch.setenv("SAVEME_TEST_MERGE_SECONDS", "1")
+    log = tmp_path / "calls.jsonl"
+    monkeypatch.setenv("SAVEME_TEST_WHISPER_LOG", str(log))
+    data = result_of(*run_worker_proc(request(source, workdir, word_timestamps=True), entry=ENTRY))
+    assert data["words"] is True
+    transcript = load_transcript(workdir / "transcript.json")
+    assert transcript.has_words
+    for segment in transcript.segments:
+        assert [w.text for w in segment.words] == ["second", segment.text.split()[1]]
+        assert segment.start <= segment.words[0].start <= segment.words[1].start <= segment.words[1].end <= segment.end
+    last = transcript.segments[-1]
+    assert last.words[1].end == last.end and last.start > 8  # a later window's words, in the file's time
+    assert all(json.loads(line)["word_timestamps"] is True for line in log.read_text().splitlines())
+
+
+def test_word_timestamps_must_be_a_boolean(source, workdir):
+    err = error_of(*run_worker_proc(request(source, workdir, word_timestamps="yes"), entry=ENTRY))
+    assert err["code"] == "internal"
 
 
 def test_transcribe_offsets_segments_across_windows_and_keeps_languages(source, workdir, monkeypatch):
