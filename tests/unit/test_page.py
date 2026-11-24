@@ -191,6 +191,8 @@ def test_studio_markup():
             assert attrs.get("type") == "button" or attrs.get("id") == "inspect", attrs
     for name in ("studio", "studio-editor", "export", "clip-list-wrap"):
         assert "hidden" in by_id[name][1], name
+    for name in ("export", "studio-preview-note"):  # take focus from a control that disables itself
+        assert by_id[name][1].get("tabindex") == "-1", name
     tag, rows = by_id["clip-list"]
     assert tag == "ol" and rows.get("aria-labelledby") == "clip-list-title"
     tag, upload = by_id["upload-file"]

@@ -184,7 +184,7 @@
       <div id="studio-editor" hidden class="mt-4">
         <video id="studio-video" controls preload="metadata" playsinline
                class="aspect-video w-full rounded-xl bg-black"></video>
-        <p id="studio-preview-note" hidden class="mt-3 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">Your browser can't preview this video. You can still type a start and end.</p>
+        <p id="studio-preview-note" hidden tabindex="-1" class="mt-3 rounded-xl outline-none bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">Your browser can't preview this video. You can still type a start and end.</p>
 
         <div id="timeline-wrap" class="mt-5">
           <div id="timeline" class="relative h-11 cursor-pointer touch-none select-none">
@@ -250,7 +250,7 @@
           <p class="mt-2 text-xs/relaxed text-ink-600 dark:text-ink-400">Every clip in the list is cut and saved together in one ZIP file.</p>
         </div>
 
-        <div id="export" hidden class="mt-4 rounded-xl bg-ink-50 p-4 dark:bg-white/5">
+        <div id="export" hidden tabindex="-1" class="mt-4 rounded-xl bg-ink-50 p-4 outline-none dark:bg-white/5">
           <div class="flex items-center justify-between gap-3">
             <p id="export-status" class="flex min-w-0 items-center gap-2 font-semibold">
               <span id="export-spin" hidden class="shrink-0 text-brand-700 dark:text-brand-300">

@@ -534,10 +534,12 @@
   // only the picture can't be decoded, the sound still plays and moves the playhead.)
   function onVideoError() {
     if (state !== "ready" || !el.studioVideo.getAttribute("src")) return;
+    const lost = [el.setStart, el.setEnd, el.playClip].includes(document.activeElement);
     show(el.studioPreviewNote, true);
     playable = false;
     stopPreview();
     render();
+    if (lost) el.studioPreviewNote.focus(); // its button is now disabled: focus the reason why
   }
 
   function render() {
@@ -842,9 +844,11 @@
     const button = kind === "zip" ? el.exportZip : el.exportClip;
     if (state !== "ready" || exportRunning() || button.disabled) return;
     const g = gen;
+    const hadFocus = document.activeElement === button;
     resetExport();
     exportJob = { id: "", autoSaved: false, kind };
     paintExport({ headline: HEADLINE.exportQueued, icon: "spin", bar: null, cancel: true, cancelling: true });
+    if (hadFocus) el.export.focus(); // the button is disabled while the export runs: follow its progress
     const base = `/api/sources/${encodeURIComponent(source.id)}`;
     let created;
     try {
