@@ -171,6 +171,19 @@ def dominant_language(segments: list[Segment]) -> str:
 
 # --- cache file ---------------------------------------------------------------------------
 
+def reusable(cached: Transcript | None, *, language: str, retranscribe: bool) -> bool:
+    """True when a request for `language` ("auto" or a code) can use the cached transcript:
+    imported subtitles always can, and a Whisper transcript can unless the request names a
+    different language than the one it was made for (or found). `retranscribe` forces a new one."""
+    if cached is None or retranscribe:
+        return False
+    if cached.origin == "subtitles" or language == AUTO:
+        return True
+    if cached.requested_language == AUTO:
+        return language == cached.language
+    return language == cached.requested_language
+
+
 def save_transcript(path: Path, transcript: Transcript) -> None:
     """Write the transcript as JSON, atomically (a reader never sees half a file)."""
     path.parent.mkdir(parents=True, exist_ok=True)

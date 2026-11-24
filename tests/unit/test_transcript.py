@@ -201,3 +201,29 @@ def test_parse_subtitles_refuses_unknown_language():
     with pytest.raises(AppError) as exc:
         parse_subtitles(SRT.encode(), filename="x.srt", duration=None, language="xx")
     assert exc.value.code == "invalid_request"
+
+
+# --- cache reuse -----------------------------------------------------------------------
+
+def test_cached_transcript_is_reused_unless_asked_otherwise():
+    from app.transcript import reusable
+
+    auto_en = _transcript(requested_language="auto", language="en")
+    assert reusable(auto_en, language="auto", retranscribe=False)
+    assert reusable(auto_en, language="en", retranscribe=False)  # auto already found English
+    assert not reusable(auto_en, language="ml", retranscribe=False)
+    assert not reusable(auto_en, language="auto", retranscribe=True)
+    assert not reusable(None, language="auto", retranscribe=False)
+    forced_ml = _transcript(requested_language="ml", language="ml",
+                            segments=[Segment(start=0, end=1, text="x", language="ml")])
+    assert reusable(forced_ml, language="ml", retranscribe=False)
+    assert reusable(forced_ml, language="auto", retranscribe=False)
+    assert not reusable(forced_ml, language="en", retranscribe=False)
+
+
+def test_imported_subtitles_are_reused_whatever_the_language():
+    from app.transcript import reusable
+
+    subs = parse_subtitles(SRT.encode(), filename="a.srt", duration=60.0, language="auto")
+    assert reusable(subs, language="ml", retranscribe=False)
+    assert not reusable(subs, language="auto", retranscribe=True)
