@@ -215,6 +215,7 @@ def test_readme_configuration_table_lists_every_setting():
     table = text.split("## Configuration", 1)[1].split("\n### ", 1)[0]
     rows = set(re.findall(r"^\| `([A-Z_]+)` \|", table, re.M))
     settings_vars = {f.name.upper() for f in dataclasses.fields(Settings)}
+    settings_vars |= {f.name.upper() for f in dataclasses.fields(AiSettings)}
     assert settings_vars <= rows, sorted(settings_vars - rows)
 
 
