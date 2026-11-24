@@ -2,13 +2,18 @@
 
 ---
 
-## 2026-11-24 14:23 IST — Session: Phase 3, Auto Shorts & Reels
+## 2026-11-24 15:59 IST — Session: Phase 3, Auto Shorts & Reels
 
 ### Summary
 
 The owner sent the Phase 3 brief: an automatic short-video renderer on top of Clip Studio and AI Highlights. It covers 9:16/16:9/1:1/4:5 output, smart reframing (center, face, speaker, split-screen, blurred background, original), word-timed burned-in subtitles in six styles with Malayalam support, templates, optional branding, batch rendering with a ZIP, and an Auto Shorts tab. It is built in small tested commits on `feature/auto-shorts`, with this journal updated after every task. The brief was taken as a go-ahead without a question round, and design calls are under Key Decisions.
 
-**Status: Tasks 1–9 done. Task 10 is running: docs are written, and the image rebuild, FFmpeg check, isolated smoke test, an independent review and the final suite are in progress.**
+**Status: Phase 3 complete on `feature/auto-shorts` (all 10 tasks). It is not merged and not pushed; that is the owner's call.** The acceptance criteria were shown with the real renderer in tests and in Chrome, and in the hardened container:
+- a highlight becomes a word-captioned 9:16 MP4 you can download;
+- several highlights become a ZIP of separately rendered shorts;
+- the downloader, manual Clip Studio and AI Highlights suites all still pass.
+
+An independent review found 7 important and 6 minor problems, all fixed with tests that failed first.
 
 ### Progress by task
 
@@ -83,7 +88,17 @@ The owner sent the Phase 3 brief: an automatic short-video renderer on top of Cl
     - the render, with per-clip measured %, estimated time left, Skip, Cancel, MP4/SRT links and the ZIP.
   - `static/studio.js`: the bridge takes several `onSource` listeners and gains `onClips`/`clips`/`marks`/`currentTime`.
   - `static/ai.js`: tabs cover three panels.
-- [ ] Task 10, end-to-end verification and documentation.
+- [x] **Task 10, end-to-end verification and documentation.**
+  - Docs:
+    - `docs/AUTO_SHORTS_IMPLEMENTATION.md`: code map, request flow, pitfalls, tests, review table, limitations;
+    - `docs/RENDERING_PRESETS.md`: generated from the preset data, kept in sync by `tests/unit/test_presets_doc.py`;
+    - `docs/AUTO_SHORTS_DESIGN.md` aligned with the code (PNG decoding, validate, measured size and memory);
+    - the README (feature, Auto Shorts section, security, stack, layout, disk 770 MB, settings table);
+    - the "Phase 3" notes in the Phase 2 docs.
+  - Docker:
+    - `scripts/docker-ffmpeg-check.sh` renders AV1/HEVC/VP9/AC-3 sources to H.264+AAC, writes a JPEG still and asserts there is no image decoder;
+    - `scripts/docker-smoke.sh` and `scripts/smoke_shorts.py` render a captioned short (English and Malayalam) inside the container and report memory.
+  - An independent read-only review by a fresh agent, given the code and the brief. Every finding was fixed with a test.
 
 ### Changes Made
 
@@ -105,6 +120,11 @@ The owner sent the Phase 3 brief: an automatic short-video renderer on top of Cl
 | `780b3ac` | feat | Add the Auto Shorts tab to Clip Studio |
 | `bd4d05e` | docs | Describe Auto Shorts: implementation notes, presets reference and README |
 | `40cf9c9` | test | Render in the Docker checks |
+| `cf6777d` | docs | Update journal |
+| `7893f2d` | docs | Give the measured image size and container memory |
+| `9a83437` | fix | Close the problems an independent review found in Auto Shorts |
+| `5ccf503` | fix | Re-add a preset's logo without fetch, and ignore stale preview replies |
+| `44a6448` | docs | Record the review findings and the pitfalls they taught |
 
 ### Test Results
 
@@ -194,6 +214,26 @@ The owner sent the Phase 3 brief: an automatic short-video renderer on top of Cl
   - Bugs the walkthrough found, all fixed before the UI commit:
     - the bridge's `clips()`/`marks()` divided seconds by 1000;
     - the validate console error above.
+- **Task 10:**
+  - **Rebuilt image** (`saveme:auto-shorts`, **770 MB**):
+    - `docker-ffmpeg-check.sh`: **FFMPEG CHECK OK**. Every matrix case passed, including the 4 render cases, the JPEG still and "no image decoders". **653 integration tests passed inside the image** against the minimal FFmpeg 9.0.2, with 3 skipped (two need macOS `say`; the OpenCV cross-check needs `cv2`). Manjari is in the image, so the Malayalam glyph test ran there.
+    - Isolated `docker-smoke.sh` (`COMPOSE_PROJECT_NAME=saveme-ctest`, `SAVEME_PORT=8001`): **SMOKE OK**. It rendered a 540×960 H.264+AAC 4.00 s short from imported English and Malayalam subtitles, and the container peaked at 131 MiB.
+  - **Worst-case memory** in that container (2 GiB `mem_limit`, 2 CPUs): a High-quality 1080×1920 face-tracked render of 40 s (33.7 s, libx264) ran beside a Whisper `base` transcription of 64 s (16.7 s). Peak: **965 MiB**, so the default limit is enough.
+  - `saveme-ctest` was taken down each time, and the live `saveme-saveme-1` was never touched.
+  - **Whole suite before the review fixes (`cf6777d`): 1221 passed, 3 skipped, 8 deselected** (164 s).
+  - **Independent review** (a fresh agent, read-only, given the code and the brief, not my conclusions). It found 7 important and 6 minor problems, each confirmed with a script, FFmpeg or Chromium; all are fixed (table in `docs/AUTO_SHORTS_IMPLEMENTATION.md`).
+    - Important:
+      - a `_at` precedence crash in face/speaker framing on a one-sample subject flip;
+      - preset logos re-uploaded with `fetch(data:)`, which the CSP blocks, breaking every render after a video change;
+      - previews skipped the clip-length limit, and a 4,000-term crop expression crashes FFmpeg (SIGBUS, reproduced here: 3,000 terms ran, 4,000 crashed);
+      - a source hold leaked when a task was cancelled before starting;
+      - intro/outro had no container/codec allowlist (a GIF passed natively);
+      - asset uploads skipped the disk budget and limits, and could evict an asset in use;
+      - ZIP builds raced, and a mid-render ZIP was cached.
+    - Minor: malformed `tRNS`, a still at the clip's end, O(n³) line balancing, quick cues vanishing, skip-all reported as failed, a stale preview reply.
+    - **18 new regression tests fail on the old code and pass on the fix.** The real FFmpeg SIGBUS (rc −10) showed up in `test_a_very_long_crop_path_renders`. The logo fix was checked in Chromium with the real CSP: a preset's logo re-uploaded on a new video, appeared top-right in the preview, with no console errors.
+  - **Final whole suite (`5ccf503`): 1240 passed, 3 skipped, 8 deselected** (173 s, idle machine).
+  - **Final image re-check on the final code:** FFMPEG CHECK OK with **664 integration tests passed in the image**, 3 skipped, and SMOKE OK (short 540×960 h264+aac, 4.00 s).
 
 ### Key Decisions
 
@@ -220,21 +260,43 @@ The owner sent the Phase 3 brief: an automatic short-video renderer on top of Cl
 - **Speaker switches are eased (0.6 s), not cut.** The brief asks for no sudden framing jumps. Only real scene cuts jump.
 - **Renders keep files in the source's folder**, like AI results: they end with the source, at most 4 finished renders per source. The ZIP is built on demand from the finished clips, so a cancelled batch still exports what finished.
 - **FFmpeg capability detection is cached per FFmpeg/PATH**, so starting test apps doesn't spawn FFmpeg each time.
+- **Crop expressions are balanced sums with a keyframe cap.** FFmpeg's expression evaluator recurses once per `+`, and a flat 4,000-term sum crashed it.
+- **No `mpeg4` decoder in the image.** Old MPEG-4 Part 2 AVIs can still be clipped (stream copy). The renderer refuses them with a clear message rather than adding another parser for a rare format.
+- **`/api/shorts/validate` answers 200 `{valid:false}`.** Validation is a question, so a bad preset doesn't surface as a console error (the same reasoning as Phase 2's `{transcript: null}`).
+- **The default `mem_limit: 2g` stays.** The worst case measured, a High render beside a transcription, peaked at 965 MiB.
 
 ### Issues Encountered
 
 - Whisper word starts absorb pauses (fixed by the refinement above).
+- The Phase 1 packaging test caught my first logo design, which used FFmpeg's PNG decoder. I redesigned it rather than relax the invariant.
+- The browser walkthrough found the bridge's ms/seconds mix-up and the validate console error. The review found 13 more (Task 10).
+- `fetch()` of a `data:` URL is blocked by `connect-src 'self'`. Tests didn't catch it because it needs a real browser with the real CSP.
 - The `png_pipe` configure name (it is `image_png_pipe`).
 - A command with `rm -rf "$T/work/"*` was stopped by the safety check; separate folders were used instead.
 
 ### Pending Work
 
-- Rebuild the image (FFmpeg flags changed again: no png/image_png_pipe, plus rawvideo) and re-run `scripts/docker-ffmpeg-check.sh`, extended with rendering cases.
-- Task 9 (UI) and Task 10 (Docker smoke, browser walkthrough, docs: `AUTO_SHORTS_IMPLEMENTATION.md`, `RENDERING_PRESETS.md`, README, design doc updates for the PNG change).
+- **Ship (the owner's call):**
+  1. Push `feature/auto-shorts`.
+  2. Merge it into `main` (`--no-ff`, as before).
+  3. Rebuild the live container with `docker compose up -d --build`. The live `saveme-saveme-1` still runs `saveme:local`, built before Phase 2.
+- **Publishing the image** makes its FFmpeg GPL-2.0+ (x264). Offer the source: the FFmpeg tarball is pinned, and x264 comes from Debian.
+- **Known limitations:** see `docs/AUTO_SHORTS_IMPLEMENTATION.md`. In short:
+  - speaker focus is visual (no diarisation);
+  - no HDR tone mapping;
+  - no MPEG-4 Part 2 rendering;
+  - VideoToolbox on native macOS only;
+  - renders end with their source;
+  - presets are per browser.
+- **Not exercised:** a real OpenRouter call (no key here; Auto Shorts doesn't need one). Real Whisper ran for captions, and the browser walkthrough used it.
+- **Leftover images:** `saveme:auto-shorts` (770 MB), `saveme:ai-clipping` (738 MB) and `saveme-ffmpeg-check` (about 1.2 GB). Remove them with `docker image rm` when done.
+- **Pre-existing:** `test_aborted_download_keeps_file` can fail under heavy CPU load (Phase 2 note). It passed in every full run this session.
 
 ### Handoff
 
-- Branch `feature/auto-shorts`. Read `docs/AUTO_SHORTS_DESIGN.md` first; the task list is above.
+- Branch `feature/auto-shorts`, 26 commits on `2edc86b`, clean tree, not pushed. Read `docs/AUTO_SHORTS_IMPLEMENTATION.md` first (code map, pitfalls, tests), then the design and `RENDERING_PRESETS.md`.
+- **Never run `scripts/docker-smoke.sh` bare** next to the live container. Use `COMPOSE_PROJECT_NAME=saveme-ctest COMPOSE_FILE=compose.yaml:<override setting image: saveme:auto-shorts> SAVEME_PORT=8001`, then `docker compose down` with the same variables.
+- Dev run used in the walkthrough: `TEMP_DIR=<dir> .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8077`. `python -m app` always binds 8000. Build the CSS first with `scripts/build-css.sh`.
 - Tests: `.venv/bin/pytest -q`, with real FFmpeg/ffprobe on `PATH` (Homebrew 8.0.1 here, which has libx264, libass with HarfBuzz and VideoToolbox).
 - Backend code map:
   - `app/renderer.py`: worker modes render/analyze/asset;
