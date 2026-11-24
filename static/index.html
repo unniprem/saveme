@@ -385,7 +385,7 @@
 
               <section aria-labelledby="shorts-format-title" class="mt-5 border-t border-ink-200 pt-4 first:mt-0 first:border-t-0 first:pt-0 dark:border-ink-800">
                 <h4 id="shorts-format-title" class="font-semibold">Look</h4>
-          <p id="shorts-status" aria-live="polite" class="mt-1 text-sm text-ink-700 data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:text-ink-300 dark:data-[tone=error]:text-red-400">Checking Auto Shorts…</p>
+          <p id="shorts-status" aria-live="polite" class="mt-1 text-sm text-ink-700 data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:text-ink-300 dark:data-[tone=error]:text-red-400">Checking what this computer can make…</p>
           <p class="mt-3 rounded-xl bg-brand-50 px-4 py-3 text-sm text-brand-900 dark:bg-brand-500/10 dark:text-brand-200">Shorts are rendered on this computer: reframed, captioned from the transcript and re-encoded as H.264 MP4. Nothing is uploaded anywhere.</p>
             <div class="mt-3 grid gap-3 sm:grid-cols-2">
               <div><label for="shorts-platform" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Platform</label><select id="shorts-platform" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400"></select></div>
@@ -479,7 +479,7 @@
             <h4 id="shorts-preview-title" class="font-semibold">Preview</h4>
             <div class="mt-2 grid gap-3 sm:grid-cols-2">
               <div><label for="shorts-preview-pick" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Short</label><select id="shorts-preview-pick" class="mt-1 h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 disabled:opacity-60 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400"></select></div>
-              <div><div class="flex items-baseline justify-between gap-2"><label for="shorts-preview-at" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Moment</label><output id="shorts-preview-at-out" for="shorts-preview-at" class="text-xs tabular-nums text-ink-600 dark:text-ink-400"></output></div><input id="shorts-preview-at" type="range" min="0" max="1000" step="1" value="300" class="mt-2 w-full accent-brand-700 disabled:opacity-60 dark:accent-brand-400"></div>
+              <div><div class="flex items-baseline justify-between gap-2"><label for="shorts-preview-at" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Point in the short</label><output id="shorts-preview-at-out" for="shorts-preview-at" class="text-xs tabular-nums text-ink-600 dark:text-ink-400"></output></div><input id="shorts-preview-at" type="range" min="0" max="1000" step="1" value="300" class="mt-2 w-full accent-brand-700 disabled:opacity-60 dark:accent-brand-400"></div>
             </div>
             <div class="mt-3 flex flex-col gap-2 sm:flex-row">
               <button id="shorts-preview-frame" type="button" class="h-11 w-full rounded-xl border border-ink-300 bg-white px-5 font-semibold text-ink-700 enabled:hover:border-brand-700/50 enabled:hover:text-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-ink-700 dark:bg-transparent dark:text-ink-200 dark:enabled:hover:border-brand-400/60 dark:enabled:hover:text-brand-300 dark:focus-visible:outline-brand-400">Preview frame</button>
@@ -522,7 +522,7 @@
               <h4 id="shorts-editor-title" class="font-semibold">Captions</h4>
               <span id="shorts-editor-timing" class="text-xs text-ink-600 dark:text-ink-400"></span>
             </div>
-            <p class="mt-1 text-xs text-ink-600 dark:text-ink-400">Fix any word, or the time a caption shows (seconds from the clip's start). Changes are used for this clip's short.</p>
+            <p class="mt-1 text-xs text-ink-600 dark:text-ink-400">Fix any word, or the time a caption shows (seconds from the start of the short). Changes are used for this short only.</p>
             <ol id="shorts-cues" aria-labelledby="shorts-editor-title" class="mt-2 max-h-96 space-y-2 overflow-y-auto overscroll-contain"></ol>
             <p id="shorts-editor-msg" aria-live="polite" hidden class="mt-2 text-sm break-words text-ink-700 data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:text-ink-300 dark:data-[tone=error]:text-red-400"></p>
             <div class="mt-3 flex flex-wrap gap-2">

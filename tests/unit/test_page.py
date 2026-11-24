@@ -369,6 +369,17 @@ def test_step_three():
     assert "Download all" in page
 
 
+def test_copy_says_what_make_shorts_does():
+    page = _html()
+    ai = (STATIC / "ai.js").read_text(encoding="utf-8")
+    shorts = (STATIC / "shorts.js").read_text(encoding="utf-8")
+    readme = (STATIC.parent / "README.md").read_text(encoding="utf-8")
+    for text in ("Auto Shorts", "so shorts get no captions", "(seconds from the clip's start)", "inside the clip.",
+                 ">Moment</label>"):
+        assert text not in page + ai + shorts, text
+    assert "**Select all** ticks them all again" not in readme
+
+
 SHORTS_IDS = [
     "shorts-status", "shorts-hand", "shorts-clips", "shorts-platform", "shorts-template", "shorts-quality", "shorts-fps", "shorts-layout",
     "shorts-margin", "shorts-manual", "shorts-manual-x", "shorts-manual-y", "shorts-manual-zoom",

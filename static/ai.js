@@ -266,7 +266,8 @@
     const whisper = `Transcription: Whisper ${str(status.whisper_model)}, on this computer.`;
     if (!status.available) {
       const message = (status.error && str(status.error.message)) || "Finding moments is turned off.";
-      setLine(el.aiStatus, `Finding moments is off: ${message} Fix the setting and restart SaveMe.`, "error");
+      setLine(el.aiStatus, `Finding moments is off: ${message} Fix the setting and restart SaveMe (see `
+        + "docs/OPENROUTER_SETUP.md). You can still make shorts from clips you cut by hand in Manual.", "error");
       setText(el.aiModel, "");
     } else if (!status.configured) {
       setLine(el.aiStatus, MSG.notConfigured, "error");
@@ -357,8 +358,8 @@
     const available = Boolean(status && status.available);
     const configured = available && status.configured;
     el.aiStart.disabled = !source || running || making || overLimit || !configured;
-    el.aiTranscribe.disabled = !source || running || !available;
-    el.aiSubsFile.disabled = !source || running || !available;
+    el.aiTranscribe.disabled = !source || running || making || !available;
+    el.aiSubsFile.disabled = !source || running || making || !available;
     el.aiRetranscribe.disabled = running;
   }
 
@@ -776,6 +777,8 @@
       input.value = fmtTime(edits[h.id][which === "start" ? 0 : 1]);
       paintTimes();
       publish();
+      const shorts = window.SaveMeShorts; // an open caption editor follows the new times
+      if (shorts) shorts.moved(r, rangeOf(h), `moment ${n}`);
       announce(`Moment ${n} now ${fmtTime(edits[h.id][0])} to ${fmtTime(edits[h.id][1])}.`);
     }
     for (const which of ["start", "end"]) {
@@ -975,6 +978,9 @@
   el.aiSearch.addEventListener("input", filterTranscript);
   el.aiSubsFile.addEventListener("change", importSubtitles);
   paintButtons();
+  // shorts.js asks which analysis is running here, so Make can wait for it (it may make the transcript)
+  // instead of trying to start a second one, which the server refuses.
+  window.SaveMeMoments = Object.freeze({ running: () => (running && analysisId ? analysisId : "") });
   bridge.onMaking((on) => {
     making = on;
     paintButtons();
