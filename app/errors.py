@@ -18,6 +18,8 @@ CATALOG: dict[str, tuple[int, str]] = {
     "source_not_found": (404, "This video is no longer open for clipping. It may have been closed, "
                               "or removed after a while unused. Load it again."),
     "source_not_ready": (409, "The video is still loading. Wait until it's ready, then try again."),
+    "invalid_clip": (400, "Choose a start before the end, inside the video."),
+    "upload_incomplete": (400, "The upload stopped before the whole file arrived. Please try again."),
     "unsupported": (422, "This link isn't supported, or it doesn't contain downloadable media."),
     "login_required": (422, "This media requires a login or is private, so it can't be downloaded."),
     "unavailable": (422, "This media is unavailable. It may have been removed or doesn't exist."),

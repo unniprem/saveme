@@ -51,3 +51,23 @@ def content_disposition(filename: str) -> str:
     ascii_stem = _tidy(ascii_stem) or "download"
     ascii_name = f"{ascii_stem}.{ext}" if ext else ascii_stem
     return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename, safe='')}"
+
+
+def _clip_time(seconds: float) -> str:
+    """0m12s, 1m40.5s, 1h02m05s: tenths only when there are any. Never contains ':'."""
+    tenths = round(max(0.0, seconds) * 10)
+    whole, frac = divmod(tenths, 10)
+    hours, rest = divmod(whole, 3600)
+    minutes, secs = divmod(rest, 60)
+    text = f"{secs:02d}" + (f".{frac}" if frac else "") + "s"
+    return f"{hours}h{minutes:02d}m{text}" if hours else f"{minutes}m{text}"
+
+
+def clip_filename(title: str | None, start: float, end: float, ext: str) -> str:
+    """`<title> (clip <start>-<end>).<ext>`, with the title cut short (not the range) so the
+    stem stays within the usual length."""
+    label = f" (clip {_clip_time(start)}-{_clip_time(end)})"
+    stem = sanitize_filename(title, ext).removesuffix(f".{ext}")
+    room = _MAX_STEM_BYTES - len(label.encode("utf-8"))
+    stem = _tidy(stem.encode("utf-8")[:room].decode("utf-8", errors="ignore")) or "download"
+    return f"{stem}{label}.{ext}"

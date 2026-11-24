@@ -36,7 +36,7 @@ from pathlib import Path
 
 from app.config import ConfigError, Settings
 from app.errors import AppError
-from app.filenames import media_type_for, sanitize_filename
+from app.filenames import clip_filename, media_type_for, sanitize_filename
 from app.runner import DEFAULT_WORKER_CMD, RunWorker, dir_size, run_worker
 
 logger = logging.getLogger(__name__)
@@ -50,6 +50,11 @@ RECORD_RETENTION_SECONDS = 3600
 MAX_FINISHED_RECORDS = 100
 DISK_RETRY_SECONDS = 2.0
 RESUME_WINDOW_SECONDS = 300
+UPLOAD_NAME = "upload.bin"  # an upload's bytes, before the probe run makes it media.<ext>
+MIN_CLIP_SECONDS = 0.1
+# A clip's end may pass the source's probed duration by this much (players and probes
+# round differently); it is then cut at the duration.
+END_TOLERANCE_SECONDS = 0.05
 
 _ACTIVE = frozenset({"downloading", "converting", "uploading", "checking", "cutting"})
 _PENDING = frozenset({"queued", *_ACTIVE})
@@ -145,6 +150,27 @@ def _percent(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return min(100.0, max(0.0, float(value)))
+
+
+def _clip_range(start: float, end: float, duration: float | None) -> tuple[float, float]:
+    """The range to cut, with an end just past the source's duration pulled back to it;
+    raises invalid_clip naming the rule a range breaks."""
+    def invalid(message: str) -> AppError:
+        return AppError("invalid_clip", message)
+
+    if start < 0:
+        raise invalid("The start can't be before 0:00.")
+    if end <= start:
+        raise invalid("The end must be after the start.")
+    if duration is not None:
+        if start >= duration:
+            raise invalid("The start must be before the end of the video.")
+        if end > duration + END_TOLERANCE_SECONDS:
+            raise invalid("The end can't be after the end of the video.")
+        end = min(end, duration)
+    if end - start < MIN_CLIP_SECONDS:
+        raise invalid("A clip must be at least 0.1 seconds long.")
+    return start, end
 
 
 def _seconds(value: object) -> float | None:
@@ -285,9 +311,57 @@ class JobManager:
         it leaves); an upload in progress stops at its next chunk."""
         job = self.get_source(source_id)
         if job.status not in _TERMINAL:
+            for clip in [j for j in self._jobs.values()
+                         if j.kind == "clip" and j.source_id == job.id and j.status in _PENDING]:
+                self.cancel(clip.id)
             if job.task is not None:
                 job.task.cancel()
             self._expire(job, "closed")
+        return job
+
+    def begin_upload(self, title: str | None) -> Job:
+        """A source for a file the caller is about to write to workdir/UPLOAD_NAME. It holds
+        a queue place while the bytes arrive, and it must fit the disk budget counting
+        active jobs, because its bytes land before any slot is taken."""
+        self.ensure_queue_room()
+        self._make_source_room()
+        if not self._make_room(count_active=True):
+            raise AppError("disk_full")
+        job = self._new_job(url="", output="video", quality="best", kind="source", origin="upload",
+                            status="uploading", title=title or "Uploaded video")
+        job.started_at = job.created_at
+        job.workdir.mkdir()
+        logger.info("source %s uploading", job.id)
+        return job
+
+    def finish_upload(self, job: Job) -> None:
+        """The whole file has arrived: queue the probe run that checks it."""
+        if job.status != "uploading":  # closed while the bytes were arriving
+            raise AppError("source_not_found")
+        job.status = "queued"
+        job.queued_at = self._clock()
+        self._start(job)
+
+    def abort_upload(self, job: Job) -> None:
+        """The upload failed or the client left: forget it and remove its folder."""
+        if job.status == "uploading":
+            self._jobs.pop(job.id, None)
+        _remove_dir(job.workdir)
+
+    def submit_clip(self, source_id: str, start: float, end: float) -> Job:
+        """Queue a cut of [start, end) seconds out of a ready source (times in ms)."""
+        source = self.get_source(source_id)
+        if source.status in _TERMINAL:
+            raise AppError("source_not_found")
+        if source.status != "ready" or source.file_path is None:
+            raise AppError("source_not_ready")
+        start, end = _clip_range(round(start, 3), round(end, 3), source.duration)
+        self._admit()
+        self.touch(source)
+        job = self._new_job(url="", output="video", quality="best", kind="clip", source_id=source.id,
+                            start=start, end=end, title=source.title)
+        self._start(job)
+        logger.info("clip %s queued from source %s", job.id, source.id)
         return job
 
     def _open_sources(self) -> list[Job]:
@@ -323,7 +397,8 @@ class JobManager:
             if not job.delivering:  # else finish_delivery removes it once the send ends
                 _remove_dir(job.workdir)  # its run has finished: nothing else will remove it
         elif job.status in _PENDING:
-            job.resume_until = self._clock() + RESUME_WINDOW_SECONDS
+            if job.kind == "download":  # a clip can't continue where it stopped
+                job.resume_until = self._clock() + RESUME_WINDOW_SECONDS
             if job.task is not None:
                 job.task.cancel()
         else:
@@ -523,22 +598,46 @@ class JobManager:
             self._fail(job, exc)
             return
         try:
-            await self._download(job)
+            if job.kind == "clip":
+                await self._clip(job)
+            elif job.origin == "upload":
+                await self._work(job, "checking", "Checking the video",
+                                 {"mode": "probe", "source": str(job.workdir / UPLOAD_NAME),
+                                  "workdir": str(job.workdir)})
+            else:
+                await self._work(job, "downloading", "Starting download",
+                                 {"mode": "download", "url": job.url, "output": job.output,
+                                  "quality": job.quality, "workdir": str(job.workdir),
+                                  "max_bytes": self._settings.max_file_bytes})
         finally:
             self._slots.release()
 
-    async def _download(self, job: Job) -> None:
+    async def _clip(self, job: Job) -> None:
+        source = self._jobs.get(job.source_id or "")
+        try:
+            if source is None or source.status != "ready" or source.file_path is None:
+                self._fail(job, AppError("source_not_found"))  # closing it cancels its clips first
+                return
+            await self._work(job, "cutting", "Cutting the clip",
+                             {"mode": "clip", "source": str(source.file_path),
+                              "workdir": str(job.workdir), "start": job.start, "end": job.end,
+                              "keep_tags": source.origin == "link",
+                              "max_bytes": self._settings.max_file_bytes})
+        finally:
+            if source is not None:
+                self.touch(source)  # the idle TTL restarts once its clip ends
+
+    async def _work(self, job: Job, status: str, detail: str, request: dict) -> None:
+        """Run the worker for `job` in its folder and make it ready, or fail it."""
         settings = self._settings
         keep = False  # keep the workdir: a ready file, or partial files after a cancel
         try:
-            job.status = "downloading"
-            job.detail = "Starting download"
+            job.status = status
+            job.detail = detail
             job.started_at = self._clock()
-            job.workdir.mkdir(exist_ok=True)  # a resumed job reuses its folder
+            job.workdir.mkdir(exist_ok=True)  # a resumed job or an upload reuses its folder
             result = await self._run_worker(
-                {"mode": "download", "url": job.url, "output": job.output,
-                 "quality": job.quality, "workdir": str(job.workdir),
-                 "max_bytes": settings.max_file_bytes},
+                request,
                 cmd=self._worker_cmd,
                 timeout=settings.max_job_seconds,
                 on_event=lambda event: self._on_event(job, event),
@@ -567,13 +666,14 @@ class JobManager:
             return
         detail = event.get("detail")
         if event.get("event") == "progress":
-            job.status = "downloading"
+            job.status = "cutting" if job.kind == "clip" else "downloading"
             if isinstance(detail, str):
                 job.detail = detail
             job.downloaded_bytes = _count(event.get("downloaded_bytes"))
             job.total_bytes = _count(event.get("total_bytes"))
             job.progress_percent = _percent(event.get("percent"))
-        elif event.get("event") == "phase" and event.get("phase") == "converting":
+        elif (event.get("event") == "phase" and event.get("phase") == "converting"
+              and job.kind != "clip"):
             job.status = "converting"
             job.detail = detail if isinstance(detail, str) else None
             job.progress_percent = None
@@ -593,9 +693,13 @@ class JobManager:
             logger.error("job %s: worker result file is missing", job.id)
             raise AppError("internal")
         title, notice, duration = result.get("title"), result.get("notice"), result.get("duration")
-        job.title = title if isinstance(title, str) else None
+        if job.kind == "download" or job.origin == "link":
+            job.title = title if isinstance(title, str) else None
         job.notice = notice if isinstance(notice, str) else None
-        job.filename = sanitize_filename(job.title, ext)
+        if job.kind == "clip":
+            job.filename = clip_filename(job.title, job.start, job.end, ext)
+        else:
+            job.filename = sanitize_filename(job.title, ext)
         job.media_type = media_type
         job.file_path = path
         job.status = "ready"

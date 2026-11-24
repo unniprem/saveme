@@ -50,3 +50,21 @@ def test_lone_surrogates_replaced(title, expected):
 def test_m4a_name_and_type():
     assert sanitize_filename("Song", "m4a") == "Song.m4a"
     assert media_type_for("m4a") == "audio/mp4"
+
+
+@pytest.mark.parametrize("title, start, end, ext, expected", [
+    ("Talk", 65, 100.5, "mp4", "Talk (clip 1m05s-1m40.5s).mp4"),
+    (None, 0, 12, "mkv", "download (clip 0m00s-0m12s).mkv"),
+    ("Long talk", 3725, 3725.04, "webm", "Long talk (clip 1h02m05s-1h02m05s).webm"),
+    ("a/b: c", 1.23456, 4.5, "mp4", "a b c (clip 0m01.2s-0m04.5s).mp4"),
+])
+def test_clip_filename(title, start, end, ext, expected):
+    from app.filenames import clip_filename
+    assert clip_filename(title, start, end, ext) == expected
+
+
+def test_clip_filename_keeps_its_range_when_the_title_is_long():
+    from app.filenames import clip_filename
+    name = clip_filename("é" * 500, 0, 30, "mp4")
+    assert name.endswith(" (clip 0m00s-0m30s).mp4")
+    assert len(name.removesuffix(".mp4").encode("utf-8")) <= 150

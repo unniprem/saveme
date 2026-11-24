@@ -5,6 +5,7 @@ import pytest
 
 from app.config import ConfigError, load_settings
 from app.errors import AppError
+from app.jobs import UPLOAD_NAME
 from tests.support.jobs import (URL, FakeClock, StubRunner, job_dirs, make_manager,  # noqa: F401
                                 ready_job, settings, temp_dir, wait_until)
 
@@ -212,3 +213,247 @@ def test_config_max_clip_sources():
         with pytest.raises(ConfigError) as ei:
             load_settings({"MAX_CLIP_SOURCES": bad})
         assert ei.value.var == "MAX_CLIP_SOURCES"
+
+
+# --- Clips --------------------------------------------------------------------
+
+def clip_call(runner: StubRunner, clip):
+    return next(c for c in runner.calls if c.workdir == clip.workdir)
+
+
+async def started(runner: StubRunner, job):
+    await wait_until(lambda: any(c.workdir == job.workdir for c in runner.calls))
+    return clip_call(runner, job)
+
+
+async def test_clip_runs_and_becomes_a_normal_ready_job(make_manager, settings):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    source = await ready_source(manager, runner)
+    clip = manager.submit_clip(source.id, 1.23456, 4.5)
+    assert manager.get(clip.id) is clip and clip.status == "queued"
+    call = await started(runner, clip)
+    assert call.request == {"mode": "clip", "source": str(source.workdir / "media.mp4"),
+                            "workdir": str(clip.workdir), "start": 1.235, "end": 4.5,
+                            "keep_tags": True, "max_bytes": settings.max_file_bytes}
+    assert call.kwargs["max_workdir_bytes"] == 2 * settings.max_file_bytes
+    call.emit({"event": "progress", "detail": "Cutting the clip", "percent": 50.0,
+               "downloaded_bytes": 100, "total_bytes": None})
+    view = manager.public_view(clip)
+    assert (view["kind"], view["status"], view["progress_percent"], view["detail"]) == (
+        "clip", "cutting", 50.0, "Cutting the clip")
+    call.finish()
+    await wait_until(lambda: clip.status == "ready")
+    assert clip.filename == "My Video (clip 0m01.2s-0m04.5s).mp4"
+    assert clip.media_type == "video/mp4"
+    claimed = manager.claim_delivery(clip.id)
+    manager.finish_delivery(claimed, complete=True)
+    assert (clip.status, clip.reason) == ("expired", "delivered")
+    assert not clip.workdir.exists() and source.status == "ready"
+
+
+@pytest.mark.parametrize("start, end, message", [
+    (1.0, 1.05, "A clip must be at least 0.1 seconds long."),
+    (5.0, 4.0, "The end must be after the start."),
+    (5.0, 5.0, "The end must be after the start."),
+    (-1.0, 2.0, "The start can't be before 0:00."),
+    (12.5, 13.0, "The start must be before the end of the video."),
+    (3.0, 12.6, "The end can't be after the end of the video."),
+])
+async def test_clip_validation(make_manager, start, end, message):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    source = await ready_source(manager, runner)
+    with pytest.raises(AppError) as ei:
+        manager.submit_clip(source.id, start, end)
+    assert (code_of(ei), ei.value.message, ei.value.status) == ("invalid_clip", message, 400)
+
+
+async def test_clip_end_just_past_the_duration_is_clamped(make_manager):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    source = await ready_source(manager, runner)
+    clip = manager.submit_clip(source.id, 10.0, DURATION + 0.04)
+    assert (clip.start, clip.end) == (10.0, DURATION)
+
+
+async def test_clip_needs_a_ready_source(make_manager):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    loading = manager.open_link_source(URL, "best")
+    with pytest.raises(AppError) as ei:
+        manager.submit_clip(loading.id, 0, 1)
+    assert code_of(ei) == "source_not_ready"
+    with pytest.raises(AppError) as ei:
+        manager.submit_clip("A" * 22, 0, 1)
+    assert code_of(ei) == "source_not_found"
+    manager.close_source(loading.id)
+    with pytest.raises(AppError) as ei:
+        manager.submit_clip(loading.id, 0, 1)
+    assert code_of(ei) == "source_not_found"
+
+
+async def test_clip_cancel_has_no_resume(make_manager):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    source = await ready_source(manager, runner)
+    clip = manager.submit_clip(source.id, 0, 5)
+    call = await started(runner, clip)
+    manager.cancel(clip.id)
+    view = manager.public_view(clip)
+    assert (view["status"], view["resume_seconds"]) == ("cancelled", None)
+    await wait_until(lambda: not clip.runs)
+    assert call.cancelled and not clip.workdir.exists()
+    with pytest.raises(AppError) as ei:
+        manager.resume(clip.id)
+    assert code_of(ei) == "not_resumable"
+
+
+async def test_closing_source_cancels_its_clips(make_manager, settings, temp_dir):
+    runner = StubRunner()
+    manager = await make_manager(dataclasses.replace(settings, max_active_jobs=1), run_worker=runner)
+    source = await ready_source(manager, runner)
+    running = manager.submit_clip(source.id, 0, 5)
+    call = await started(runner, running)
+    queued = manager.submit_clip(source.id, 5, 10)
+    assert queued.status == "queued"
+    manager.close_source(source.id)
+    assert (running.status, queued.status) == ("cancelled", "cancelled")
+    await wait_until(lambda: not running.runs and not queued.runs)
+    assert call.cancelled
+    assert len(runner.calls) == 2  # the queued clip never started
+    await manager.sweep()
+    assert job_dirs(temp_dir) == []
+
+
+async def test_source_in_use_does_not_expire(make_manager, settings):
+    clock, runner = FakeClock(), StubRunner()
+    manager = await make_manager(run_worker=runner, clock=clock, sweep_interval=3600)
+    source = await ready_source(manager, runner)
+    clip = manager.submit_clip(source.id, 0, 5)
+    call = await started(runner, clip)
+    clock.advance(settings.job_ttl_seconds + 1)
+    await manager.sweep()
+    assert source.status == "ready"
+    call.finish()
+    await wait_until(lambda: clip.status == "ready")
+    assert source.last_used == clock()  # a clip ending is a use
+    clock.advance(settings.job_ttl_seconds - 1)
+    await manager.sweep()
+    assert source.status == "ready"
+    clock.advance(2)
+    await manager.sweep()
+    assert (source.status, source.reason) == ("expired", "idle")
+    assert (clip.status, clip.reason) == ("expired", "ttl")  # its own TTL, not the source's
+
+
+async def test_upload_clips_drop_tags(make_manager):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    source = await ready_upload(manager, runner, "Holiday")
+    clip = manager.submit_clip(source.id, 0, 1)
+    call = await started(runner, clip)
+    assert call.request["keep_tags"] is False
+    call.finish()
+    await wait_until(lambda: clip.status == "ready")
+    assert clip.filename == "Holiday (clip 0m00s-0m01s).mp4"
+
+
+# --- Uploads ------------------------------------------------------------------
+
+async def ready_upload(manager, runner: StubRunner, title: str | None):
+    source = manager.begin_upload(title)
+    (source.workdir / UPLOAD_NAME).write_bytes(b"\0" * 2048)
+    manager.finish_upload(source)
+    call = await started(runner, source)
+    (source.workdir / UPLOAD_NAME).rename(source.workdir / "media.mp4")
+    call.finish({"file": "media.mp4", "ext": "mp4", "duration": 3.0, "notice": None})
+    await wait_until(lambda: source.status == "ready")
+    return source
+
+
+async def test_upload_lifecycle(make_manager, settings):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    source = manager.begin_upload("Holiday")
+    assert source.status == "uploading" and source.workdir.is_dir()
+    (source.workdir / UPLOAD_NAME).write_bytes(b"\0" * 2048)
+    manager.finish_upload(source)
+    call = await started(runner, source)
+    assert call.request == {"mode": "probe", "source": str(source.workdir / UPLOAD_NAME),
+                            "workdir": str(source.workdir)}
+    assert call.kwargs["max_workdir_bytes"] == 2 * settings.max_file_bytes
+    assert source.status == "checking"
+    (source.workdir / UPLOAD_NAME).rename(source.workdir / "media.mp4")
+    call.finish({"file": "media.mp4", "ext": "mp4", "duration": 3.0, "notice": None})
+    await wait_until(lambda: source.status == "ready")
+    view = manager.source_view(source)
+    assert (view["origin"], view["title"], view["duration_seconds"]) == ("upload", "Holiday", 3.0)
+
+
+async def test_upload_without_a_name_is_called_uploaded_video(make_manager):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    source = await ready_upload(manager, runner, None)
+    assert manager.source_view(source)["title"] == "Uploaded video"
+
+
+async def test_upload_that_isnt_a_video_fails_and_cleans_up(make_manager):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    source = manager.begin_upload("notes")
+    (source.workdir / UPLOAD_NAME).write_bytes(b"text")
+    manager.finish_upload(source)
+    call = await started(runner, source)
+    call.fail(AppError("unreadable_media"))
+    await wait_until(lambda: source.status == "failed")
+    assert manager.source_view(source)["error"]["code"] == "unreadable_media"
+    assert not source.workdir.exists()
+
+
+async def test_abort_upload_frees_place(make_manager, settings):
+    runner = StubRunner()
+    manager = await make_manager(dataclasses.replace(settings, max_active_jobs=1, max_queued_jobs=0),
+                                 run_worker=runner)
+    source = manager.begin_upload("x")
+    with pytest.raises(AppError) as ei:
+        manager.submit(URL, "video", "best")
+    assert code_of(ei) == "busy"
+    manager.abort_upload(source)
+    assert not source.workdir.exists()
+    with pytest.raises(AppError) as ei:
+        manager.get_source(source.id)
+    assert code_of(ei) == "source_not_found"
+    manager.submit(URL, "video", "best")
+
+
+async def test_finish_upload_after_close_is_refused(make_manager):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    source = manager.begin_upload("x")
+    manager.close_source(source.id)
+    with pytest.raises(AppError) as ei:
+        manager.finish_upload(source)
+    assert code_of(ei) == "source_not_found"
+    manager.abort_upload(source)
+    assert not source.workdir.exists() and runner.calls == []
+
+
+async def test_upload_admission_counts_active_jobs(make_manager, settings):
+    runner = StubRunner()
+    tight = dataclasses.replace(settings, max_file_size_mb=1, max_total_disk_mb=3)
+    manager = await make_manager(tight, run_worker=runner, disk_usage=lambda path: 0)
+    job = manager.submit(URL, "video", "best")
+    await wait_until(lambda: job.status == "downloading")
+    with pytest.raises(AppError) as ei:
+        manager.begin_upload("x")  # the running job's 2 MiB reservation plus 2 MiB is over 3 MiB
+    assert code_of(ei) == "disk_full"
+
+
+async def test_upload_counts_against_the_source_cap(make_manager, settings):
+    runner = StubRunner()
+    manager = await make_manager(dataclasses.replace(settings, max_clip_sources=1), run_worker=runner)
+    manager.begin_upload("x")
+    with pytest.raises(AppError) as ei:
+        manager.open_link_source(URL, "best")
+    assert code_of(ei) == "busy"
