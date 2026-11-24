@@ -67,6 +67,18 @@ def _int(env: Mapping[str, str], var: str, default: int, lo: int, hi: int) -> in
     return value
 
 
+def _bool(env: Mapping[str, str], var: str, default: bool) -> bool:
+    raw = _get(env, var)
+    if raw is None:
+        return default
+    value = raw.lower()
+    if value in ("true", "1", "yes", "on"):
+        return True
+    if value in ("false", "0", "no", "off"):
+        return False
+    raise ConfigError(var, f"must be true or false, got {raw!r}")
+
+
 def load_settings(env: Mapping[str, str]) -> Settings:
     max_file_size_mb = _int(env, "MAX_FILE_SIZE_MB", 2048, 1, 102400)
     max_total_disk_mb = _int(env, "MAX_TOTAL_DISK_MB", 10240, 1, 10_485_760)
@@ -133,6 +145,7 @@ class AiSettings:
     ai_max_job_seconds: int
     whisper_model: str
     whisper_cpu_threads: int
+    whisper_word_timestamps: bool = True
 
     @property
     def configured(self) -> bool:
@@ -201,4 +214,57 @@ def load_ai_settings(env: Mapping[str, str]) -> AiSettings:
         ai_max_job_seconds=_int(env, "AI_MAX_JOB_SECONDS", 3600, 60, 86400),
         whisper_model=whisper,
         whisper_cpu_threads=_int(env, "WHISPER_CPU_THREADS", 2, 1, 16),
+        whisper_word_timestamps=_bool(env, "WHISPER_WORD_TIMESTAMPS", True),
+    )
+
+
+# --- Auto Shorts (rendering) ------------------------------------------------------------------
+# Loaded apart from Settings and AiSettings: an invalid value turns off Auto Shorts only.
+
+RENDER_ENCODERS = ("auto", "libx264", "h264_videotoolbox")
+_SAFE_DIR = re.compile(r"/[A-Za-z0-9_./-]*")
+
+
+@dataclass(frozen=True)
+class RenderSettings:
+    render_max_concurrent_jobs: int
+    render_max_queued_jobs: int
+    render_cpu_threads: int
+    render_max_memory_mb: int
+    render_encoder: str  # auto | libx264 | h264_videotoolbox
+    render_max_clip_seconds: int
+    render_max_job_seconds: int
+    render_analysis_fps: int
+    render_fonts_dir: Path | None
+
+    @property
+    def max_memory_bytes(self) -> int:
+        return self.render_max_memory_mb * 1024 * 1024
+
+
+def _fonts_dir(env: Mapping[str, str]) -> Path | None:
+    """An absolute folder of extra fonts, or None. Only plain characters are accepted: the path
+    is handed to FFmpeg's `ass` filter, and refusing anything else means it never needs escaping."""
+    raw = _get(env, "RENDER_FONTS_DIR")
+    if raw is None:
+        return None
+    if not _SAFE_DIR.fullmatch(raw) or "/../" in f"{raw}/" or len(raw) > 512:
+        raise ConfigError("RENDER_FONTS_DIR", "must be an absolute path of letters, digits and _ . / - only")
+    return Path(raw)
+
+
+def load_render_settings(env: Mapping[str, str]) -> RenderSettings:
+    encoder = (_get(env, "RENDER_ENCODER") or "auto").lower()
+    if encoder not in RENDER_ENCODERS:
+        raise ConfigError("RENDER_ENCODER", f"must be one of {', '.join(RENDER_ENCODERS)}")
+    return RenderSettings(
+        render_max_concurrent_jobs=_int(env, "RENDER_MAX_CONCURRENT_JOBS", 1, 1, 4),
+        render_max_queued_jobs=_int(env, "RENDER_MAX_QUEUED_JOBS", 4, 0, 20),
+        render_cpu_threads=_int(env, "RENDER_CPU_THREADS", 2, 1, 16),
+        render_max_memory_mb=_int(env, "RENDER_MAX_MEMORY_MB", 1536, 256, 16384),
+        render_encoder=encoder,
+        render_max_clip_seconds=_int(env, "RENDER_MAX_CLIP_SECONDS", 300, 5, 1800),
+        render_max_job_seconds=_int(env, "RENDER_MAX_JOB_SECONDS", 3600, 60, 86400),
+        render_analysis_fps=_int(env, "RENDER_ANALYSIS_FPS", 5, 1, 15),
+        render_fonts_dir=_fonts_dir(env),
     )

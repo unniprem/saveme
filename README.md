@@ -285,6 +285,16 @@ An invalid value doesn't crash the app. It runs in a degraded mode: the page sho
 | `AI_MAX_JOB_SECONDS` | `3600` | 60-86400 | Seconds before a run (transcription included) is stopped |
 | `WHISPER_MODEL` | `base` | tiny, base, small, medium, large-v3, turbo, … | Transcription model. Must be installed (below). |
 | `WHISPER_CPU_THREADS` | `2` | 1-16 | CPU threads transcription may use |
+| `WHISPER_WORD_TIMESTAMPS` | `true` | true, false | Store when each word is spoken (word-timed Auto Shorts captions). Off skips the word alignment step |
+| `RENDER_MAX_CONCURRENT_JOBS` | `1` | 1-4 | Auto Shorts renders that run at the same time (they never use download slots) |
+| `RENDER_MAX_QUEUED_JOBS` | `4` | 0-20 | Renders that may wait for a free slot; more are refused with "busy" |
+| `RENDER_CPU_THREADS` | `2` | 1-16 | CPU threads one render may use (decoding, filters, x264) |
+| `RENDER_MAX_MEMORY_MB` | `1536` | 256-16384 | Memory cap of the renderer process, FFmpeg included (enforced on Linux) |
+| `RENDER_ENCODER` | `auto` | auto, libx264, h264_videotoolbox | H.264 encoder: `auto` uses VideoToolbox when FFmpeg has it (native macOS), else libx264 |
+| `RENDER_MAX_CLIP_SECONDS` | `300` | 5-1800 | Longest clip Auto Shorts renders |
+| `RENDER_MAX_JOB_SECONDS` | `3600` | 60-86400 | Seconds before one clip's render is stopped |
+| `RENDER_ANALYSIS_FPS` | `5` | 1-15 | Frames a second sampled for face tracking |
+| `RENDER_FONTS_DIR` | *(blank)* | an absolute path | Extra folder of caption fonts (letters, digits, `_ . / -` only) |
 
 **Whisper models.** The transcriber never downloads anything at runtime. The Docker image includes `base`; to add others, rebuild with `docker compose build --build-arg WHISPER_MODELS="base small"`, then set `WHISPER_MODEL=small`. Outside Docker, run `.venv/bin/python -m app.whisper_models small` (`--list` shows what's installed). Measured on an Apple M2 with 8 GB (native, 2 threads): `base` transcribed 20 minutes of speech in about 80 seconds, peaking near 0.75 GB of memory. Bigger models are more accurate but slower and need more memory: the transcriber allows 1.5 GB for `tiny`/`base`, 2.5 GB for `small`, 5 GB for `medium` and 8 GB for the large models, so for `small` and up, raise `mem_limit` in `compose.yaml` (2 GB by default) to match.
 

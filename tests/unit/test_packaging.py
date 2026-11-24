@@ -11,7 +11,8 @@ import textwrap
 import time
 from pathlib import Path
 
-from app.config import AiSettings, Settings, load_ai_settings, load_settings
+from app.config import (AiSettings, RenderSettings, Settings, load_ai_settings, load_render_settings,
+                        load_settings)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -44,7 +45,7 @@ _COMPOSE_VARS = ["SAVEME_PORT"]
 
 
 # Variables whose default is blank (a secret the owner adds).
-_BLANK_VARS = ["OPENROUTER_API_KEY"]
+_BLANK_VARS = ["OPENROUTER_API_KEY", "RENDER_FONTS_DIR"]
 
 
 def test_env_example_matches_settings_defaults():
@@ -52,12 +53,14 @@ def test_env_example_matches_settings_defaults():
     keys = [k for k, _ in pairs]
     settings_vars = [f.name.upper() for f in dataclasses.fields(Settings)]
     ai_vars = [f.name.upper() for f in dataclasses.fields(AiSettings)]
-    # exactly the Settings and AiSettings variables plus the compose ones, no duplicates
-    assert sorted(keys) == sorted(settings_vars + ai_vars + _COMPOSE_VARS)
+    render_vars = [f.name.upper() for f in dataclasses.fields(RenderSettings)]
+    # exactly the Settings, AiSettings and RenderSettings variables plus the compose ones, no duplicates
+    assert sorted(keys) == sorted(settings_vars + ai_vars + render_vars + _COMPOSE_VARS)
     assert all(v for k, v in pairs if k not in _BLANK_VARS), "every variable carries its default value"
     assert all(not v for k, v in pairs if k in _BLANK_VARS), "no secret in the example"
     assert load_settings(dict(pairs)) == load_settings({})
     assert load_ai_settings(dict(pairs)) == load_ai_settings({})
+    assert load_render_settings(dict(pairs)) == load_render_settings({})
 
 
 def test_compose_binds_loopback_only():
@@ -216,6 +219,7 @@ def test_readme_configuration_table_lists_every_setting():
     rows = set(re.findall(r"^\| `([A-Z_]+)` \|", table, re.M))
     settings_vars = {f.name.upper() for f in dataclasses.fields(Settings)}
     settings_vars |= {f.name.upper() for f in dataclasses.fields(AiSettings)}
+    settings_vars |= {f.name.upper() for f in dataclasses.fields(RenderSettings)}
     assert settings_vars <= rows, sorted(settings_vars - rows)
 
 

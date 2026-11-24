@@ -65,6 +65,15 @@ CATALOG: dict[str, tuple[int, str]] = {
                                     "again later."),
     "ai_invalid_response": (502, "The AI model returned an answer SaveMe couldn't use. Try again, or "
                                  "choose another model."),
+    "render_failed": (422, "Couldn't render this short. Try another layout or quality, or a different clip."),
+    "invalid_asset": (400, "SaveMe can't use this file. Use a PNG logo, or an MP4, MOV or WebM video."),
+    "render_unavailable": (503, "Auto Shorts isn't available on this server."),
+    "render_config_error": (503, "Auto Shorts is turned off because a setting is invalid."),
+    "render_not_found": (404, "That render couldn't be found. It may have finished long ago, or the server "
+                              "may have restarted."),
+    "render_running": (409, "A render is already running for this video. Wait for it or cancel it."),
+    "preview_not_found": (404, "That preview couldn't be found. Make a new one."),
+    "asset_not_found": (404, "That logo or video isn't on the server any more. Add it again."),
     "timeout": (504, "The operation took too long and was stopped. Please try again."),
 }
 
