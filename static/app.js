@@ -153,7 +153,9 @@
     const busy = next === "inspecting" || next === "job" || next === "studio";
     el.inspect.disabled = busy || degraded;
     el.url.readOnly = busy;
-    el.uploadFile.disabled = busy || degraded;
+    // Like Download: not while a finished file still waits to be saved (opening the studio
+    // would drop its Save file link).
+    el.uploadFile.disabled = busy || degraded || next === "ready";
     const canDownload = Boolean(inspected) && !degraded && ["inspected", "saved", "failed", "cancelled"].includes(next);
     const choice = chosenFormat();
     el.download.disabled = !(canDownload && choice);

@@ -129,6 +129,18 @@
 
   const ms = (seconds) => Math.round(seconds * 1000) / 1000;
   const announce = (text) => setText(el.announcer, text);
+
+  // A source created for a studio that has since closed: end it on the server too.
+  function closeLate(id) {
+    api(`/api/sources/${encodeURIComponent(id)}/close`, {}).catch(() => {});
+  }
+
+  // Stop the preview and let go of its stream (the server may already have deleted the file).
+  function dropVideo() {
+    el.studioVideo.pause();
+    el.studioVideo.removeAttribute("src");
+    el.studioVideo.load();
+  }
   const mediaUrl = () => `/api/sources/${encodeURIComponent(source.id)}/media`;
 
   function setBar(fill, bar, value, text) {
@@ -200,7 +212,10 @@
     const g = gen;
     paintLoading({ headline: HEADLINE.starting });
     api("/api/sources", { url, quality }).then((created) => {
-      if (g !== gen) return;
+      if (g !== gen) {
+        if (typeof created.source_id === "string" && JOB_ID_RE.test(created.source_id)) closeLate(created.source_id);
+        return;
+      }
       if (typeof created.source_id !== "string" || !JOB_ID_RE.test(created.source_id)) {
         loadFailed("SaveMe sent an unexpected reply. Please try again.");
         return;
@@ -259,12 +274,15 @@
     });
     xhr.addEventListener("load", () => {
       upload = null;
-      if (g !== gen) return;
       let data = null;
       try {
         data = JSON.parse(xhr.responseText);
       } catch {
         // Not JSON; handled below.
+      }
+      if (g !== gen) {
+        if (data && typeof data.source_id === "string" && JOB_ID_RE.test(data.source_id)) closeLate(data.source_id);
+        return;
       }
       if (xhr.status < 200 || xhr.status >= 300) {
         loadFailed(errorFrom(xhr.status, data).message);
@@ -316,9 +334,7 @@
     clearTimeout(keepTimer);
     resetExport();
     stopPreview();
-    el.studioVideo.pause();
-    el.studioVideo.removeAttribute("src");
-    el.studioVideo.load();
+    dropVideo();
     show(el.studio, false);
     unstore();
     source = null;
@@ -347,7 +363,7 @@
     clearTimeout(keepTimer);
     resetExport();
     stopPreview();
-    el.studioVideo.pause();
+    dropVideo();
     show(el.studioEditor, false);
     unstore();
     paintLoading({ headline, error: message, failed: true });
