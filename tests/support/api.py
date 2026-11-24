@@ -2,13 +2,17 @@
 stub run_worker for the Clip Studio modes."""
 import asyncio
 import os
+import socket
 import sys
+import threading
 import time
-from contextlib import asynccontextmanager
+from collections.abc import Iterator
+from contextlib import asynccontextmanager, contextmanager
 from ipaddress import ip_address
 from pathlib import Path
 
 import httpx
+import uvicorn
 
 from app.config import ConfigError, Settings
 from app.errors import CATALOG
@@ -64,6 +68,33 @@ async def poll_terminal(client: httpx.AsyncClient, job_id: str, timeout: float =
 
 def error_body(code: str, message: str | None = None) -> dict:
     return {"error": {"code": code, "message": message or CATALOG[code][1]}}
+
+
+def _free_socket() -> socket.socket:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    return sock
+
+
+@contextmanager
+def live_server(app) -> Iterator[int]:
+    """Serve `app` with a real uvicorn server in a background thread; yield its port."""
+    sock = _free_socket()
+    server = uvicorn.Server(uvicorn.Config(app, lifespan="on", log_config=None,
+                                           log_level="warning", access_log=False))
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 10
+        while not server.started:
+            assert thread.is_alive() and time.monotonic() < deadline, "uvicorn did not start"
+            time.sleep(0.02)
+        yield sock.getsockname()[1]
+    finally:
+        server.should_exit = True
+        thread.join(15)
+        sock.close()
 
 
 class StudioStub:

@@ -11,7 +11,6 @@ import logging
 import os
 import re
 import socket
-import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -20,15 +19,14 @@ from pathlib import Path
 
 import httpx
 import pytest
-import uvicorn
 
 from app.config import ConfigError, Settings, load_settings
 from app.errors import AppError
 from app.jobs import JOB_ID_RE, MARKER_NAME
 from app.main import STATIC_DIR, create_app
 from app.netguard import is_public_ip, system_resolver
-from tests.support.api import (TEST_WORKER_CMD, URL, error_body, make_app, poll_terminal, running,
-                               wait_until)
+from tests.support.api import (TEST_WORKER_CMD, URL, error_body, live_server, make_app, poll_terminal,
+                               running, wait_until)
 
 MiB = 1024 * 1024
 CSP = ("default-src 'self'; img-src 'self' https: http: data:; style-src 'self'; "
@@ -543,33 +541,6 @@ async def test_no_temp_dir_in_any_response(settings, temp_dir, media_server):
     for secret in {str(temp_dir), str(temp_dir.resolve())}:
         assert secret.encode() not in blob
     assert b"Traceback" not in blob
-
-
-def _free_socket() -> socket.socket:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("127.0.0.1", 0))
-    return sock
-
-
-@contextmanager
-def live_server(app) -> Iterator[int]:
-    """Serve `app` with a real uvicorn server in a background thread; yield its port."""
-    sock = _free_socket()
-    server = uvicorn.Server(uvicorn.Config(app, lifespan="on", log_config=None,
-                                           log_level="warning", access_log=False))
-    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
-    thread.start()
-    try:
-        deadline = time.monotonic() + 10
-        while not server.started:
-            assert thread.is_alive() and time.monotonic() < deadline, "uvicorn did not start"
-            time.sleep(0.02)
-        yield sock.getsockname()[1]
-    finally:
-        server.should_exit = True
-        thread.join(15)
-        sock.close()
 
 
 def test_aborted_download_keeps_file(settings, temp_dir):

@@ -1,15 +1,17 @@
 """Clip Studio HTTP API: sources, preview and clips (spec §6.3), in-process with StudioStub."""
 import asyncio
 import json
+import socket
 import time
 from pathlib import Path
 
 import httpx
 import pytest
 
-from app.config import Settings, load_settings
+from app.config import ConfigError, Settings, load_settings
 from app.netguard import is_public_ip
-from tests.support.api import StudioStub, URL, error_body, make_app, poll_terminal, running
+from tests.support.api import (URL, StudioStub, error_body, live_server, make_app, poll_terminal,
+                               running)
 
 ORIGIN = {"Origin": "http://127.0.0.1"}
 
@@ -202,3 +204,148 @@ async def test_link_source_takes_a_queue_place(settings):
         r = await client.post("/api/sources", json={"url": URL})
         assert (r.status_code, r.json()) == (429, error_body("busy"))
         stub.gate.set()
+
+
+# --- Uploads ------------------------------------------------------------------
+
+UPLOAD = "/api/sources/upload"
+OCTET = {"Content-Type": "application/octet-stream"}
+
+
+def job_dirs(temp_dir: Path) -> list[str]:
+    return sorted(p.name for p in temp_dir.iterdir() if p.is_dir())
+
+
+async def test_upload_success(client, stub, media, temp_dir):
+    data = media["sample.mp4"].read_bytes()
+    r = await client.post(UPLOAD, content=data,
+                          headers={**OCTET, **ORIGIN, "X-SaveMe-Filename": "My%20Clip.mp4"})
+    assert r.status_code == 202, r.text
+    source_id = r.json()["source_id"]
+    assert r.json()["status"] == "queued"
+    view = await poll_source(client, source_id)
+    assert (view["status"], view["origin"], view["title"], view["duration_seconds"]) == (
+        "ready", "upload", "My Clip", 12.5)
+    assert stub.calls[-1] == {"mode": "probe", "source": str(temp_dir / source_id / "upload.bin"),
+                              "workdir": str(temp_dir / source_id)}
+    assert (temp_dir / source_id / "media.mp4").read_bytes() == data
+    r = await client.post(f"/api/sources/{source_id}/clips", json={"start": 0, "end": 1})
+    assert r.status_code == 202
+    await poll_terminal(client, r.json()["job_id"])
+    assert stub.calls[-1]["keep_tags"] is False
+
+
+async def chunks(*parts: bytes):
+    for part in parts:
+        yield part
+
+
+@pytest.mark.parametrize("make_request, status, code, message", [
+    (lambda: {"content": b"x" * 10, "headers": {"Content-Type": "video/mp4"}},
+     415, "invalid_request", "Send the file as application/octet-stream."),
+    (lambda: {"content": chunks(b"x" * 10), "headers": OCTET},
+     411, "invalid_request", "The upload needs a Content-Length header."),
+    (lambda: {"content": b"", "headers": OCTET}, 400, "invalid_request", "The file is empty."),
+    (lambda: {"content": b"x" * (1024 * 1024 + 1), "headers": OCTET},
+     413, "too_large", "This file is larger than the 1 MB upload limit."),
+], ids=["content_type", "chunked", "empty", "too_large"])
+async def test_upload_header_checks(temp_dir, stub, make_request, status, code, message):
+    small = load_settings({"TEMP_DIR": str(temp_dir), "MAX_FILE_SIZE_MB": "1"})
+    async with running(make_app(small, run_worker=stub)) as client:
+        r = await client.post(UPLOAD, **make_request())
+        assert (r.status_code, r.json()) == (status, error_body(code, message))
+    assert job_dirs(temp_dir) == [] and stub.calls == []
+
+
+async def test_upload_bypasses_only_its_own_body_cap(client):
+    r = await client.post(UPLOAD, content=b"\0" * (100 * 1024), headers=OCTET)
+    assert r.status_code == 202
+    r = await client.post("/api/sources", content=b"{" + b" " * (100 * 1024) + b"}",
+                          headers={"Content-Type": "application/json"})
+    assert (r.status_code, r.json()) == (413, error_body("request_too_large"))
+
+
+async def test_upload_origin_and_host_checks_still_apply(client, temp_dir):
+    r = await client.post(UPLOAD, content=b"x", headers={**OCTET, "Origin": "http://evil.example"})
+    assert (r.status_code, r.json()) == (403, error_body("forbidden_origin"))
+    r = await client.post(UPLOAD, content=b"x", headers={**OCTET, "Host": "evil.example"})
+    assert r.status_code == 400 and r.json()["error"]["message"] == "Invalid host header."
+    assert job_dirs(temp_dir) == []
+
+
+async def test_upload_refused_while_degraded():
+    degraded = ConfigError("MAX_ACTIVE_JOBS", "must be between 1 and 16, got 0")
+    async with running(make_app(degraded, run_worker=StudioStub())) as client:
+        r = await client.post(UPLOAD, content=b"x" * (100 * 1024), headers=OCTET)
+        assert r.status_code == 503 and r.json()["error"]["code"] == "config_error"
+
+
+@pytest.mark.parametrize("header, title", [
+    ("My%20Clip.mp4", "My Clip"),
+    ("%E2%82%AC%20report.final.MOV", "€ report.final"),
+    ("no-extension", "no-extension"),
+    (".mp4", None),
+    ("C%3A%5Cfolder%5Cclip.mkv", "clip"),
+    ("%FF%FE.mp4", "��"),
+    ("a" * 2000, "a" * 1024),
+    ("", None),
+    (None, None),
+])
+def test_upload_title(header, title):
+    from app.studio_routes import upload_title
+    assert upload_title(header) == title
+
+
+def raw_upload(port: int, declared: int, body: bytes) -> socket.socket:
+    raw = socket.create_connection(("127.0.0.1", port), timeout=10)
+    raw.sendall(f"POST {UPLOAD} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+                f"Content-Type: application/octet-stream\r\nContent-Length: {declared}\r\n\r\n".encode()
+                + body)
+    return raw
+
+
+def wait_for(predicate, timeout: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline, "condition not met in time"
+        time.sleep(0.02)
+
+
+def test_upload_short_body_or_disconnect_cleans_up(temp_dir):
+    tight = load_settings({"TEMP_DIR": str(temp_dir), "MAX_ACTIVE_JOBS": "1", "MAX_QUEUED_JOBS": "0"})
+    with live_server(make_app(tight, run_worker=StudioStub())) as port, \
+            httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False, timeout=10) as http:
+        raw = raw_upload(port, 100_000, b"\0" * 1000)
+        wait_for(lambda: job_dirs(temp_dir) != [])  # the upload holds a folder and a queue place
+        assert http.post("/api/jobs", json={"url": URL, "output": "video"}).status_code == 429
+        raw.close()  # the client leaves mid-body
+        wait_for(lambda: job_dirs(temp_dir) == [])
+        r = http.post("/api/jobs", json={"url": URL, "output": "video"})
+        assert r.status_code == 202, r.text  # its place is free again
+
+
+def test_upload_idle_timeout(temp_dir):
+    settings = load_settings({"TEMP_DIR": str(temp_dir)})
+    app = make_app(settings, run_worker=StudioStub(), upload_idle_seconds=0.3)
+    with live_server(app) as port:
+        with raw_upload(port, 100_000, b"\0" * 1000) as raw:
+            reply = raw.recv(65536)  # nothing more is sent
+        assert reply.startswith(b"HTTP/1.1 504"), reply[:100]
+        assert b'"code":"timeout"' in reply
+        wait_for(lambda: job_dirs(temp_dir) == [])
+
+
+def test_upload_closed_mid_transfer(temp_dir):
+    settings = load_settings({"TEMP_DIR": str(temp_dir)})
+    with live_server(make_app(settings, run_worker=StudioStub())) as port, \
+            httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False, timeout=10) as http:
+        with raw_upload(port, 100_000, b"\0" * 1000) as raw:
+            wait_for(lambda: job_dirs(temp_dir) != [])
+            source_id = job_dirs(temp_dir)[0]
+            r = http.post(f"/api/sources/{source_id}/close", json={})
+            assert r.json()["status"] == "expired"
+            raw.sendall(b"\0" * 2000)
+            reply = raw.recv(65536)
+        assert reply.startswith(b"HTTP/1.1 404"), reply[:100]
+        assert b'"code":"source_not_found"' in reply
+        wait_for(lambda: job_dirs(temp_dir) == [])

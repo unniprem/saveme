@@ -91,10 +91,13 @@ def classify_ytdlp_error(text: str) -> AppError:
     return AppError("extraction_failed")
 
 
-def too_large_message(limit_bytes: int) -> str:
+def size_text(limit_bytes: int) -> str:
+    """A size limit in whole MB, or GB from 1 GB up: "500 MB", "2 GB"."""
     mb = limit_bytes // (1024 * 1024)
     if mb >= 1024:
-        n, unit = mb // 1024, "GB"
-    else:
-        n, unit = mb, "MB"
-    return f"This file is larger than the {n} {unit} limit. Try a lower quality or audio only."
+        return f"{mb // 1024} GB"
+    return f"{mb} MB"
+
+
+def too_large_message(limit_bytes: int) -> str:
+    return f"This file is larger than the {size_text(limit_bytes)} limit. Try a lower quality or audio only."
