@@ -175,3 +175,59 @@ def test_word_and_caption_timing_match_real_speech(tmp_path, monkeypatch):
     quiet = (max([gap_start, *(c.end for c in covering if c.start <= gap_start)]) + gap_end) / 2
     if not any(c.start <= quiet < c.end for c in cues):
         assert _ink(frame_rgb(out, quiet), 0.6, 0.85) == 0
+
+
+# --- styles and options ------------------------------------------------------------------------------
+
+def _style_still(tmp_path, spec: dict, text: str = "one two three", at: float = 0.3) -> np.ndarray:
+    """A 540x960 still of a grey source with one cue burned in the given caption spec; the middle
+    word is the active one at `at`."""
+    folder = tmp_path / "source"
+    folder.mkdir(exist_ok=True)
+    src = folder / "media.mp4" if (folder / "media.mp4").exists() else _grey(folder / "media.mp4", 2.0)
+    work = tmp_path / f"work-{len(list(tmp_path.iterdir()))}"
+    work.mkdir()
+    r = resolve(RenderSpec.model_validate(spec))
+    tokens = text.split()
+    words = tuple(CaptionWord(0.1 * (i + 1) if i else 0.0, 0.1 * (i + 2), tok) for i, tok in enumerate(tokens))
+    cue = CaptionCue(0.0, 1.0, words, ((0, len(words)),))
+    (work / "subs.ass").write_text(to_ass([cue], AssPlan(540, 960, r.captions, r.safe, duration=2.0)),
+                                   encoding="utf-8")
+    renderer.run_render(render_request(src, work, kind="frame", output="f.jpg", at=at, width=540, height=960,
+                                       subtitles=True, layout={"mode": "original"}), lambda e: None)
+    return frame_rgb(work / "f.jpg", 0).astype(int)
+
+
+def _count(frame: np.ndarray, rgb: tuple[int, int, int], tol: int = 60) -> int:
+    return int((np.abs(frame - np.array(rgb)).max(axis=2) < tol).sum())
+
+
+@pytest.mark.parametrize("style", ["clean_minimal", "bold_creator", "karaoke", "podcast_classic", "cinematic",
+                                   "high_contrast"])
+def test_every_style_renders(tmp_path, style):
+    frame = _style_still(tmp_path, {"captions": {"style": style}})
+    band = frame[int(0.55 * 960):int(0.85 * 960)]
+    assert int((band.max(axis=2) > 150).sum()) > 200, style  # text (or a highlight) is drawn
+    dark = _count(band, (0, 0, 0), tol=25)
+    if style in ("podcast_classic", "high_contrast"):
+        assert dark > 3000, style  # an opaque box behind the text
+    if style == "high_contrast":
+        assert _count(band, (255, 230, 0), tol=70) > 300  # yellow text
+    if style == "bold_creator":
+        assert _count(band, (255, 212, 0), tol=70) > 100  # the active word in yellow
+    if style == "karaoke":
+        assert _count(band, (124, 58, 237), tol=60) > 300  # the active word's purple box
+
+
+def test_style_options_change_the_output(tmp_path):
+    base = _style_still(tmp_path, {"captions": {"style": "clean_minimal"}})
+    red = _style_still(tmp_path, {"captions": {"style": "clean_minimal", "color": "#FF0000"}})
+    big = _style_still(tmp_path, {"captions": {"style": "clean_minimal", "size": 120}})
+    top = _style_still(tmp_path, {"captions": {"style": "clean_minimal", "position": "top"}})
+
+    def ink(frame, lo=0.0, hi=1.0):
+        return int((frame[int(lo * 960):int(hi * 960)].max(axis=2) > 150).sum())
+
+    assert _count(red, (255, 0, 0), tol=70) > 200 and _count(base, (255, 0, 0), tol=70) == 0
+    assert ink(big) > 2 * ink(base)
+    assert ink(top, 0.0, 0.4) > 100 and ink(top, 0.5, 1.0) == 0 and ink(base, 0.0, 0.4) == 0
