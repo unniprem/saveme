@@ -32,7 +32,7 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationEr
 
 from app.errors import AppError
 from app.openrouter import (Completion, ModelInfo, OpenRouterClient, UsageMeter, check_model,
-                            parse_json_object)
+                            parse_json_object, usage_of)
 from app.transcript import WHISPER_LANGUAGES, Segment, Transcript, clean_text
 
 CHUNK_TOKENS = 6000
@@ -416,9 +416,12 @@ async def analyze(client: OpenRouterClient, model: ModelInfo, transcript: Transc
     skipped = done = 0
     stopped = False
 
+    def bound(messages: list[dict]) -> float:
+        """The most one call with these messages can cost."""
+        return pricing.cost(message_tokens_max(messages), budget) if pricing else 0.0
+
     def affordable(messages: list[dict]) -> bool:
-        upper = pricing.cost(message_tokens_max(messages), budget) if pricing else 0.0
-        return meter.spent + upper <= limit_usd
+        return meter.spent + bound(messages) <= limit_usd
 
     for chunk in chunks:
         messages = build_messages(transcript, chunk, chunks=len(chunks), options=options, per_chunk=per_chunk)
@@ -430,9 +433,13 @@ async def analyze(client: OpenRouterClient, model: ModelInfo, transcript: Transc
         for attempt in range(2):
             if attempt and not affordable(messages):
                 break
-            completion: Completion = await client.complete(messages, model=model, schema=RESPONSE_SCHEMA,
-                                                           schema_name="highlights", max_tokens=budget)
-            meter.add(completion.usage)
+            most = bound(messages)
+            # A retry after an attempt that may have been billed only happens if it still fits.
+            completion: Completion = await client.complete(
+                messages, model=model, schema=RESPONSE_SCHEMA, schema_name="highlights", max_tokens=budget,
+                before_retry=lambda: affordable(messages),
+                on_lost=lambda data: meter.add_lost(None if data is None else usage_of(data), bound=most))
+            meter.add(completion.usage, bound=most)
             try:
                 found, _dropped = parse_answer(parse_json_object(completion.content), chunk, per_chunk=per_chunk)
                 break

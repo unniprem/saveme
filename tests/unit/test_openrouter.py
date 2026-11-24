@@ -317,3 +317,48 @@ def test_check_model_needs_a_way_to_cap_the_answer():
     assert exc.value.code == "model_unsupported" and "length" in exc.value.message
     check_model(model_info({**PLAIN, "supported_parameters": ["max_completion_tokens"]}), needed_tokens=1000)
     check_model(model_info({**PLAIN, "supported_parameters": []}), needed_tokens=1000)  # unknown: max_tokens sent
+
+
+# --- attempts that may have been billed ----------------------------------------------------
+
+async def test_failed_attempts_that_may_be_billed_are_reported():
+    server = MockOpenRouter()
+    failed = completion({"clips": []}, cost=0.001)
+    failed["choices"][0]["finish_reason"] = "error"
+    server.chat.extend([httpx.ConnectError("refused"), httpx.ReadTimeout("slow"), failed,
+                        completion({"clips": []})])
+    client, _ = make(server)
+    lost = []
+    await client.complete(MESSAGES, model=model_info(HAIKU), schema=SCHEMA, schema_name="h", max_tokens=50,
+                          on_lost=lost.append)
+    # Not for a refused connection (nothing was sent); yes for a read timeout (the model may
+    # have answered) and an error inside a 200 (with its usage).
+    assert len(lost) == 2 and lost[0] is None and lost[1]["usage"]["cost"] == 0.001
+    # Not for a 503 from OpenRouter itself either: nothing was generated.
+    server.chat.extend([httpx.Response(503, json={"error": {"code": 503}}), completion({"clips": []})])
+    lost.clear()
+    await client.complete(MESSAGES, model=model_info(HAIKU), schema=SCHEMA, schema_name="h", max_tokens=50,
+                          on_lost=lost.append)
+    assert lost == []
+
+
+async def test_a_retry_happens_only_if_allowed():
+    server = MockOpenRouter()
+    server.chat.extend([httpx.ReadTimeout("slow"), completion({"clips": []})])
+    client, sleeps = make(server)
+    with pytest.raises(AppError) as exc:
+        await client.complete(MESSAGES, model=model_info(HAIKU), schema=SCHEMA, schema_name="h", max_tokens=50,
+                              before_retry=lambda: False)
+    assert exc.value.code == "openrouter_unavailable" and len(server.requests) == 1 and sleeps == []
+
+
+def test_usage_meter_counts_lost_attempts_and_missing_usage_at_the_bound():
+    from app.openrouter import Usage, UsageMeter, usage_of
+
+    meter = UsageMeter(model_info(HAIKU).pricing)
+    meter.add_lost(None, bound=0.002)
+    meter.add_lost(usage_of({"usage": {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.0005}}), bound=0.002)
+    meter.add(Usage(0, 0, None), bound=0.003)  # a reply that said nothing about usage
+    view = meter.view()
+    assert view["calls"] == 3 and view["cost_usd"] == pytest.approx(0.002 + 0.0005 + 0.003)
+    assert view["cost_reported"] is False

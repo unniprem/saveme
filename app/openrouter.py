@@ -17,6 +17,9 @@ timeouts, 5xx, garbled replies). Network errors, timeouts, 408, 429, 5xx and err
 inside a 200 are retried MAX_RETRIES times with exponential backoff (1 s, 2 s, 4 s, plus jitter),
 or after Retry-After when OpenRouter sends one (up to MAX_RETRY_AFTER seconds; longer means
 "rate limited" at once). Cancellation is never caught: an abandoned request may still be billed.
+For the spending limit, complete() reports through `on_lost` every failed attempt that may have
+been billed (one that reached the model: a timeout or broken connection after sending, or an error
+reported inside a 200, with its usage if any), and asks `before_retry` before each retry.
 
 The API key is only ever placed in the Authorization header. It is never logged, and messages
 from OpenRouter are cleaned and scrubbed of it before they reach a user. Logs carry status
@@ -202,7 +205,14 @@ class UsageMeter:
         self._estimated = 0.0
         self._unreported = 0
 
-    def add(self, usage: Usage) -> None:
+    def add(self, usage: Usage, *, bound: float | None = None) -> None:
+        """Count one call. A call that reported nothing about its usage counts as `bound`, the
+        most it could have cost."""
+        if usage.cost is None and not usage.prompt_tokens and not usage.completion_tokens and bound is not None:
+            self.calls += 1
+            self._unreported += 1
+            self._estimated += bound
+            return
         self.calls += 1
         self.prompt_tokens += usage.prompt_tokens
         self.completion_tokens += usage.completion_tokens
@@ -212,6 +222,10 @@ class UsageMeter:
             self._unreported += 1
             if self._pricing is not None:
                 self._estimated += self._pricing.cost(usage.prompt_tokens, usage.completion_tokens)
+
+    def add_lost(self, usage: Usage | None, *, bound: float) -> None:
+        """Count a failed attempt that may have been billed, at its usage if known, else `bound`."""
+        self.add(usage if usage is not None else Usage(0, 0, None), bound=bound)
 
     @property
     def spent(self) -> float:
@@ -255,6 +269,9 @@ def _usage(data: dict) -> Usage:
     return Usage(count("prompt_tokens"), count("completion_tokens"), float(cost) if valid else None)
 
 
+usage_of = _usage  # the usage of any reply body, for callers counting failed attempts
+
+
 def _content(message: object) -> str:
     content = message.get("content") if isinstance(message, dict) else None
     if isinstance(content, str):
@@ -268,8 +285,12 @@ def _content(message: object) -> str:
 # --- the client -------------------------------------------------------------------------------
 
 class _Failure(Exception):
-    def __init__(self, error: AppError, *, retry: bool, after: float | None = None):
+    """A failed attempt. `billed`: it reached the model, so it may cost money; `data`: its body."""
+
+    def __init__(self, error: AppError, *, retry: bool, after: float | None = None,
+                 billed: bool = False, data: dict | None = None):
         self.error, self.retry, self.after = error, retry, after
+        self.billed, self.data = billed, data
 
 
 def _retry_after(response: httpx.Response) -> float | None:
@@ -350,14 +371,18 @@ class OpenRouterClient:
         if not isinstance(data, dict):
             raise _Failure(AppError("openrouter_unavailable"), retry=True)
         error = data.get("error")
-        if isinstance(error, dict):  # an error reported inside a 200
+        if isinstance(error, dict):  # an error reported inside a 200: the model may have run
             code = error.get("code")
             status = code if isinstance(code, int) and not isinstance(code, bool) and 400 <= code < 600 else 502
-            raise self._failure(status, data, after)
+            failure = self._failure(status, data, after)
+            failure.billed, failure.data = True, data
+            raise failure
         return data
 
     async def _send(self, method: str, path: str, *, body: dict | None = None,
-                    check: Callable[[dict], None] | None = None) -> dict:
+                    check: Callable[[dict], None] | None = None,
+                    before_retry: Callable[[], bool] | None = None,
+                    on_lost: Callable[[dict | None], None] | None = None) -> dict:
         if not self._settings.configured:
             raise AppError("ai_not_configured")
         attempt = 0
@@ -365,12 +390,14 @@ class OpenRouterClient:
             try:
                 try:
                     response = await self._http.request(method, path, json=body)
-                except httpx.TimeoutException:
+                except httpx.TimeoutException as exc:
+                    sent = not isinstance(exc, (httpx.ConnectTimeout, httpx.PoolTimeout))
                     raise _Failure(AppError("openrouter_unavailable", "OpenRouter took too long to answer. "
-                                            "Try again later."), retry=True) from None
+                                            "Try again later."), retry=True, billed=sent) from None
                 except httpx.TransportError as exc:
                     logger.warning("openrouter %s %s: %s", method, path, type(exc).__name__)
-                    raise _Failure(AppError("openrouter_unavailable"), retry=True) from None
+                    sent = not isinstance(exc, httpx.ConnectError)
+                    raise _Failure(AppError("openrouter_unavailable"), retry=True, billed=sent) from None
                 if len(response.content) > MAX_CATALOGUE_BYTES:
                     raise _Failure(AppError("openrouter_unavailable"), retry=False)
                 data = self._classify(response)
@@ -380,9 +407,14 @@ class OpenRouterClient:
             except _Failure as failure:
                 logger.warning("openrouter %s %s failed: %s (attempt %d)", method, path,
                                failure.error.code, attempt + 1)
+                if failure.billed and on_lost is not None:
+                    on_lost(failure.data)
                 if not failure.retry or attempt >= self._max_retries:
                     raise failure.error from None
                 if failure.after is not None and failure.after > MAX_RETRY_AFTER:
+                    raise failure.error from None
+                if before_retry is not None and not before_retry():
+                    logger.info("openrouter %s %s: not retried (spending limit)", method, path)
                     raise failure.error from None
                 delay = (failure.after if failure.after is not None
                          else BACKOFF_SECONDS * 2 ** attempt + self._jitter() * JITTER_SECONDS)
@@ -421,7 +453,9 @@ class OpenRouterClient:
                 "limit_remaining_usd": usd("limit_remaining"), "is_free_tier": info.get("is_free_tier") is True}
 
     async def complete(self, messages: Sequence[dict], *, model: ModelInfo, schema: dict | None,
-                       schema_name: str, max_tokens: int) -> Completion:
+                       schema_name: str, max_tokens: int,
+                       before_retry: Callable[[], bool] | None = None,
+                       on_lost: Callable[[dict | None], None] | None = None) -> Completion:
         body: dict = {"model": model.id, "messages": list(messages)}
         if "max_tokens" in model.parameters or not model.parameters:
             body["max_tokens"] = max_tokens
@@ -442,9 +476,10 @@ class OpenRouterClient:
             if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
                 raise _Failure(AppError("openrouter_unavailable"), retry=True)
             if choices[0].get("finish_reason") == "error" or isinstance(choices[0].get("error"), dict):
-                raise _Failure(AppError("openrouter_unavailable"), retry=True)
+                raise _Failure(AppError("openrouter_unavailable"), retry=True, billed=True, data=data)
 
-        data = await self._send("POST", "chat/completions", body=body, check=check)
+        data = await self._send("POST", "chat/completions", body=body, check=check,
+                                before_retry=before_retry, on_lost=on_lost)
         choice = data["choices"][0]
         usage = _usage(data)
         finish = choice.get("finish_reason") if isinstance(choice.get("finish_reason"), str) else None

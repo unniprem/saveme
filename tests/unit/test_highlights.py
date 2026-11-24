@@ -394,3 +394,29 @@ def test_the_length_guess_bounds_a_real_english_transcript():
         real = estimate_from_transcript(transcript(speech(seconds)), opts(), info)
         guess = estimate_from_duration(seconds, opts(), info)
         assert guess.max_usd >= real.max_usd, seconds
+
+
+async def test_analyze_counts_a_timed_out_attempt_and_checks_the_limit_before_retrying():
+    import httpx
+
+    from app.highlights import message_tokens_max
+
+    t = transcript(speech(300))
+    info = model_info(HAIKU)
+    chunk = make_chunks(t.segments, max_seconds=90)[0]
+    bound = info.pricing.cost(message_tokens_max(build_messages(t, chunk, chunks=1, options=opts(), per_chunk=7)),
+                              answer_budget(7, info))
+    server = MockOpenRouter()
+    server.chat.extend([httpx.ReadTimeout("slow"), answer(clip(start_segment=10, end_segment=15))])
+    meter = UsageMeter(info.pricing)
+    result = await analyze(make_client(server), info, t, opts(), limit_usd=0.25, meter=meter,
+                           on_progress=lambda d, n: None)
+    assert len(result.candidates) == 1 and len(server.bodies()) == 2
+    assert meter.spent == pytest.approx(bound + 0.00016) and not meter.view()["cost_reported"]
+    # With room for one call only, the timed-out call isn't retried.
+    server = MockOpenRouter()
+    server.chat.extend([httpx.ReadTimeout("slow"), answer()])
+    with pytest.raises(AppError) as exc:
+        await analyze(make_client(server), info, t, opts(), limit_usd=bound * 1.5, meter=UsageMeter(info.pricing),
+                      on_progress=lambda d, n: None)
+    assert exc.value.code == "openrouter_unavailable" and len(server.bodies()) == 1
