@@ -38,8 +38,9 @@ from pathlib import Path
 from app.errors import AppError
 from app.mediafile import WAV_BYTES_PER_SECOND, WAV_RATE, extract_audio, probe
 from app.netguard import install_connect_guard
-from app.transcript import (AUTO, UNKNOWN_LANGUAGE, WHISPER_LANGUAGES, WHISPER_MODELS, Segment,
-                            Transcript, clean_text, dominant_language, is_language, save_transcript)
+from app.transcript import (AUTO, MAX_WORD_CHARS, MAX_WORDS_PER_SEGMENT, UNKNOWN_LANGUAGE, WHISPER_LANGUAGES,
+                            WHISPER_MODELS, Segment, Transcript, Word, clean_text, dominant_language, is_language,
+                            save_transcript)
 from app.worker import _clear, _local_file, _read_request, _workdir, _writer, limit_memory, protocol_out
 
 WINDOW_SECONDS = 300.0
@@ -189,22 +190,130 @@ def _number(value: object) -> float | None:
     return float(value) if 0 < value < float("inf") else None
 
 
-def _args(req: dict) -> tuple[Path, Path, str, str, int, float | None, int]:
+def _args(req: dict) -> tuple[Path, Path, str, str, int, float | None, int, bool]:
     workdir, source = _workdir(req), _local_file(req, "source")
     model, language = req.get("model"), req.get("language")
     threads, duration, max_seconds = req.get("cpu_threads"), req.get("duration"), req.get("max_seconds")
+    words = req.get("word_timestamps", False)
     if (model not in WHISPER_MODELS or not (language == AUTO or is_language(language))
             or type(threads) is not int or not 1 <= threads <= MAX_CPU_THREADS
             or (duration is not None and _number(duration) is None)
-            or type(max_seconds) is not int or max_seconds <= 0
+            or type(max_seconds) is not int or max_seconds <= 0 or type(words) is not bool
             or os.path.realpath(source.parent) == os.path.realpath(workdir)):
         print("transcriber: malformed request", file=sys.stderr)
         raise AppError("internal")
-    return source, workdir, model, language, threads, _number(duration), max_seconds
+    return source, workdir, model, language, threads, _number(duration), max_seconds, words
+
+
+def _words(piece, offset: float, start: float, end: float) -> list[Word] | None:
+    """A segment's word timestamps, moved to the file's time and kept in order inside [start, end]."""
+    found = getattr(piece, "words", None)
+    if not found:
+        return None
+    words: list[Word] = []
+    for item in found:
+        text = clean_text(str(getattr(item, "word", "")), MAX_WORD_CHARS)
+        try:
+            w_start = float(item.start) + offset
+            w_end = float(item.end) + offset
+        except (TypeError, ValueError):
+            continue
+        if not text or w_start != w_start or w_end != w_end:
+            continue
+        w_start = round(min(max(w_start, start, words[-1].start if words else start), end), 3)
+        w_end = round(min(max(w_end, w_start), end), 3)
+        words.append(Word(start=w_start, end=w_end, text=text))
+        if len(words) == MAX_WORDS_PER_SEGMENT:
+            break
+    return words or None
+
+
+# Word-time refinement: 10 ms frames; a frame is voiced when its RMS passes the window's noise floor
+# by a share of its speech level. Whisper's word starts absorb the silence before a word (measured on
+# isolated words spoken with known gaps: starts were a median 0.62 s early, ends 0.14 s early).
+_ENERGY_FRAME = WAV_RATE // 100
+_LEAD = 0.03  # seconds kept before the first voiced frame
+_TAIL = 0.06  # seconds kept after the last voiced frame
+
+
+_GAP_FRAMES = 15  # a silence of 150 ms or more inside a word's span is a pause, not part of the word
+_MAX_EXTEND = 0.4  # seconds an end may be pushed forward through speech Whisper cut short
+
+
+class Voicing:
+    """Which 10 ms frames of a window are voiced, for moving word edges onto speech."""
+
+    def __init__(self, samples, offset: float, rate: int = WAV_RATE):
+        import numpy as np
+
+        frames = len(samples) // _ENERGY_FRAME
+        self.offset = offset
+        if frames == 0:
+            self.voiced = np.zeros(0, dtype=bool)
+            return
+        rms = np.sqrt(np.mean(np.square(samples[:frames * _ENERGY_FRAME].reshape(frames, _ENERGY_FRAME),
+                                        dtype=np.float64), axis=1))
+        floor, peak = float(np.percentile(rms, 20)), float(np.percentile(rms, 99))
+        threshold = max(floor * 3.0, floor + 0.06 * (peak - floor), 1e-4)
+        self.voiced = rms > threshold
+
+    def _frame(self, t: float) -> int:
+        return int(round((t - self.offset) * 100))
+
+    def _time(self, frame: int) -> float:
+        return self.offset + frame / 100
+
+    def start(self, start: float, end: float) -> float:
+        """The word's start moved past the last pause (≥ 150 ms unvoiced) inside its span, or onto its
+        first voiced frame; unchanged when its span has no voiced frame."""
+        lo, hi = max(0, self._frame(start)), min(len(self.voiced), self._frame(end))
+        voiced = self.voiced[lo:hi]
+        if not voiced.any():
+            return start
+        first, run, after_gap = None, 0, None
+        for i, v in enumerate(voiced):
+            if v:
+                if first is None:
+                    first = i
+                if run >= _GAP_FRAMES:
+                    after_gap = i
+                run = 0
+            else:
+                run += 1
+        onset = after_gap if after_gap is not None else first
+        return min(max(start, self._time(lo + onset) - _LEAD), end)
+
+    def end(self, end: float, limit: float) -> float:
+        """The word's end pushed forward while the audio stays voiced (at most _MAX_EXTEND and never
+        past `limit`), then a short tail; unchanged when it falls in silence."""
+        frame = self._frame(end)
+        stop = min(len(self.voiced), self._frame(min(limit, end + _MAX_EXTEND)))
+        if frame >= stop or frame < 0 or not self.voiced[max(0, frame - 1)]:
+            return end
+        while frame < stop and self.voiced[frame]:
+            frame += 1
+        return min(limit, self._time(frame) + _TAIL)
+
+
+def refine_words(words: list[Word] | None, voicing: Voicing, *, segment_end: float) -> list[Word] | None:
+    """Each word's edges moved onto speech. Starts only move later (never past the word's end), ends
+    only later (never past the next word's start or the segment's end), so order and bounds hold."""
+    if not words:
+        return words
+    starts = [round(voicing.start(w.start, w.end), 3) for w in words]
+    for i in range(1, len(starts)):
+        starts[i] = max(starts[i], starts[i - 1])
+    out = []
+    for i, word in enumerate(words):
+        limit = starts[i + 1] if i + 1 < len(words) else segment_end
+        end = round(max(voicing.end(word.end, limit), starts[i]), 3)
+        out.append(Word(start=starts[i], end=min(end, segment_end), text=word.text))
+    return out
 
 
 def _transcribe(source: Path, workdir: Path, model_name: str, language: str, threads: int,
-                duration: float | None, max_seconds: int, emit: Callable[[dict], None]) -> dict:
+                duration: float | None, max_seconds: int, word_timestamps: bool,
+                emit: Callable[[dict], None]) -> dict:
     too_long = AppError("video_too_long", f"This video is longer than the {max_seconds // 60}-minute "
                         "limit for AI Highlights.")
     found = probe(source)
@@ -240,18 +349,21 @@ def _transcribe(source: Path, workdir: Path, model_name: str, language: str, thr
     for offset, samples in iter_windows(wav):
         found_segments, info = model.transcribe(
             samples, language=None if language == AUTO else language, beam_size=5,
-            vad_filter=True, condition_on_previous_text=False)
+            vad_filter=True, condition_on_previous_text=False, word_timestamps=word_timestamps)
         detected = info.language if is_language(info.language) else None
         if detected:
             windows.append((detected, float(info.language_probability)))
         detail = f"Transcribing ({WHISPER_LANGUAGES[detected]})" if detected else "Transcribing"
         window_end = offset + len(samples) / WAV_RATE
+        voicing = Voicing(samples, offset) if word_timestamps else None
         for piece in found_segments:
             text = clean_text(str(piece.text))
             start = round(max(offset + max(0.0, piece.start), segments[-1].start if segments else 0.0), 3)
             end = round(min(offset + piece.end, window_end, length), 3)
             if text and end > start:
-                segments.append(Segment(start=start, end=end, text=text, language=detected))
+                words = (refine_words(_words(piece, offset, start, end), voicing, segment_end=end)
+                         if voicing else None)
+                segments.append(Segment(start=start, end=end, text=text, language=detected, words=words))
             transcribing(100 * min(offset + piece.end, audio_seconds) / audio_seconds, detail)
         transcribing(100 * window_end / audio_seconds, detail, force=True)
 
@@ -267,7 +379,7 @@ def _transcribe(source: Path, workdir: Path, model_name: str, language: str, thr
     save_transcript(workdir / TRANSCRIPT_NAME, transcript)
     wav.unlink()
     return {"file": TRANSCRIPT_NAME, "segments": len(segments), "language": main,
-            "duration": transcript.duration}
+            "duration": transcript.duration, "words": transcript.has_words}
 
 
 def run_transcribe(req: dict, emit: Callable[[dict], None]) -> dict:

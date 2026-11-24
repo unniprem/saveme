@@ -81,7 +81,8 @@ async def test_analysis_runs_every_stage_and_caches_the_transcript(setup):
     call = transcriber.calls[0]
     assert call == {"mode": "transcribe", "source": str(source.file_path),
                     "workdir": str(source.workdir / "ai" / analysis.id), "model": "base",
-                    "language": "auto", "cpu_threads": 2, "duration": 300.0, "max_seconds": 180 * 60}
+                    "language": "auto", "cpu_threads": 2, "duration": 300.0, "max_seconds": 180 * 60,
+                    "word_timestamps": True}
     assert transcriber.kwargs[0]["cmd"][-2:] == ("-m", "app.transcriber")
     assert not (source.workdir / "ai" / analysis.id).exists()
     assert load_transcript(source.workdir / "ai" / "transcript.json") == transcriber.transcript
