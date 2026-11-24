@@ -169,12 +169,16 @@ STUDIO_IDS = [
     "clip-length", "play-clip", "export-clip", "clip-msg",
     "export", "export-status", "export-percent", "export-bar", "export-fill", "export-meta",
     "export-save", "export-error", "export-cancel",
+    "add-clip", "clip-list-wrap", "clip-list", "clip-list-count", "export-zip", "export-zip-label",
 ]
 STUDIO_COPY = [
     "Clips are cut without re-encoding, so they keep the original quality. "
     "A few players may show up to a few seconds before your start.",
     "Clip saved. Mark another part, or close the studio.",
     "Your browser can't preview this video. You can still type a start and end.",
+    "ZIP saved. Mark more parts, or close the studio.",
+    "Every clip in the list is cut and saved together in one ZIP file.",
+    "This part is already in the clip list.",
 ]
 
 
@@ -185,8 +189,12 @@ def test_studio_markup():
     for tag, attrs in by_id.values():
         if tag == "button":
             assert attrs.get("type") == "button" or attrs.get("id") == "inspect", attrs
-    for name in ("studio", "studio-editor", "export"):
+    for name in ("studio", "studio-editor", "export", "clip-list-wrap"):
         assert "hidden" in by_id[name][1], name
+    for name in ("export", "studio-preview-note"):  # take focus from a control that disables itself
+        assert by_id[name][1].get("tabindex") == "-1", name
+    tag, rows = by_id["clip-list"]
+    assert tag == "ol" and rows.get("aria-labelledby") == "clip-list-title"
     tag, upload = by_id["upload-file"]
     assert tag == "input" and upload.get("type") == "file" and "video/*" in upload.get("accept", "")
     for name in ("handle-start", "handle-end"):
@@ -202,6 +210,7 @@ def test_studio_copy_is_pinned():
     for text in STUDIO_COPY:
         assert text in page or text in studio, text
     assert "/api/sources" in studio and "sessionStorage" in studio and "XMLHttpRequest" in studio
+    assert "`${base}/batch`" in studio and "max_batch_clips" in studio
     assert "window.SaveMeStudio = Object.freeze(" in studio
     app = (STATIC / "app.js").read_text(encoding="utf-8")
     assert "Close Clip Studio to fetch another link." in app and "SaveMeStudio" in app

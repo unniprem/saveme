@@ -22,19 +22,21 @@ def _tidy(text: str) -> str:
     return text.strip(". ")
 
 
-def sanitize_filename(title: str | None, ext: str) -> str:
-    if ext not in _MEDIA_TYPES:
-        raise ValueError(f"unsupported extension: {ext!r}")
+def _title_stem(title: str | None) -> str:
+    """A title as a safe file name stem of at most _MAX_STEM_BYTES, else "download"."""
     stem = unicodedata.normalize("NFKC", title or "")
     stem = _BAD_CHARS.sub(" ", stem)
     stem = _tidy(stem)
     if _RESERVED.match(stem):
         stem += "_"
     stem = stem.encode("utf-8")[:_MAX_STEM_BYTES].decode("utf-8", errors="ignore")
-    stem = _tidy(stem)
-    if not stem:
-        stem = "download"
-    return f"{stem}.{ext}"
+    return _tidy(stem) or "download"
+
+
+def sanitize_filename(title: str | None, ext: str) -> str:
+    if ext not in _MEDIA_TYPES:
+        raise ValueError(f"unsupported extension: {ext!r}")
+    return f"{_title_stem(title)}.{ext}"
 
 
 def media_type_for(ext: str) -> str:
@@ -63,11 +65,48 @@ def _clip_time(seconds: float) -> str:
     return f"{hours}h{minutes:02d}m{text}" if hours else f"{minutes}m{text}"
 
 
-def clip_filename(title: str | None, start: float, end: float, ext: str) -> str:
-    """`<title> (clip <start>-<end>).<ext>`, with the title cut short (not the range) so the
-    stem stays within the usual length."""
-    label = f" (clip {_clip_time(start)}-{_clip_time(end)})"
-    stem = sanitize_filename(title, ext).removesuffix(f".{ext}")
+def _labelled(title: str | None, label: str, ext: str) -> str:
+    """`<title><label>.<ext>`, with the title cut short (not the label) so the stem stays
+    within the usual length."""
+    stem = _title_stem(title)
     room = _MAX_STEM_BYTES - len(label.encode("utf-8"))
     stem = _tidy(stem.encode("utf-8")[:room].decode("utf-8", errors="ignore")) or "download"
     return f"{stem}{label}.{ext}"
+
+
+def clip_filename(title: str | None, start: float, end: float, ext: str) -> str:
+    """`<title> (clip <start>-<end>).<ext>`."""
+    if ext not in _MEDIA_TYPES:
+        raise ValueError(f"unsupported extension: {ext!r}")
+    return _labelled(title, f" (clip {_clip_time(start)}-{_clip_time(end)})", ext)
+
+
+# A batch of clips is delivered as one ZIP. "zip" is deliberately not in _MEDIA_TYPES: those
+# are what a download may be delivered as, and a download must never come out as a ZIP.
+ZIP_MEDIA_TYPE = "application/zip"
+
+
+def batch_entry_name(index: int, title: str | None, start: float, end: float, ext: str) -> str:
+    """A clip's name inside a batch ZIP: `01 <title> (clip <start>-<end>).<ext>`, numbered so
+    the names sort in list order and stay unique."""
+    return f"{index:02d} {clip_filename(title, start, end, ext)}"
+
+
+def batch_filename(title: str | None, count: int) -> str:
+    """`<title> (<count> clips).zip`."""
+    return _labelled(title, f" ({count} clip{'' if count == 1 else 's'})", "zip")
+
+
+def is_plain_filename(name: object, ext: str) -> bool:
+    """True for a name that is safe as a file name anywhere it is unpacked: no folder parts,
+    control or Windows-forbidden characters, no leading dot, at most 255 UTF-8 bytes, and
+    ending in .<ext>."""
+    if not isinstance(name, str) or name.startswith(".") or not name.endswith(f".{ext}"):
+        return False
+    if _BAD_CHARS.search(name) or name != name.strip():
+        return False
+    try:
+        size = len(name.encode("utf-8"))
+    except UnicodeEncodeError:
+        return False
+    return len(ext) + 1 < size <= 255

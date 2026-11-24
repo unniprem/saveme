@@ -90,6 +90,9 @@ def test_clip_drops_all_tags_for_uploads(source, job):
 def test_clip_too_large(source, job):
     error = error_of(*cut(source, job, max_bytes=1000))
     assert error["code"] == "too_large"
+    # A clip can't be made smaller by a lower quality or audio only (the download advice).
+    assert error["message"].startswith("This clip is larger than the ")
+    assert error["message"].endswith(" limit. Choose a shorter part.")
     assert listing(job) == []
 
 

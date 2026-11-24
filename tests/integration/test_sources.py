@@ -496,3 +496,179 @@ async def test_upload_whose_folder_cant_be_made_leaves_nothing(make_manager, set
     assert code_of(ei) == "internal"
     temp_dir.mkdir()
     manager.begin_upload("y")  # the failed upload holds no queue or source-cap place
+
+
+# --- Batches (several clips in one ZIP) ---------------------------------------------
+
+def finish_batch(call, count: int) -> None:
+    (call.workdir / "media.zip").write_bytes(b"PK\x05\x06" + b"\0" * 18)
+    call.finish({"file": "media.zip", "ext": "zip", "count": count})
+
+
+async def test_batch_runs_and_becomes_a_ready_zip(make_manager, settings):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    source = await ready_source(manager, runner)
+    batch = manager.submit_batch(source.id, [(1.23456, 4.5), (5, 8)])
+    assert manager.get(batch.id) is batch and (batch.kind, batch.status) == ("batch", "queued")
+    call = await started(runner, batch)
+    assert call.request == {
+        "mode": "batch", "source": str(source.workdir / "media.mp4"), "workdir": str(batch.workdir),
+        "clips": [{"start": 1.235, "end": 4.5, "name": "01 My Video (clip 0m01.2s-0m04.5s).mp4"},
+                  {"start": 5.0, "end": 8.0, "name": "02 My Video (clip 0m05s-0m08s).mp4"}],
+        "keep_tags": True, "max_bytes": settings.max_file_bytes}
+    assert call.kwargs["max_workdir_bytes"] == 2 * settings.max_file_bytes
+    call.emit({"event": "progress", "detail": "Cutting clip 1 of 2", "percent": 25.0,
+               "downloaded_bytes": 100, "total_bytes": None})
+    view = manager.public_view(batch)
+    assert (view["kind"], view["status"], view["progress_percent"], view["detail"]) == (
+        "batch", "cutting", 25.0, "Cutting clip 1 of 2")
+    finish_batch(call, 2)
+    await wait_until(lambda: batch.status == "ready")
+    assert (batch.filename, batch.media_type) == ("My Video (2 clips).zip", "application/zip")
+    claimed = manager.claim_delivery(batch.id)
+    manager.finish_delivery(claimed, complete=True)
+    assert (batch.status, batch.reason) == ("expired", "delivered")
+    assert not batch.workdir.exists() and source.status == "ready"
+
+
+async def test_batch_validation_names_the_clip(make_manager):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    source = await ready_source(manager, runner)
+    with pytest.raises(AppError) as ei:
+        manager.submit_batch(source.id, [(0, 1), (5, 4)])
+    assert (code_of(ei), ei.value.message) == ("invalid_clip", "Clip 2: The end must be after the start.")
+    with pytest.raises(AppError) as ei:
+        manager.submit_batch(source.id, [(0, 1), (2, 3), (12.5, 13)])
+    assert ei.value.message == "Clip 3: The start must be before the end of the video."
+    for ranges in ([], [(0, 1)] * 21):
+        with pytest.raises(AppError) as ei:
+            manager.submit_batch(source.id, ranges)
+        assert (code_of(ei), ei.value.message) == ("invalid_request", "Send 1 to 20 clips.")
+    assert runner.calls == [runner.calls[0]]  # only the source's download ran
+
+
+async def test_batch_clamps_an_end_just_past_the_duration(make_manager):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    source = await ready_source(manager, runner)
+    batch = manager.submit_batch(source.id, [(0, 1), (10.0, DURATION + 0.04)])
+    assert batch.ranges == ((0.0, 1.0), (10.0, DURATION))
+
+
+async def test_batch_needs_a_ready_source(make_manager):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    loading = manager.open_link_source(URL, "best")
+    with pytest.raises(AppError) as ei:
+        manager.submit_batch(loading.id, [(0, 1)])
+    assert code_of(ei) == "source_not_ready"
+    manager.close_source(loading.id)
+    with pytest.raises(AppError) as ei:
+        manager.submit_batch(loading.id, [(0, 1)])
+    assert code_of(ei) == "source_not_found"
+
+
+async def test_batch_cancel_has_no_resume_and_leaves_nothing(make_manager, temp_dir):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    source = await ready_source(manager, runner)
+    batch = manager.submit_batch(source.id, [(0, 1), (2, 3)])
+    call = await started(runner, batch)
+    manager.cancel(batch.id)
+    assert (manager.public_view(batch)["status"], manager.public_view(batch)["resume_seconds"]) == (
+        "cancelled", None)
+    await wait_until(lambda: not batch.runs)
+    assert call.cancelled and not batch.workdir.exists()
+    with pytest.raises(AppError) as ei:
+        manager.resume(batch.id)
+    assert code_of(ei) == "not_resumable"
+    assert job_dirs(temp_dir) == [source.id]
+
+
+async def test_closing_source_cancels_its_batch(make_manager, temp_dir):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    source = await ready_source(manager, runner)
+    batch = manager.submit_batch(source.id, [(0, 1), (2, 3)])
+    call = await started(runner, batch)
+    manager.close_source(source.id)
+    assert batch.status == "cancelled"
+    await wait_until(lambda: not batch.runs)
+    assert call.cancelled
+    await manager.sweep()
+    assert job_dirs(temp_dir) == []
+
+
+async def test_source_with_a_pending_batch_does_not_expire(make_manager, settings):
+    clock, runner = FakeClock(), StubRunner()
+    manager = await make_manager(run_worker=runner, clock=clock, sweep_interval=3600)
+    source = await ready_source(manager, runner)
+    batch = manager.submit_batch(source.id, [(0, 1)])
+    call = await started(runner, batch)
+    clock.advance(settings.job_ttl_seconds + 1)
+    await manager.sweep()
+    assert source.status == "ready"
+    finish_batch(call, 1)
+    await wait_until(lambda: batch.status == "ready")
+    assert source.last_used == clock()  # a batch ending is a use
+
+
+async def test_upload_batch_drops_tags_and_uses_the_file_name(make_manager):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    source = await ready_upload(manager, runner, "Holiday")
+    batch = manager.submit_batch(source.id, [(0, 1)])
+    call = await started(runner, batch)
+    assert call.request["keep_tags"] is False
+    assert call.request["clips"][0]["name"] == "01 Holiday (clip 0m00s-0m01s).mp4"
+    finish_batch(call, 1)
+    await wait_until(lambda: batch.status == "ready")
+    assert batch.filename == "Holiday (1 clip).zip"
+
+
+async def test_only_a_batch_may_return_a_zip(make_manager):
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    download = manager.submit(URL, "video", "best")
+    call = await started(runner, download)
+    (call.workdir / "media.zip").write_bytes(b"PK")
+    call.finish({"file": "media.zip", "ext": "zip", "title": "x", "notice": None})
+    await wait_until(lambda: download.status == "failed")
+    assert download.error.code == "internal"
+    source = await ready_source(manager, runner)
+    batch = manager.submit_batch(source.id, [(0, 1)])
+    call = await started(runner, batch)
+    call.finish()  # the stub's default result: media.mp4
+    await wait_until(lambda: batch.status == "failed")
+    assert batch.error.code == "internal"
+
+
+async def test_batch_reserves_two_files_of_disk(make_manager, temp_dir):
+    runner = StubRunner()
+    manager = await make_manager(minimum_budget(temp_dir), run_worker=runner)
+    source = manager.open_link_source(URL, "best")
+    call = await started(runner, source)
+    (call.workdir / "media.mp4").write_bytes(b"\0" * (512 * 1024))
+    call.finish({"file": "media.mp4", "ext": "mp4", "title": "T", "duration": 10.0, "notice": None})
+    await wait_until(lambda: source.status == "ready")
+    # The ZIP and the part being added to it sit on disk together, like a download's two
+    # tracks: at the smallest budget, with a source open, a batch doesn't fit.
+    with pytest.raises(AppError) as ei:
+        manager.submit_batch(source.id, [(0, 5)])
+    assert code_of(ei) == "disk_full"
+    manager.submit_clip(source.id, 0, 5)  # a single clip still does
+
+
+async def test_a_range_of_exactly_the_minimum_is_accepted(make_manager):
+    """Lengths are compared in whole milliseconds: 1.2 - 1.1 is 0.0999… as a float."""
+    runner = StubRunner()
+    manager = await make_manager(run_worker=runner)
+    source = await ready_source(manager, runner)
+    clip = manager.submit_clip(source.id, 1.1, 1.2)
+    assert (clip.start, clip.end) == (1.1, 1.2)
+    assert manager.submit_batch(source.id, [(1.1, 1.2), (2.3, 2.4)]).ranges == ((1.1, 1.2), (2.3, 2.4))
+    with pytest.raises(AppError) as ei:
+        manager.submit_clip(source.id, 1.1, 1.1994)  # 99 ms once rounded to milliseconds
+    assert ei.value.message == "A clip must be at least 0.1 seconds long."

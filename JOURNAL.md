@@ -2,6 +2,153 @@
 
 ---
 
+## 2026-11-24 11:13 IST — Session: Clip Studio, Phase 1 completion (clip list and ZIP export)
+
+### Summary
+
+The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merged into local `main` (`b661127`, not pushed), so this session checked the brief's ten features against what shipped. Two were missing, because the first design listed them as non-goals: **#4, several clips from one source as a list**, and **#6, ZIP batch export**. This session adds both on `feature/clip-studio` (fast-forwarded to `main` first). The design is `docs/superpowers/specs/2026-11-24-clip-studio-batch-export-design.md`. The other eight features were already in place, and links and nearly every upload already come out as MP4. Cheap fixes for four of the deferred review minors are also planned. The owner's brief was taken as a go-ahead to proceed without a question round; the design calls are listed under Key Decisions.
+
+**Status: Phase 1 complete, merged into local `main` with `--no-ff` at the owner's request (not pushed).** All ten features in the brief are in place, verified by the whole suite, the image's minimal-FFmpeg check, the Docker smoke test, a ZIP export in the hardened container and real-browser checks. An independent review found nothing important, and its fixable minors are done.
+
+### Changes Made
+
+| Commit    | Type | Description |
+| --------- | ---- | ----------- |
+| `938a3ff` | docs | Add clip list and ZIP export design for Clip Studio |
+| `6900fb9` | feat | Add a worker batch mode that cuts several clips into one ZIP |
+| `4f7554c` | feat | Run batch exports as a job kind in the job manager |
+| `3665971` | feat | Add the batch export route for Clip Studio |
+| `cdf75e7` | feat | Add a clip list and ZIP export to Clip Studio |
+| `3b60205` | fix | Compare clip lengths in whole milliseconds on both sides |
+| `2115d88` | fix | Poll an open studio's source at a quarter of its idle time |
+| `a5d3d82` | fix | Turn off playhead controls when the browser can't play the source |
+| `daa8c8a` | fix | Tell a too-large clip to choose a shorter part |
+| `1f31a98` | docs | Describe the clip list, ZIP export and their limits |
+| `eaff720` | fix | Tidy the clip list on restore and once the video's length is known |
+| `d181237` | fix | Keep keyboard focus when a studio control disables itself |
+
+### Test Results
+
+- Baseline on `feature/clip-studio` at `b661127`: `.venv/bin/pytest -q` gave 599 passed, 2 skipped, 7 deselected (138 s).
+- `6900fb9`: `tests/unit/test_filenames.py` plus the worker clip, probe and batch tests gave 108 passed. The new batch tests, using the real worker and FFmpeg 8.0.1, check:
+  - 3 ranges into one stored ZIP, with entries in order, H.264+AAC, the right number of shown frames, and the first shown frame at 0;
+  - progress over the whole batch ("Cutting clip n of 3"), with rising percent and bytes;
+  - tags kept or dropped, and MKV entries from an MKV source;
+  - `too_large` when each clip fits but the ZIP doesn't;
+  - 21 malformed requests refused as `internal`, including names with `/`, `\`, `:`, NUL, a leading dot, the wrong extension, 300 bytes, or a repeat;
+  - a failing second cut reported as "Couldn't cut clip 2" (in-process).
+- `4f7554c`: `test_sources.py` plus `test_jobs.py` gave 94 passed. The 10 new batch manager tests failed first (no `submit_batch`). They cover:
+  - the request with numbered entry names, then progress, the ZIP name and type, one-shot delivery, and the source staying ready;
+  - errors naming the clip, and 0 or 21 clips refused;
+  - end clamping and needing a ready source;
+  - cancel (no resume, folder gone), closing the source cancelling it, and the source not expiring while a batch is pending;
+  - upload batches dropping tags;
+  - a download that returns a ZIP failing as `internal`, and a batch returning an MP4 too;
+  - the 2× reservation (`disk_full` at the smallest budget while a single clip still fits).
+- `3665971`: `test_studio_api.py` plus `test_api.py` gave 155 passed, and `tests/unit` gave 234 passed. The 16 new API tests failed first (404, no route). They cover:
+  - the batch flow end to end with the stub: 202, kind `batch`, the ZIP filename, `application/zip`, the `Content-Disposition`, one-shot delivery, and the source staying ready;
+  - 12 validation cases, each with its message (for example "Clip 2: start must be a number of seconds, 0 or more", "Send 1 to 20 clips.");
+  - 409 before the source is ready, 404 for a job ID, 403 for a foreign Origin;
+  - cancel through `/api/jobs/{id}/cancel` with no resume and no folder left;
+  - `max_batch_clips` in `/api/studio`.
+- `cdf75e7`: `tests/unit/test_page.py` gave 15 passed (new IDs, copy, the hidden list, and the `/batch` call are pinned). Then a real-browser check (`check-zip.js` against `serve.py`, both in `$CLAUDE_JOB_DIR/tmp/dev/`, in the installed Google Chrome). No console errors or warnings, and it showed:
+  - **Desktop 1200 px, light, from a link:**
+    - Three ranges added out of order, then listed sorted. A repeat was refused with "This part is already in the clip list."
+    - Load put 0:03.3–0:07.3 back in the fields and moved the video to 3.3 s. Remove moved focus to the next row's Remove.
+    - A reload restored 3 rows.
+    - **Export 3 clips as ZIP** auto-saved `long (3 clips).zip`. It holds `01 …`, `02 …` and `03 …` stored entries, all H.264+AAC, and the page read "ZIP saved".
+    - Cancel pressed right after a second export read "Export cancelled. Nothing was kept on the server.", with no download.
+    - Close cleared `sessionStorage`.
+  - **Phone 375 px, dark, from an uploaded `Beach day.mp4`:** two clips listed, row buttons 40 px tall, `scrollWidth` 375 (no horizontal scroll), and `Beach day (2 clips).zip` saved with both entries.
+  - Screenshots are in `$CLAUDE_JOB_DIR/tmp/dev/shots/zip-*.png`. Row times are kept unbroken (`whitespace-nowrap`) after the first phone screenshot split "· 0:02.0".
+- Deferred-minor fixes:
+  - `3b60205`: a new manager test failed first, because the server refused 1.1–1.2 s (`1.2 - 1.1` is `0.0999…`), and now passes.
+  - `daa8c8a`: the clip `too_large` test now checks the message, and failed first on the old download advice.
+  - `test_sources.py` 49 passed, and the worker clip plus batch tests 44 passed.
+  - Real-browser check `check-minors.js` (Chrome), against the restarted `serve.py` on 8123 and `serve-ttl.py` (`JOB_TTL_MINUTES=1`) on 8124, with no console problems:
+    - A 1.1–1.2 s range enabled Export and saved `long (clip 0m01.1s-0m01.2s).mp4`.
+    - An MPEG-4 Part 2 upload (`Old camera.mp4`, which Chrome can't play: `error.code` 4) showed the note, disabled Set to playhead ×2 and Play clip, and ignored `I`. Typed times still exported it.
+    - With a 60 s idle time, the keep-alive polled at 15 s gaps (6 in 100 s), and the source was still `ready` after 100 s.
+- Whole suite at `1f31a98`: `.venv/bin/pytest -q` gave **673 passed, 2 skipped, 7 deselected** (118 s), against the 599-passed baseline. The downloader's tests all still pass.
+- **Docker, at `4aaa323`.** The image was rebuilt as `saveme:clip-studio`. The live `saveme-saveme-1` (`saveme:local`) wasn't touched and stayed up.
+  - `scripts/docker-ffmpeg-check.sh saveme:clip-studio`: every matrix case passed, and **441 integration tests** passed inside the image against the minimal FFmpeg 9.0.2 (387 before), including every batch worker test.
+  - `scripts/docker-smoke.sh` gave SMOKE OK. It ran in an isolated Compose project: `COMPOSE_PROJECT_NAME=saveme-ctest`, `COMPOSE_FILE=compose.yaml:<override with image saveme:clip-studio>`, `SAVEME_PORT=8001`.
+  - In that hardened container (`container-zip.sh`), an upload of `Beach day.mp4`, then a 2-clip batch, gave `Beach day (2 clips).zip`:
+    - `application/zip`, with 2 stored entries (54,256 and 90,802 bytes) and `testzip` clean;
+    - the job `expired`/`delivered` once saved;
+    - 0 job folders left in `/tmp/media-jobs` after Close.
+  - The `saveme-ctest` project was then removed.
+- **Independent review** of `b661127..HEAD` (a fresh general-purpose agent, read-only, given the code and not my conclusions) found no important defects. It confirmed:
+  - no ZIP can come out of the downloader, and zip slip is blocked;
+  - the size and disk limits hold, and the 2× peak sits inside the reservation and the watchdog;
+  - cleanup on cancel and failure, the batch counting as a use of its source, and worker messages reaching the page;
+  - the millisecond rule (it fuzzed `setMark` with 2M values in node).
+
+  Its minors:
+  - The list wasn't clipped when only the browser knew the length, and a restored list was only loosely checked. Fixed in `eaff720`.
+  - Focus dropped to the page when Export (clip or ZIP) or a playhead button disabled itself. Fixed in `d181237`. Export clip had this too.
+  - Playhead controls stay off after any video error. Kept on purpose; see Key Decisions.
+  - A second export during the 60 s "Saving…" window drops the first one's tracking. This already existed; see Pending Work.
+- Review fixes in Chrome (`check-review.js`, no console problems):
+  - Export clip and Export ZIP started with Enter both left focus on `#export`.
+  - A tampered restore list (`[5,7.0004]`, a repeat, `[3,3.05]`, `[-1,2]`, `[9.5,99]`, `[12,13]`, junk) came back as 1–2, 5–7 and 9.5–10 s.
+  - A video error with focus on Set to playhead moved focus to the preview note.
+- **Final whole suite at `d181237`: 673 passed, 2 skipped, 7 deselected** (104 s).
+
+### Key Decisions
+
+- **One `batch` job cuts every range and writes `media.zip`.** The other options were N clip jobs zipped at delivery (only 1× disk, but N queue places and a new delivery lifecycle) and zipping in the browser (memory, plus a ZIP writer in JS). One job reuses the queue, slot, progress, cancel, one-shot delivery, TTL and cleanup as they are.
+- **The ZIP is written by Python's `zipfile`, stored (no compression).** No FFmpeg build change and no new dependency. Video doesn't compress further.
+- **`zip` is not a download media type.** `ZIP_MEDIA_TYPE` is separate from `_MEDIA_TYPES`, so a link to a `.zip` file still can't be delivered by the downloader.
+- **Entry names come from the server and are checked again in the worker.** They're numbered (`01 <title> (clip …).mp4`) so they sort in list order and stay unique. `is_plain_filename` refuses separators, control and Windows-forbidden characters, leading dots, over 255 bytes, and repeats (case-insensitive).
+- **The batch's size limit covers the whole ZIP.** Each cut's `-fs` is the room left, with 1 KiB counted per entry for headers, and the finished ZIP is checked again.
+- **The list lives in the page, not on the server.** It's kept in `sessionStorage` with the marks, sorted by start so the ZIP follows the video. Duplicates are refused in the page. The server would accept them, and numbering keeps their names apart.
+- **Playhead controls stay off for the rest of that studio after an `error` event.** A media element in error doesn't recover without its source being loaded again. Close and reopen brings them back.
+- **Playhead controls are turned off only after a media `error` event,** not whenever the picture size is 0. Chromium plays the sound of an HEVC file it can't show, and that playhead moves, so the controls still help there.
+- **Keep-alive is `idle_minutes / 4`, clamped to 15–60 s,** and rescheduled once `/api/studio` answers. The default (30 min) still polls every 60 s.
+- **A refused ZIP request shows its error in the export area under the list,** next to the button that was pressed, not in the message line under the editor.
+- **A batch reserves `2 × MAX_FILE_SIZE_MB`, like a download.** The ZIP and the part being added sit on disk together. At the smallest allowed budget, with a source open, a batch gets `disk_full` while single clips still work. That's accepted, and the test documents it.
+
+### Issues Encountered
+
+- With `-read_intervals %+#5`, a frame check saw nothing: the hidden keyframe lead-in uses the first packets. It now reads 30, as the clip test does.
+
+### Pending Work
+
+- **Ship `main`.** The owner asked for the merge, and `feature/clip-studio` was merged into local `main` with `--no-ff`. The merged tree is identical to the tested branch tip. Local `main` is not pushed: it is ahead of `origin/main` by the earlier Clip Studio merge and this one. To ship:
+  1. `git push origin main`
+  2. Rebuild the live container with `docker compose up -d --build`. It still runs the image built 16 hours earlier, before Clip Studio.
+- **Known limitations:**
+  - Clips are stream copies, with no re-encode. MKV and WebM sources (rare; most become MP4) show the keyframe lead-in, and players that ignore MP4 edit lists show it too.
+  - At the smallest disk budget (`MAX_TOTAL_DISK_MB` = 2 × `MAX_FILE_SIZE_MB`), a ZIP is refused with `disk_full` while a source is open. Single clips still work.
+  - A second export during the 60 s "Saving to your device…" window replaces the first in the page. If the first auto-save was blocked, its file waits on the server until `JOB_TTL_MINUTES`.
+  - Export Cancel was tried in Chrome only on short test cuts. It won the race once, and the API and manager tests cover it.
+- **Deferred minors still open (the owner's call):** `/media` has no time limit; a ProRes MOV is accepted, then every cut fails; the source cap replaces an idle source before the disk check; no test closes an upload during its check.
+- **Leftover images:** `saveme:clip-studio` (rebuilt today) and `saveme-ffmpeg-check`. Remove them with `docker image rm` when done.
+- **Phase 2** (transcripts, highlight suggestions, 9:16 reframing, burned-in subtitles) needs an H.264 encoder in the FFmpeg build, and its own security and licensing review first. No AI or transcription work was started.
+
+### Handoff
+
+- Branch `feature/clip-studio` at the last journal commit. Each step is one commit plus a journal update.
+- Designs:
+  - `docs/superpowers/specs/2026-11-24-clip-studio-phase-1-design.md`, the base. Its non-goals now point to the addendum below.
+  - `docs/superpowers/specs/2026-11-24-clip-studio-batch-export-design.md`, the clip list and ZIP.
+- Code map for the batch export:
+  - `app/mediafile.py` `cut_batch`, `MAX_BATCH_CLIPS`;
+  - `app/worker.py` `run_batch`, `_batch_args`;
+  - `app/jobs.py` `submit_batch`, plus `_CUT_KINDS` and the `batch` branches in `_clip` and `_make_ready`;
+  - `app/studio_routes.py` `create_batch`, `app/schemas.py` `BatchRequest`, `app/main.py` `_validation_message`;
+  - `app/filenames.py` batch names and `is_plain_filename`;
+  - `static/studio.js`, in the "clip list" section and `startExport(kind)`.
+- Browser and container checks:
+  - The scripts live in `$CLAUDE_JOB_DIR/tmp/dev/` (`/Users/unnikrishnan/.claude-max/jobs/0dd87ae1/tmp/dev/`), which is temporary and deleted with this job: `serve.py`, `serve-ttl.py`, `check-zip.js`, `check-minors.js`, `check-review.js`, `container-zip.sh` and `compose.ctest.yaml`.
+  - Run each with `PWCORE=<~/.npm/_npx/*/node_modules/playwright-core> node <script> <media URL> …`. The URL is the one `serve.py` prints.
+  - Recreate them from this description if they're gone.
+- Tests: `.venv/bin/pytest -q`. Real FFmpeg and ffprobe must be on `PATH` (Homebrew on this Mac).
+- Never run `scripts/docker-smoke.sh` bare. It runs plain `docker compose`, which would replace the live `saveme-saveme-1`. Set `COMPOSE_PROJECT_NAME=saveme-ctest`, `COMPOSE_FILE=compose.yaml:<override setting image saveme:clip-studio>` and `SAVEME_PORT=8001`, then run `docker compose down` with the same variables.
+
+---
+
 ## 2026-11-24 06:58 IST — Session: Clip Studio, Phase 1 (manual clipping)
 
 ### Summary

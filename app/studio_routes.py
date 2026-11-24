@@ -1,7 +1,8 @@
 """Clip Studio API routes (spec §6.3): sources, their preview, and clips.
 
 A source is a video kept on the server while a studio is open; a clip is a job cut out
-of it, then followed, cancelled and saved through the existing /api/jobs routes.
+of it, and a batch is several clips cut out of it into one ZIP. Both are then followed,
+cancelled and saved through the existing /api/jobs routes.
 
 POST /api/sources/upload is the one route whose body the Guard doesn't read (and cap at
 64 KiB) first. It takes the raw file with a Content-Length no larger than
@@ -22,8 +23,9 @@ from starlette.requests import ClientDisconnect
 from app.config import Settings
 from app.errors import AppError, size_text
 from app.jobs import MIN_CLIP_SECONDS, UPLOAD_NAME, JobManager
+from app.mediafile import MAX_BATCH_CLIPS
 from app.netguard import check_url_syntax
-from app.schemas import ClipRequest, SourceRequest
+from app.schemas import BatchRequest, ClipRequest, SourceRequest
 
 CheckLink = Callable[[str, JobManager], Awaitable[None]]
 UPLOAD_PATH = "/api/sources/upload"
@@ -96,7 +98,8 @@ def add_studio_routes(router: APIRouter, settings: Settings, jobs: Callable[[], 
     async def studio_limits():
         return {"max_upload_bytes": settings.max_file_bytes,
                 "idle_minutes": settings.job_ttl_minutes,
-                "min_clip_seconds": MIN_CLIP_SECONDS}
+                "min_clip_seconds": MIN_CLIP_SECONDS,
+                "max_batch_clips": MAX_BATCH_CLIPS}
 
     @router.post("/sources", status_code=202)
     async def open_source(body: SourceRequest):
@@ -149,6 +152,11 @@ def add_studio_routes(router: APIRouter, settings: Settings, jobs: Callable[[], 
     async def create_clip(source_id: str, body: ClipRequest):
         clip = jobs().submit_clip(source_id, body.start, body.end)
         return {"job_id": clip.id, "status": clip.status}
+
+    @router.post("/sources/{source_id}/batch", status_code=202)
+    async def create_batch(source_id: str, body: BatchRequest):
+        batch = jobs().submit_batch(source_id, [(clip.start, clip.end) for clip in body.clips])
+        return {"job_id": batch.id, "status": batch.status}
 
     @router.post("/sources/{source_id}/close")
     async def close_source(source_id: str):

@@ -62,7 +62,8 @@ async def test_studio_limits(client, settings):
     r = await client.get("/api/studio")
     assert r.status_code == 200
     assert r.json() == {"max_upload_bytes": settings.max_file_bytes,
-                        "idle_minutes": settings.job_ttl_minutes, "min_clip_seconds": 0.1}
+                        "idle_minutes": settings.job_ttl_minutes, "min_clip_seconds": 0.1,
+                        "max_batch_clips": 20}
 
 
 async def test_link_source_flow(client, stub, temp_dir):
@@ -205,6 +206,94 @@ async def test_link_source_takes_a_queue_place(settings):
         r = await client.post("/api/sources", json={"url": URL})
         assert (r.status_code, r.json()) == (429, error_body("busy"))
         stub.gate.set()
+
+
+# --- Batches (several clips in one ZIP) ---------------------------------------------
+
+TWO = {"clips": [{"start": 1, "end": 3.5}, {"start": 5, "end": 8}]}
+
+
+async def test_batch_flow_end_to_end_with_stub(client, stub):
+    source_id = await ready_source(client)
+    r = await client.post(f"/api/sources/{source_id}/batch", json=TWO, headers=ORIGIN)
+    assert r.status_code == 202 and set(r.json()) == {"job_id", "status"}
+    job_id = r.json()["job_id"]
+    view = await poll_terminal(client, job_id)
+    assert (view["kind"], view["status"], view["filename"]) == ("batch", "ready", "Stub Video (2 clips).zip")
+    call = stub.calls[-1]
+    assert (call["mode"], call["keep_tags"]) == ("batch", True)
+    assert call["clips"] == [{"start": 1.0, "end": 3.5, "name": "01 Stub Video (clip 0m01s-0m03.5s).mp4"},
+                             {"start": 5.0, "end": 8.0, "name": "02 Stub Video (clip 0m05s-0m08s).mp4"}]
+    r = await client.get(f"/api/jobs/{job_id}/file")
+    assert r.status_code == 200 and r.content == b"zip bytes"
+    assert r.headers["content-type"] == "application/zip"
+    assert "Stub%20Video%20%282%20clips%29.zip" in r.headers["content-disposition"]
+    view = (await client.get(f"/api/jobs/{job_id}")).json()
+    assert (view["status"], view["reason"]) == ("expired", "delivered")
+    assert (await client.get(f"/api/sources/{source_id}")).json()["status"] == "ready"
+
+
+def clips(*ranges):
+    return {"clips": [{"start": start, "end": end} for start, end in ranges]}
+
+
+@pytest.mark.parametrize("body, code, message", [
+    ({"clips": []}, "invalid_request", "Send 1 to 20 clips."),
+    (clips(*[(0, 1)] * 21), "invalid_request", "Send 1 to 20 clips."),
+    ({}, "invalid_request", "clips is required"),
+    ({"clips": "x"}, "invalid_request", "clips must be a list"),
+    ({"clips": ["x"]}, "invalid_request", "Clip 1 must be an object with a start and an end"),
+    ({"clips": [{"start": 0, "end": 1}, {"start": "1", "end": 2}]}, "invalid_request",
+     "Clip 2: start must be a number of seconds, 0 or more"),
+    ({"clips": [{"start": 0, "end": 1}, {"start": 1, "end": -2}]}, "invalid_request",
+     "Clip 2: end must be a number of seconds, 0 or more"),
+    ({"clips": [{"start": 0}]}, "invalid_request", "Clip 1: end is required"),
+    ({"clips": [{"start": 0, "end": 1, "x": 1}]}, "invalid_request", "Clip 1: x is not an accepted field"),
+    ({**clips((0, 1)), "x": 1}, "invalid_request", "x is not an accepted field"),
+    (clips((0, 1), (5, 2)), "invalid_clip", "Clip 2: The end must be after the start."),
+    (clips((0, 100)), "invalid_clip", "Clip 1: The end can't be after the end of the video."),
+], ids=["empty", "too_many", "missing", "not_list", "not_object", "str_start", "negative_end",
+        "missing_end", "extra_in_clip", "extra", "reversed", "past_end"])
+async def test_batch_request_validation(client, stub, body, code, message):
+    source_id = await ready_source(client)
+    r = await client.post(f"/api/sources/{source_id}/batch", json=body)
+    assert (r.status_code, r.json()) == (400, error_body(code, message))
+    assert [c["mode"] for c in stub.calls] == ["download"]
+
+
+async def test_batch_needs_a_ready_source_and_its_own_ids(settings):
+    stub = StudioStub(block=("download",))
+    async with running(make_app(settings, run_worker=stub)) as client:
+        r = await client.post("/api/sources", json={"url": URL})
+        source_id = r.json()["source_id"]
+        r = await client.post(f"/api/sources/{source_id}/batch", json=TWO)
+        assert (r.status_code, r.json()) == (409, error_body("source_not_ready"))
+        stub.gate.set()
+        await poll_source(client, source_id)
+        r = await client.post("/api/jobs", json={"url": URL, "output": "video"})
+        job_id = r.json()["job_id"]
+        await poll_terminal(client, job_id)
+        r = await client.post(f"/api/sources/{job_id}/batch", json=TWO)
+        assert (r.status_code, r.json()) == (404, error_body("source_not_found"))
+        r = await client.post(f"/api/sources/{source_id}/batch", json=TWO,
+                              headers={"Origin": "http://evil.example"})
+        assert (r.status_code, r.json()) == (403, error_body("forbidden_origin"))
+
+
+async def test_batch_cancel_leaves_nothing(settings, temp_dir):
+    stub = StudioStub(block=("batch",))
+    async with running(make_app(settings, run_worker=stub)) as client:
+        source_id = await ready_source(client)
+        r = await client.post(f"/api/sources/{source_id}/batch", json=TWO)
+        job_id = r.json()["job_id"]
+        r = await client.post(f"/api/jobs/{job_id}/cancel", json={})
+        assert r.status_code == 200
+        assert (r.json()["kind"], r.json()["status"], r.json()["resume_seconds"]) == ("batch", "cancelled", None)
+        r = await client.post(f"/api/jobs/{job_id}/resume", json={})
+        assert (r.status_code, r.json()) == (410, error_body("not_resumable"))
+        r = await client.get(f"/api/jobs/{job_id}/file")
+        assert (r.status_code, r.json()) == (410, error_body("cancelled"))
+        assert not (temp_dir / job_id).exists()
 
 
 # --- Uploads ------------------------------------------------------------------

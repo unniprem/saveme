@@ -5,8 +5,9 @@ Protocol: the parent writes one JSON request to stdin and closes it. The worker
 writes only JSON lines to stdout and ends with exactly one `result` event
 (exit 0) or `error` event (exit 1). Modes: `inspect` (run_inspect), `download`
 (run_download, which also emits `progress` and `phase` events), and for Clip Studio
-`probe` (run_probe, an uploaded file) and `clip` (run_clip). Only inspect and download
-take a URL; probe and clip work on local files and never touch the network.
+`probe` (run_probe, an uploaded file), `clip` (run_clip) and `batch` (run_batch, several
+clips in one ZIP). Only inspect and download take a URL; the others work on local files
+and never touch the network.
 
 yt-dlp (and app.ytdl, which imports it) is imported lazily inside the functions
 that run after the guard is installed, never at module import time.
@@ -29,7 +30,8 @@ from urllib.parse import urlsplit
 
 from app.cover import cover_opener, embed_cover, fetch_cover
 from app.errors import BLOCKED_MARKER, AppError, classify_ytdlp_error, too_large_message
-from app.mediafile import cut, prepare_upload, probe, remux_to_mp4
+from app.filenames import is_plain_filename
+from app.mediafile import MAX_BATCH_CLIPS, cut, cut_batch, prepare_upload, probe, remux_to_mp4
 from app.netguard import BlockedAddressError, check_url_syntax, install_connect_guard
 
 if TYPE_CHECKING:
@@ -549,6 +551,53 @@ def run_clip(req: dict, emit: Callable[[dict], None]) -> dict:
     return {"file": dst.name, "ext": dst.suffix[1:]}
 
 
+def _batch_args(req: dict) -> tuple[Path, Path, list[tuple[float, float, str]], bool, int]:
+    workdir, source = _workdir(req), _local_file(req, "source")
+    clips, keep_tags, max_bytes = req.get("clips"), req.get("keep_tags"), req.get("max_bytes")
+    ext = source.suffix[1:]
+    if (not _MEDIA_NAME.fullmatch(source.name) or ext not in _CLIP_EXTS
+            or os.path.realpath(source.parent) == os.path.realpath(workdir)
+            or not isinstance(clips, list) or not 1 <= len(clips) <= MAX_BATCH_CLIPS
+            or type(keep_tags) is not bool or type(max_bytes) is not int or max_bytes <= 0):
+        print("worker: malformed batch request", file=sys.stderr)
+        raise AppError("internal")
+    ranges = []
+    for clip in clips:
+        start = _seconds(clip.get("start")) if isinstance(clip, dict) else None
+        end = _seconds(clip.get("end")) if isinstance(clip, dict) else None
+        name = clip.get("name") if isinstance(clip, dict) else None
+        if start is None or end is None or not 0 <= start < end or not is_plain_filename(name, ext):
+            print("worker: malformed batch request (clips)", file=sys.stderr)
+            raise AppError("internal")
+        ranges.append((start, end, name))
+    if len({name.casefold() for _s, _e, name in ranges}) != len(ranges):
+        print("worker: malformed batch request (repeated names)", file=sys.stderr)
+        raise AppError("internal")
+    return source, workdir, ranges, keep_tags, max_bytes
+
+
+def run_batch(req: dict, emit: Callable[[dict], None]) -> dict:
+    """Cut each of req["clips"] ({"start", "end", "name"}) out of the ready source
+    req["source"] and store them in req["workdir"] as media.zip, emitting progress events
+    over the whole batch. On failure the workdir is left empty."""
+    source, workdir, clips, keep_tags, max_bytes = _batch_args(req)
+    count = len(clips)
+
+    def progress(number: int, percent: float | None, written: int | None) -> None:
+        emit({"event": "progress", "detail": f"Cutting clip {number} of {count}",
+              "percent": None if percent is None else round(percent, 1),
+              "downloaded_bytes": written, "total_bytes": None})
+
+    try:
+        archive = cut_batch(source, workdir, clips, keep_tags=keep_tags, max_bytes=max_bytes,
+                            on_progress=progress)
+    except BaseException:
+        _clear(workdir)
+        raise
+    _clear(workdir, keep=archive.name)
+    return {"file": archive.name, "ext": "zip", "count": count}
+
+
 def _read_request(stdin: TextIO) -> dict:
     try:
         req = json.loads(stdin.read())
@@ -610,6 +659,8 @@ def serve(stdin: TextIO, out: TextIO) -> int:
             data = run_probe(req, emit)
         elif mode == "clip":
             data = run_clip(req, emit)
+        elif mode == "batch":
+            data = run_batch(req, emit)
         else:
             print(f"worker: unknown mode {mode!r}", file=sys.stderr)
             raise AppError("internal")

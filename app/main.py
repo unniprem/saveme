@@ -39,6 +39,7 @@ from app.config import ConfigError, Settings, load_settings
 from app.errors import CATALOG, AppError
 from app.filenames import content_disposition
 from app.jobs import APP_DIR, JobManager
+from app.mediafile import MAX_BATCH_CLIPS
 from app.netguard import (IpPolicy, Resolver, check_source_address, check_url_syntax, is_public_ip,
                           system_resolver)
 from app.runner import DEFAULT_WORKER_CMD, RunWorker, run_worker
@@ -94,16 +95,31 @@ def _config_message(exc: ConfigError) -> str:
 
 
 def _validation_message(errors: Sequence[dict]) -> str:
-    """A plain message naming the offending field, from FastAPI's first validation error."""
+    """A plain message naming the offending field, from FastAPI's first validation error.
+    A field inside a batch's clip list is named with its clip: "Clip 2: start must be …"."""
     if not errors:
         return CATALOG["invalid_request"][1]
     error = errors[0]
     kind = error.get("type")
     if kind == "json_invalid":
         return "The request body isn't valid JSON."
-    field = ".".join(str(part) for part in error.get("loc", ()) if part != "body")
+    loc = [part for part in error.get("loc", ()) if part != "body"]
+    if len(loc) >= 2 and loc[0] == "clips" and isinstance(loc[1], int):
+        clip = f"Clip {loc[1] + 1}"
+        if len(loc) == 2:
+            return f"{clip} must be an object with a start and an end"
+        return f"{clip}: {_field_message(kind, '.'.join(str(part) for part in loc[2:]))}"
+    field = ".".join(str(part) for part in loc)
     if not field:
         return "The request body must be a JSON object."
+    if field == "clips" and kind in ("too_short", "too_long"):
+        return f"Send 1 to {MAX_BATCH_CLIPS} clips."
+    if field == "clips" and kind == "list_type":
+        return "clips must be a list"
+    return _field_message(kind, field)
+
+
+def _field_message(kind: object, field: str) -> str:
     if kind == "extra_forbidden":  # the only case where the field name comes from the client
         if _FIELD_NAME.fullmatch(field):
             return f"{field} is not an accepted field"
