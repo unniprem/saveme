@@ -451,6 +451,8 @@ kept an hour after it ends, and a restart forgets them (the files go with `TEMP_
 
 ## 10. UI (Clip Studio → "Auto Shorts" tab)
 
+Superseded for the page by [the Make shorts design](superpowers/specs/2026-11-24-make-shorts-design.md); the server parts below still hold.
+
 1. **Clips:** the clip list's rows (from Manual or AI Highlights) with checkboxes, plus "Use
    current marks". It's empty until clips exist, and says how to add them.
 2. **Format:** platform, template, quality, FPS.
