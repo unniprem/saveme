@@ -14,10 +14,12 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 | --------- | ---- | ----------- |
 | `b899daf` | docs | Add Clip Studio phase 1 design |
 | `b040d4d` | docs | Add Clip Studio phase 1 implementation plan |
+| `7adb750` | refactor | Move local media helpers to `app/mediafile.py` and report duration |
 
 ### Test Results
 
 - Baseline on `main` (`bea4549`): `.venv/bin/pytest -q` gave 471 passed, 2 skipped, 7 deselected (82 s).
+- Task 1 (`7adb750`): 475 passed, 2 skipped, 7 deselected.
 
 ### Key Decisions
 
@@ -28,11 +30,11 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 
 ### Issues Encountered
 
-- None yet.
+- `tests/support/media.py`'s `junk.jpg` isn't junk to a full ffprobe: it opens the file as a one-frame image because of the `.jpg` name. Junk-input tests use `big.mp4` (random bytes) instead.
 
 ### Pending Work
 
-- Tasks 1–10 of the plan.
+- Tasks 2–10 of the plan (Task 1 done).
 
 ### Handoff
 
