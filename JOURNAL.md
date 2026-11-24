@@ -22,6 +22,7 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 | `b2dd526` | feat | Add Clip Studio API routes for sources, preview and clips |
 | `049063b` | feat | Accept video uploads for Clip Studio with their own limits |
 | `2e7be93` | refactor | Share the page's API and DOM helpers through `common.js` |
+| `9cc0546` | feat | Add the Clip Studio page |
 
 ### Test Results
 
@@ -38,6 +39,11 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
   - Title parsing.
   - Through a real uvicorn server: a client that leaves mid-body frees its folder and queue place; an idle client gets 504 `timeout`; a source closed mid-transfer gets 404 and is removed.
 - Task 8 (`2e7be93`): 590 passed, 2 skipped, 7 deselected. In headless Chromium, a direct MP4 from the local media server fetched, downloaded (198,451 bytes) and showed "Saved", with no console errors.
+- Task 9 (`9cc0546`): 593 passed, 2 skipped, 7 deselected. Browser checks in the installed Google Chrome (a temporary profile) and Playwright's Chromium, desktop at 1200 px and phone at 375 px in dark mode, none with console errors:
+  - Link → Clip → typed marks, an out-of-order start refused with a message, handle arrows and Shift, `I` at the playhead → Export → auto-saved `long (clip 0m01s-0m06s).mp4` (H.264+AAC) → "Clip saved". A reload restores the marks; Close unlocks the link field and clears storage.
+  - Uploads: a TS file is remuxed and its clip carries no tags; random bytes show "SaveMe can't read this file as a video…"; an HEVC MOV previews in Chrome. In Chromium (no HEVC) the fallback note shows and a clip still exports from typed times.
+  - Cancel while a link source downloads: the server has the source `expired`/`closed`, and the result card returns.
+  - Server restart, then a reload: "This video is no longer on the server…", storage cleared, no horizontal scroll at 375 px.
 
 ### Key Decisions
 
@@ -45,17 +51,20 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 - **Sources and clips are new kinds of job in `JobManager`.** That way they share the queue, slots, disk budget, sweep and shutdown, and no limit is copied or bypassed.
 - **Uploads are raw `application/octet-stream` bodies with a `Content-Length`.** Only this path skips the Guard's 64 KiB read. Host, Origin, degraded mode, the size cap, the disk check and the timeouts still apply, and no form parser is added.
 - **A source is closed only by the owner, idle time or the source cap, never to make disk room.** Evicting it would pull the video out from under someone mid-edit, so a job that doesn't fit gets `disk_full` instead, as today. The cap (`MAX_CLIP_SOURCES`, default 2) replaces the least recently used idle source.
+- **The preview fallback also fires when the video has no picture size.** Chromium played an HEVC file's sound and skipped its picture without an error event. Every source is checked to have video, so a zero `videoWidth` means the browser can't decode it.
 - **An upload is admitted only if it fits the disk budget counting active jobs.** Its bytes land before any slot is taken, so the lighter check that downloads get at submit time would let several big uploads overrun the budget.
 - **Clips cut from uploads carry no metadata,** because phones write location and device details into videos. Clips cut from links keep title, artist and date, and chapters are dropped because their times would be wrong.
 
 ### Issues Encountered
 
 - `tests/support/media.py`'s `junk.jpg` isn't junk to a full ffprobe: it opens the file as a one-frame image because of the `.jpg` name. Junk-input tests use `big.mp4` (random bytes) instead.
+- The first fallback check failed: an undecodable HEVC picture raised no `error` event, so the note never showed. Fixed before the commit by checking `videoWidth` once metadata loads.
 - A stream-copy cut's container and track durations read longer than the cut (4.22 s for 4.0 s), because they count the hidden keyframe lead-in. The clip test checks what a viewer gets instead: shown frames, the first shown frame at 0, and the audio length.
 
 ### Pending Work
 
-- Tasks 9–10 of the plan (Tasks 1–8 done): the studio page, then docs and image checks.
+- Task 10: README and image checks (`scripts/docker-ffmpeg-check.sh`, `scripts/docker-smoke.sh` in an isolated Compose project), then the whole-branch review.
+- Export Cancel hasn't been tried in a browser; harness cuts finish in under a second. The manager and API cancel tests cover it.
 - Browser checks run through `/tmp/claude-501/saveme-dev/` (outside the repo):
   - `serve.py` runs SaveMe on `127.0.0.1:8123` with loopback allowed, plus the test media server, whose URL it prints.
   - The `check-*.js` scripts drive headless Chromium with the `playwright-core` from `~/.npm/_npx`.
