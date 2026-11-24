@@ -7,6 +7,7 @@ else here is pure.
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -68,8 +69,19 @@ def parse_filters(listing: str) -> frozenset[str]:
     return frozenset(_FILTER_LINE.findall(listing))
 
 
+_DETECTED: dict[tuple, Capabilities] = {}
+
+
 def detect(ffmpeg: str = FFMPEG) -> Capabilities:
-    """What the FFmpeg the wrapper resolves to was built with; empty sets if it can't run."""
+    """What the FFmpeg the wrapper resolves to was built with; empty sets if it can't run. Cached per
+    FFmpeg and PATH: the binary in use doesn't change while the process runs."""
+    key = (ffmpeg, os.environ.get("SAVEME_FFMPEG_DIR"), os.environ.get("PATH"))
+    if key not in _DETECTED:
+        _DETECTED[key] = _detect(ffmpeg)
+    return _DETECTED[key]
+
+
+def _detect(ffmpeg: str) -> Capabilities:
     out = {}
     for what in ("encoders", "filters"):
         try:
