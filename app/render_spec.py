@@ -235,8 +235,11 @@ def resolve(spec: RenderSpec) -> ResolvedSpec:
         **style, "style": style_id, "enabled": spec.captions.enabled, "burn": spec.captions.burn,
         "export": list(spec.captions.export),
         "position": spec.captions.position or template["captions"]["position"],
-        "offset": template["captions"]["offset"] if spec.captions.offset is None else spec.captions.offset,
+        "offset": spec.captions.offset,
     }
+    if captions["offset"] is None:  # the template's offset is for its own position only
+        same = captions["position"] == template["captions"]["position"]
+        captions["offset"] = template["captions"]["offset"] if same else 0.0
     # A split layout puts captions on the seam unless asked otherwise.
     if layout["mode"] == "split" and spec.captions.position is None:
         captions["position"] = "middle"
