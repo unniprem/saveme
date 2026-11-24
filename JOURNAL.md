@@ -19,6 +19,10 @@ The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merg
 | `4f7554c` | feat | Run batch exports as a job kind in the job manager |
 | `3665971` | feat | Add the batch export route for Clip Studio |
 | `cdf75e7` | feat | Add a clip list and ZIP export to Clip Studio |
+| `3b60205` | fix | Compare clip lengths in whole milliseconds on both sides |
+| `2115d88` | fix | Poll an open studio's source at a quarter of its idle time |
+| `a5d3d82` | fix | Turn off playhead controls when the browser can't play the source |
+| `daa8c8a` | fix | Tell a too-large clip to choose a shorter part |
 
 ### Test Results
 
@@ -54,6 +58,14 @@ The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merg
     - Close cleared `sessionStorage`.
   - **Phone 375 px, dark, from an uploaded `Beach day.mp4`:** two clips listed, row buttons 40 px tall, `scrollWidth` 375 (no horizontal scroll), and `Beach day (2 clips).zip` saved with both entries.
   - Screenshots are in `$CLAUDE_JOB_DIR/tmp/dev/shots/zip-*.png`. Row times are kept unbroken (`whitespace-nowrap`) after the first phone screenshot split "· 0:02.0".
+- Deferred-minor fixes:
+  - `3b60205`: a new manager test failed first, because the server refused 1.1–1.2 s (`1.2 - 1.1` is `0.0999…`), and now passes.
+  - `daa8c8a`: the clip `too_large` test now checks the message, and failed first on the old download advice.
+  - `test_sources.py` 49 passed, and the worker clip plus batch tests 44 passed.
+  - Real-browser check `check-minors.js` (Chrome), against the restarted `serve.py` on 8123 and `serve-ttl.py` (`JOB_TTL_MINUTES=1`) on 8124, with no console problems:
+    - A 1.1–1.2 s range enabled Export and saved `long (clip 0m01.1s-0m01.2s).mp4`.
+    - An MPEG-4 Part 2 upload (`Old camera.mp4`, which Chrome can't play: `error.code` 4) showed the note, disabled Set to playhead ×2 and Play clip, and ignored `I`. Typed times still exported it.
+    - With a 60 s idle time, the keep-alive polled at 15 s gaps (6 in 100 s), and the source was still `ready` after 100 s.
 
 ### Key Decisions
 
@@ -63,6 +75,8 @@ The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merg
 - **Entry names come from the server and are checked again in the worker.** They're numbered (`01 <title> (clip …).mp4`) so they sort in list order and stay unique. `is_plain_filename` refuses separators, control and Windows-forbidden characters, leading dots, over 255 bytes, and repeats (case-insensitive).
 - **The batch's size limit covers the whole ZIP.** Each cut's `-fs` is the room left, with 1 KiB counted per entry for headers, and the finished ZIP is checked again.
 - **The list lives in the page, not on the server.** It's kept in `sessionStorage` with the marks, sorted by start so the ZIP follows the video. Duplicates are refused in the page. The server would accept them, and numbering keeps their names apart.
+- **Playhead controls are turned off only after a media `error` event,** not whenever the picture size is 0. Chromium plays the sound of an HEVC file it can't show, and that playhead moves, so the controls still help there.
+- **Keep-alive is `idle_minutes / 4`, clamped to 15–60 s,** and rescheduled once `/api/studio` answers. The default (30 min) still polls every 60 s.
 - **A refused ZIP request shows its error in the export area under the list,** next to the button that was pressed, not in the message line under the editor.
 - **A batch reserves `2 × MAX_FILE_SIZE_MB`, like a download.** The ZIP and the part being added sit on disk together. At the smallest allowed budget, with a source open, a batch gets `disk_full` while single clips still work. That's accepted, and the test documents it.
 
@@ -72,7 +86,8 @@ The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merg
 
 ### Pending Work
 
-- Remaining tasks: the cheap deferred minors, docs, full verification.
+- Remaining tasks: docs (README, technical notes), full verification (whole suite, Docker image check if Docker is available), final journal.
+- Deferred minors still open (the owner's call): `/media` has no time limit; ProRes MOV is accepted, then every cut fails; the source cap replaces an idle source before the disk check; no test closes an upload during its check.
 
 ### Handoff
 
