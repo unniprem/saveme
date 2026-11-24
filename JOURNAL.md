@@ -115,7 +115,7 @@ The owner re-sent the full Phase 1 brief. `feature/clip-studio` was already merg
 
 ### Pending Work
 
-- **Integrate `feature/clip-studio`.** It is 21 commits ahead of local `main` (`b661127`). Local `main` itself is 30 commits ahead of `origin/main` (the earlier Clip Studio merge was never pushed). Nothing was merged or pushed this session. To ship:
+- **Integrate `feature/clip-studio`.** It is ahead of local `main` (`b661127`) by this session's commits (`git log --oneline main..feature/clip-studio`). Local `main` itself is 30 commits ahead of `origin/main` (the earlier Clip Studio merge was never pushed). Nothing was merged or pushed this session. To ship:
   1. `git checkout main && git merge --no-ff feature/clip-studio`
   2. `git push origin main`
   3. Rebuild the live container with `docker compose up -d --build`.
