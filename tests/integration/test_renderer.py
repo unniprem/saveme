@@ -184,7 +184,8 @@ def test_a_preview_still_is_a_jpeg_of_the_canvas(render_media, tmp_path, workdir
 
 def test_a_logo_is_overlaid_in_its_corner(render_media, tmp_path, workdir):
     src = source_of(render_media, tmp_path)
-    logo = {"path": str(render_media["logo.png"]), "scale": 0.4, "opacity": 1.0, "position": "top-left"}
+    logo = {"path": str(render_media["logo.rgba"]), "scale": 0.4, "opacity": 1.0, "position": "top-left",
+            "width": 200, "height": 100}
     run(render_request(src, workdir, logo=logo))
     frame = frame_rgb(workdir / "clip-01.mp4", 1.0)
     # the logo is 108×54 px (0.4 of 270) at a 10 px margin: its left half white, its right half clear
@@ -243,7 +244,8 @@ def test_an_unreadable_source_is_refused(tmp_path, workdir):
     {"aspect": "2:1"}, {"width": 271}, {"width": 0}, {"fps": 240}, {"quality": "ultra"},
     {"encoder": "nvenc"}, {"threads": 0}, {"threads": True}, {"layout": {"mode": "zoom"}},
     {"layout": {"mode": "center", "margin": 2}}, {"subtitles": True},  # no subs.ass in the workdir
-    {"fonts_dir": "fonts; rm"}, {"logo": {"path": "/nope.png", "scale": 0.1, "opacity": 1, "position": "top-left"}},
+    {"fonts_dir": "fonts; rm"},
+    {"logo": {"path": "/nope.rgba", "scale": 0.1, "opacity": 1, "position": "top-left", "width": 2, "height": 2}},
     {"max_bytes": 0}, {"kind": "frame", "output": "f.jpg", "at": 99.0},
 ])
 def test_malformed_requests_are_refused(render_media, tmp_path, workdir, change):

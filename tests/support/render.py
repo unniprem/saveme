@@ -50,8 +50,13 @@ def make_render_media(dir: Path) -> dict[str, Path]:
     _ffmpeg(["-f", "lavfi", "-i", "color=c=magenta:s=320x180:r=25", "-t", "1", *_H264, "outro.mp4"], dir)
     _ffmpeg(["-f", "lavfi", "-i", "color=c=white@1.0:s=100x100,format=rgba[a];"
              "color=c=black@0.0:s=100x100,format=rgba[b];[a][b]hstack=2", "-frames:v", "1", "logo.png"], dir)
+    from app.png import decode
+
+    width, height, rgba = decode((dir / "logo.png").read_bytes())
+    assert (width, height) == (200, 100)
+    (dir / "logo.rgba").write_bytes(rgba)
     names = ["thirds.mp4", "portrait.mp4", "silent.mp4", "rotated.mp4", "anamorphic.mp4", "intro.mp4",
-             "outro.mp4", "logo.png"]
+             "outro.mp4", "logo.png", "logo.rgba"]
     return {name: dir / name for name in names}
 
 

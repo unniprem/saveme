@@ -35,13 +35,13 @@ FROM denoland/deno:bin-${DENO_VERSION}@${DENO_DIGEST} AS deno
 #   - for AI Highlights transcription: the same audio decoders, resampled (aresample) to
 #     16 kHz mono 16-bit PCM (pcm_s16le encoder) in a WAV file (wav muxer).
 #   - for Auto Shorts rendering (docs/AUTO_SHORTS_DESIGN.md §3):
-#       decoders h264, hevc, vp8, vp9, AV1 (libdav1d) and png (the logo);
-#       encoders libx264 (GPL: this makes the binary GPL-2.0+; SaveMe only runs it, so the app
-#       stays MIT; publishing the image means offering this source), aac, mjpeg (preview stills)
-#       and rawvideo (frames for face tracking); muxers image2 (one still) and rawvideo;
-#       the png_pipe demuxer (one image, no file patterns); swscale; libass (burned-in
-#       captions, shaped with HarfBuzz) and the filters the render graphs use. transpose,
-#       hflip and vflip let FFmpeg apply a phone video's rotation.
+#       decoders h264, hevc, vp8, vp9 and AV1 (libdav1d), and rawvideo with its demuxer (a
+#       logo arrives as raw RGBA: app.png decodes the PNG in Python, so FFmpeg still never
+#       parses an image); encoders libx264 (GPL: this makes the binary GPL-2.0+; SaveMe only
+#       runs it, so the app stays MIT; publishing the image means offering this source), aac,
+#       mjpeg (preview stills) and rawvideo (frames for face tracking); muxers image2 (one
+#       still) and rawvideo; swscale; libass (burned-in captions, shaped with HarfBuzz) and the
+#       filters the render graphs use. transpose, hflip and vflip apply a phone video's rotation.
 #   - local files only: no network protocols, and no HLS/DASH/concat demuxers that open
 #     other files. This also shrinks the attack surface for hostile media.
 # After changing these flags, run scripts/docker-ffmpeg-check.sh.
@@ -78,11 +78,11 @@ RUN ./configure \
         --enable-libass \
         --enable-libdav1d \
         --enable-protocol=file,pipe \
-        --enable-demuxer=mov,matroska,mpegts,flv,avi,ogg,mp3,aac,flac,wav,ffmetadata,image_png_pipe \
+        --enable-demuxer=mov,matroska,mpegts,flv,avi,ogg,mp3,aac,flac,wav,ffmetadata,rawvideo \
         --enable-muxer=mp4,ipod,mov,matroska,webm,mp3,wav,image2,rawvideo \
         --enable-parsers \
         --enable-bsfs \
-        --enable-decoder=h264,hevc,vp8,vp9,libdav1d,png,aac,aac_latm,mp3,mp3float,mp2,mp2float,opus,vorbis,flac,alac,ac3,eac3,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s32le,pcm_f32le,pcm_u8,pcm_alaw,pcm_mulaw \
+        --enable-decoder=h264,hevc,vp8,vp9,libdav1d,rawvideo,aac,aac_latm,mp3,mp3float,mp2,mp2float,opus,vorbis,flac,alac,ac3,eac3,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s32le,pcm_f32le,pcm_u8,pcm_alaw,pcm_mulaw \
         --enable-encoder=libmp3lame,pcm_s16le,libx264,aac,mjpeg,rawvideo \
         --enable-filter=aresample,aformat,anull,null,format,crop,scale,pad,setsar,fps,split,overlay,vstack,boxblur,eq,colorchannelmixer,ass,trim,atrim,setpts,asetpts,concat,anullsrc,apad,transpose,hflip,vflip \
     && make -j"$(nproc)" \

@@ -35,7 +35,7 @@ from app.layouts import LayoutRequest, plan_layout, request_from
 from app.mediafile import FFMPEG, FFPROBE, stderr_tail
 from app.netguard import install_connect_guard
 from app.reframe import ASPECTS, source_canvas
-from app.render_graph import SUBTITLES_NAME, Bumper, GraphPlan, LogoPlan, build
+from app.render_graph import SUBTITLES_NAME, Bumper, GraphPlan, LogoPlan, SplitLayout, build
 from app.worker import _clear, _read_request, _writer, limit_memory, protocol_out
 
 GRAPH_NAME = "graph.txt"
@@ -181,6 +181,7 @@ class RenderRequest:
     analysis: Path | None
     speech: tuple[tuple[float, float], ...]
     subtitles: bool
+    captions: dict | None
     fonts_dir: str | None
     logo: dict | None
     intro: Path | None
@@ -219,11 +220,14 @@ def parse_render(req: dict) -> RenderRequest:
         analysis = req.get("analysis")
         analysis = None if analysis is None else _abs_file(analysis)
         speech = tuple((_number(s, 0, 1e7), _number(e, 0, 1e7)) for s, e in req.get("speech") or [])
-        subtitles = req.get("subtitles")
+        subtitles = req.get("subtitles", False)
         if type(subtitles) is not bool:
             raise ValueError
         if subtitles and not (workdir / SUBTITLES_NAME).is_file():
             raise ValueError
+        captions = req.get("captions")
+        if captions is not None:
+            captions = _caption_request(captions)
         fonts_dir = req.get("fonts_dir")
         if fonts_dir is not None and (not isinstance(fonts_dir, str) or not set(fonts_dir) <= _NAME_OK | {"/"}
                                       or not fonts_dir.startswith("/")):
@@ -231,9 +235,13 @@ def parse_render(req: dict) -> RenderRequest:
         logo = req.get("logo")
         if logo is not None:
             logo = {"path": _abs_file(logo.get("path")), "scale": _number(logo.get("scale"), 0.03, 0.5),
-                    "opacity": _number(logo.get("opacity"), 0.1, 1.0),
-                    "position": logo.get("position")}
+                    "opacity": _number(logo.get("opacity"), 0.1, 1.0), "position": logo.get("position"),
+                    "width": logo.get("width"), "height": logo.get("height")}
             if logo["position"] not in ("top-left", "top-right", "bottom-left", "bottom-right"):
+                raise ValueError
+            if not all(type(logo[k]) is int and 1 <= logo[k] <= 2048 for k in ("width", "height")):
+                raise ValueError
+            if logo["path"].stat().st_size != logo["width"] * logo["height"] * 4:
                 raise ValueError
         intro = None if req.get("intro") is None else _abs_file(req.get("intro"))
         outro = None if req.get("outro") is None else _abs_file(req.get("outro"))
@@ -246,8 +254,50 @@ def parse_render(req: dict) -> RenderRequest:
     return RenderRequest(kind=kind, source=source, workdir=workdir, output=output, start=start, end=end,
                          at=at, aspect=aspect, width=width, height=height, fps=fps, quality=quality,
                          encoder=encoder, threads=threads, layout=layout, analysis=analysis, speech=speech,
-                         subtitles=subtitles, fonts_dir=fonts_dir, logo=logo, intro=intro, outro=outro,
-                         max_bytes=max_bytes)
+                         subtitles=subtitles, captions=captions, fonts_dir=fonts_dir, logo=logo, intro=intro,
+                         outro=outro, max_bytes=max_bytes)
+
+
+_PLAN_KEYS = {"style", "safe", "enabled", "title", "brand_color", "watermark", "watermark_position"}
+
+
+def _caption_request(data: object) -> dict:
+    """The parent's captions: {"cues": [...], "plan": {...}} with the shapes app.captions needs."""
+    if not isinstance(data, dict) or set(data) != {"cues", "plan"} or not isinstance(data["cues"], list) \
+            or not isinstance(data["plan"], dict) or not set(data["plan"]) <= _PLAN_KEYS \
+            or not isinstance(data["plan"].get("style"), dict) or not isinstance(data["plan"].get("safe"), dict) \
+            or len(data["cues"]) > 2000:
+        raise ValueError
+    for cue in data["cues"]:
+        if not isinstance(cue, dict) or not isinstance(cue.get("words"), list) or not isinstance(cue.get("lines"), list):
+            raise ValueError
+        _number(cue.get("start"), 0, 1e7)
+        _number(cue.get("end"), 0, 1e7)
+        for word in cue["words"]:
+            if not (isinstance(word, list) and len(word) == 3 and isinstance(word[2], str)):
+                raise ValueError
+        for line in cue["lines"]:
+            if not (isinstance(line, list) and len(line) == 2 and all(type(v) is int for v in line)):
+                raise ValueError
+    return data
+
+
+def write_captions(captions: dict, folder: Path, *, width: int, height: int, duration: float,
+                   split_seam: float | None) -> None:
+    """subs.ass for the real canvas, from the parent's cues and caption plan."""
+    from app.captions import AssPlan, CaptionCue, CaptionWord, to_ass
+
+    cues = [CaptionCue(float(c["start"]), float(c["end"]),
+                       tuple(CaptionWord(float(s), float(e), str(x)) for s, e, x in c["words"]),
+                       tuple((int(a), int(b)) for a, b in c["lines"]), c.get("speaker"))
+            for c in captions["cues"] if c["words"]]
+    plan = captions["plan"]
+    ass_plan = AssPlan(width=width, height=height, style=plan["style"], safe=plan["safe"],
+                       enabled=bool(plan.get("enabled", True)), title=plan.get("title"),
+                       brand_color=plan.get("brand_color"), watermark=plan.get("watermark") or "",
+                       watermark_position=plan.get("watermark_position") or "bottom-right", duration=duration,
+                       split_seam=split_seam)
+    (folder / SUBTITLES_NAME).write_text(to_ass(cues, ass_plan), encoding="utf-8")
 
 
 # --- planning --------------------------------------------------------------------------------
@@ -276,18 +326,10 @@ def output_fps(req: RenderRequest, info: VideoInfo) -> float:
 def _logo_plan(logo: dict, width: int, height: int) -> LogoPlan:
     size = max(16, int(width * logo["scale"]) // 2 * 2)
     margin = max(8, int(min(width, height) * 0.04))
-    logo_h = _png_height(logo["path"], size)
+    logo_h = max(2, round(size * logo["height"] / logo["width"]))
     x = margin if logo["position"].endswith("left") else width - size - margin
     y = margin if logo["position"].startswith("top") else height - logo_h - margin
     return LogoPlan(width=size, x=x, y=max(0, y), opacity=logo["opacity"])
-
-
-def _png_height(path: Path, width: int) -> int:
-    """The logo's height once scaled to `width`, from its PNG header (the API checked it)."""
-    with open(path, "rb") as f:
-        head = f.read(24)
-    w, h = int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
-    return max(2, round(width * h / w)) if w > 0 and h > 0 else width
 
 
 # --- running FFmpeg --------------------------------------------------------------------------
@@ -382,8 +424,9 @@ def _check_output(path: Path, *, width: int, height: int, duration: float, fps: 
 
 def _inputs(req: RenderRequest, start: float, length: float, threads: int) -> list[str]:
     args = ["-threads", str(threads), "-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", str(req.source)]
-    if req.logo is not None:
-        args += ["-f", "png_pipe", "-i", str(req.logo["path"])]
+    if req.logo is not None:  # raw RGBA from app.png: FFmpeg never parses the image itself
+        args += ["-f", "rawvideo", "-pixel_format", "rgba", "-video_size",
+                 f"{req.logo['width']}x{req.logo['height']}", "-framerate", "1", "-i", str(req.logo["path"])]
     return args
 
 
@@ -411,8 +454,13 @@ def render(req: RenderRequest, emit: Callable[[dict], None], *, tracker=None) ->
             bumpers.append((path, Bumper(duration=min(found.duration, 15.0), has_audio=found.has_audio)))
         intro, outro = (b[1] if b else None for b in bumpers)
     logo = None if req.logo is None else _logo_plan(req.logo, width, height)
+    subtitles = req.subtitles
+    if req.captions is not None:
+        seam = layout.top_height / height if isinstance(layout, SplitLayout) else None
+        write_captions(req.captions, req.workdir, width=width, height=height, duration=length, split_seam=seam)
+        subtitles = True
     plan = GraphPlan(canvas_width=width, canvas_height=height, fps=fps, duration=length, layout=layout,
-                     source_has_audio=info.has_audio, source_sar=info.sar, subtitles=req.subtitles,
+                     source_has_audio=info.has_audio, source_sar=info.sar, subtitles=subtitles,
                      fonts_dir=req.fonts_dir, logo=logo, intro=intro, outro=outro,
                      pad_color=req.layout.pad_color, frame_at=req.at if req.kind == "frame" else None)
     (req.workdir / GRAPH_NAME).write_text(build(plan), encoding="utf-8")
@@ -539,12 +587,29 @@ def main() -> int:
 
 
 def run_asset(req: dict) -> dict:
-    """Probe an uploaded intro/outro video: {"kind": "video", "width", "height", "duration", "has_audio"}."""
+    """Check an uploaded asset. A logo (`kind: "logo"`) is decoded by app.png into raw RGBA written next
+    to it as <name>.rgba: {"kind": "logo", "width", "height", "file"}. An intro/outro video is probed:
+    {"kind": "video", "width", "height", "duration", "has_audio"}."""
     try:
         path = _abs_file(req.get("path"))
+        kind = req.get("kind", "video")
+        if kind not in ("logo", "video"):
+            raise ValueError
     except ValueError:
         print("renderer: malformed asset request", file=sys.stderr)
         raise AppError("internal") from None
+    if kind == "logo":
+        from app.png import PngError, decode
+
+        if path.stat().st_size > 4 * 1024 * 1024:
+            raise AppError("invalid_asset", "The logo must be a PNG of at most 2 MB.")
+        try:
+            width, height, rgba = decode(path.read_bytes())
+        except PngError as exc:
+            raise AppError("invalid_asset", f"SaveMe can't use this logo: {exc}.") from None
+        out = path.with_suffix(".rgba")
+        out.write_bytes(rgba)
+        return {"kind": "logo", "width": width, "height": height, "file": out.name}
     info = probe_video(path)
     if info is None or info.duration is None:
         raise AppError("invalid_asset", "SaveMe can't read this file as a video.")
