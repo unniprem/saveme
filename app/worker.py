@@ -16,7 +16,6 @@ import os
 import re
 import shutil
 import socket
-import subprocess
 import sys
 import time
 import traceback
@@ -27,7 +26,7 @@ from urllib.parse import urlsplit
 
 from app.cover import cover_opener, embed_cover, fetch_cover
 from app.errors import BLOCKED_MARKER, AppError, classify_ytdlp_error, too_large_message
-from app.filenames import media_type_for
+from app.mediafile import probe, remux_to_mp4
 from app.netguard import BlockedAddressError, check_url_syntax, install_connect_guard
 
 if TYPE_CHECKING:
@@ -37,7 +36,6 @@ if TYPE_CHECKING:
 _MAX_HOPS = 5
 # At most 4 progress events per second (the first and last of each part always go out).
 _EMIT_INTERVAL = 0.25
-_PROBE_TIMEOUT = 60
 _MEDIA_NAME = re.compile(r"media\.[A-Za-z0-9]+")
 # Largest decoded body read whole (pages, manifests, API responses). Media is read in
 # blocks and isn't affected. Large enough for real pages (YouTube's are a few MB).
@@ -333,63 +331,11 @@ def _parts_recorder(progress: _Progress):
     return RecordPartsPP()
 
 
-def _stderr_tail(data: bytes) -> str:
-    return data.decode(errors="replace")[-2000:]
-
-
-def _stream_kinds(path: Path) -> set[str] | None:
-    """Stream types in a local file (cover art doesn't count as video), probed
-    through the ffprobe wrapper; None when ffprobe can't read the file."""
-    from app.ytdl import FFMPEG_WRAPPER_DIR
-
-    cmd = [str(FFMPEG_WRAPPER_DIR / "ffprobe"), "-v", "error", "-show_entries",
-           "stream=codec_type:stream_disposition=attached_pic", "-of", "json", str(path)]
-    try:
-        proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, timeout=_PROBE_TIMEOUT)
-        streams = json.loads(proc.stdout)["streams"] if proc.returncode == 0 else None
-    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError) as exc:
-        print(f"worker: ffprobe failed: {exc!r}", file=sys.stderr)
-        return None
-    if not isinstance(streams, list):
-        print(f"worker: ffprobe failed: {_stderr_tail(proc.stderr)}", file=sys.stderr)
-        return None
-    return {s.get("codec_type") for s in streams
-            if isinstance(s, dict) and not (s.get("disposition") or {}).get("attached_pic")}
-
-
 def _lacks_audio(workdir: Path) -> bool:
     """True if a completely downloaded media file in `workdir` probes with no audio stream."""
-    probed = [_stream_kinds(p) for p in workdir.iterdir() if _MEDIA_NAME.fullmatch(p.name)]
-    known = [kinds for kinds in probed if kinds is not None]
+    probed = [probe(p) for p in workdir.iterdir() if _MEDIA_NAME.fullmatch(p.name)]
+    known = [found.kinds for found in probed if found is not None]
     return bool(known) and not any("audio" in kinds for kinds in known)
-
-
-def _to_mp4(src: Path) -> tuple[Path, str | None]:
-    """Remux `src` to media.mp4 next to it (stream copy). On failure keep `src` and
-    return a notice, provided the server can deliver its container at all."""
-    from app.ytdl import FFMPEG_WRAPPER_DIR
-
-    dst = src.with_name("media.mp4")
-    cmd = [str(FFMPEG_WRAPPER_DIR / "ffmpeg"), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-           "-i", str(src), "-c", "copy", "-sn", "-dn", str(dst)]
-    try:
-        proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True)
-        ok = proc.returncode == 0 and dst.is_file()
-        if not ok:
-            print(f"worker: remux to MP4 failed: {_stderr_tail(proc.stderr)}", file=sys.stderr)
-    except OSError as exc:
-        print(f"worker: remux to MP4 failed: {exc!r}", file=sys.stderr)
-        ok = False
-    if ok:
-        src.unlink()
-        return dst, None
-    dst.unlink(missing_ok=True)
-    ext = src.suffix[1:]
-    try:
-        media_type_for(ext)
-    except KeyError:
-        raise AppError("unsupported") from None
-    return src, f"Delivered as {ext.upper()} (couldn't convert to MP4)."
 
 
 def _final_file(processed: dict, workdir: Path) -> Path:
@@ -491,24 +437,26 @@ def _download(url: str, output: str, quality: str, workdir: Path, max_bytes: int
     final = _final_file(processed, workdir)
     notices = [playlist_notice]
     if output == "video":
-        kinds = _stream_kinds(final)
-        if kinds is not None and "video" not in kinds:
+        found = probe(final)
+        if found is not None and "video" not in found.kinds:
             raise AppError("no_video")
         notices.append(downgrade_notice(chosen_formats(processed), quality))
         if final.suffix != ".mp4":
             phases.phase("Converting to MP4")
-            final, notice = _to_mp4(final)
+            final, notice = remux_to_mp4(final)
             notices.append(notice)
     if cover:
         embed_cover(final, *cover)
+    found = probe(final)
     title = processed.get("title")
     return {"file": final.name, "ext": final.suffix[1:], "title": title if isinstance(title, str) else None,
+            "duration": None if found is None else found.duration,
             "notice": " ".join(n for n in notices if n) or None}
 
 
 def run_download(req: dict, emit: Callable[[dict], None]) -> dict:
     """Download req["url"] into req["workdir"] as media.<ext> (spec §5.3–5.5),
-    emitting progress/phase events. Returns {"file", "ext", "title", "notice"} with
+    emitting progress/phase events. Returns {"file", "ext", "title", "duration", "notice"} with
     `file` relative to the workdir, which then holds only that file; on failure
     the workdir is left empty."""
     output, quality, workdir, max_bytes = _download_args(req)

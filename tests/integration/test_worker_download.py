@@ -89,6 +89,11 @@ def test_video_direct_mp4(media_server, job):
     assert listing(job) == ["media.mp4"]
 
 
+def test_download_result_includes_duration(media_server, job):
+    data = result_of(*download(media_server, "/media/sample.mp4", job))
+    assert abs(data["duration"] - 2.0) < 0.1
+
+
 def test_audio_mp3(media_server, job):
     events, rc = download(media_server, "/media/sample.mp4", job, output="audio")
     data = result_of(events, rc)
@@ -388,7 +393,7 @@ def test_missing_format_judged_by_ytdlp_message_only():
     ("media.ogv", "unsupported"),  # no MIME type to deliver it with
 ], ids=["kept_with_notice", "undeliverable"])
 def test_failed_mp4_remux(tmp_path, name, outcome):
-    from app.worker import _to_mp4
+    from app.mediafile import remux_to_mp4 as _to_mp4
 
     src = tmp_path / name
     src.write_bytes(b"not a media file")
@@ -402,7 +407,7 @@ def test_failed_mp4_remux(tmp_path, name, outcome):
 
 
 def test_remux_to_mp4_keeps_chapters_and_title(tmp_path):
-    from app.worker import _to_mp4
+    from app.mediafile import remux_to_mp4 as _to_mp4
 
     meta = tmp_path / "ch.meta"
     meta.write_text(";FFMETADATA1\ntitle=Kept\n"
