@@ -11,17 +11,24 @@ import json
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable
+import zipfile
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.errors import AppError, too_large_message
+from app.errors import AppError, size_text, too_large_message
 from app.filenames import media_type_for
 
 WRAPPER_DIR = Path(__file__).resolve().parent / "bin"
 FFMPEG = str(WRAPPER_DIR / "ffmpeg")
 FFPROBE = str(WRAPPER_DIR / "ffprobe")
 _PROBE_TIMEOUT = 60
+# Most clips one batch (one ZIP) may hold.
+MAX_BATCH_CLIPS = 20
+BATCH_NAME = "media.zip"
+# Bytes a ZIP spends on one entry besides its data: local header, central directory record
+# and ZIP64 extras, each holding the name (at most 255 bytes). Counted against the size limit.
+_ZIP_ENTRY_OVERHEAD = 1024
 
 
 @dataclass(frozen=True)
@@ -192,3 +199,61 @@ def cut(src: Path, dst: Path, *, start: float, end: float, keep_tags: bool, max_
     if found is None or "video" not in found.kinds or found.duration is None:
         print("worker: the clip came out without video or a duration", file=sys.stderr)
         raise AppError("clip_failed")
+
+
+def batch_too_large_message(limit_bytes: int) -> str:
+    return (f"These clips add up to more than the {size_text(limit_bytes)} limit. "
+            "Export fewer or shorter clips.")
+
+
+def cut_batch(src: Path, workdir: Path, clips: Sequence[tuple[float, float, str]], *, keep_tags: bool,
+              max_bytes: int, on_progress: Callable[[int, float | None, int | None], None]) -> Path:
+    """Cut each (start, end, name) of `src` with cut() and store it in workdir/media.zip
+    under `name`, in order. Returns the ZIP's path.
+
+    Each clip is cut to a part file next to the ZIP, added uncompressed (video is already
+    compressed) and deleted, so the folder holds the ZIP plus at most one part. Each cut's
+    -fs is the room left under `max_bytes`, and the finished ZIP must be smaller than
+    `max_bytes` too (else too_large). A clip that can't be cut fails the batch with
+    clip_failed naming it. on_progress(clip number from 1, percent of the whole batch or
+    None, bytes written) is called as each cut reports.
+    """
+    total = sum(end - start for start, end, _name in clips)
+    archive = workdir / BATCH_NAME
+    part = workdir / f"part{src.suffix}"
+    done = 0.0  # seconds of the batch already in the ZIP
+    used = 0  # a safe upper bound on the ZIP's size so far
+
+    def too_large() -> AppError:
+        return AppError("too_large", batch_too_large_message(max_bytes))
+
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as bundle:
+        for number, (start, end, name) in enumerate(clips, 1):
+            room = max_bytes - used - _ZIP_ENTRY_OVERHEAD
+            if room <= 0:
+                raise too_large()
+
+            def report(percent: float | None, written: int | None, number=number, start=start,
+                       end=end, done=done, used=used) -> None:
+                share = done + (end - start) * (percent or 0.0) / 100
+                on_progress(number, min(100.0, share * 100 / total),
+                            used + (written or 0))
+
+            try:
+                cut(src, part, start=start, end=end, keep_tags=keep_tags, max_bytes=room,
+                    on_progress=report)
+            except AppError as exc:
+                if exc.code == "too_large":
+                    raise too_large() from None
+                if exc.code == "clip_failed":
+                    raise AppError("clip_failed", f"Couldn't cut clip {number}. "
+                                   "Try a different start or end.") from None
+                raise
+            size = part.stat().st_size
+            bundle.write(part, arcname=name)
+            part.unlink()
+            used += size + _ZIP_ENTRY_OVERHEAD
+            done += end - start
+    if archive.stat().st_size >= max_bytes:
+        raise too_large()
+    return archive

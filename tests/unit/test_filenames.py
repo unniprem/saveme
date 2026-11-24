@@ -68,3 +68,38 @@ def test_clip_filename_keeps_its_range_when_the_title_is_long():
     name = clip_filename("é" * 500, 0, 30, "mp4")
     assert name.endswith(" (clip 0m00s-0m30s).mp4")
     assert len(name.removesuffix(".mp4").encode("utf-8")) <= 150
+
+
+# --- Batch export (a ZIP of clips) ----------------------------------------------
+
+def test_batch_names():
+    from app.filenames import batch_entry_name, batch_filename, is_plain_filename
+    entry = batch_entry_name(3, "a/b: c", 65, 100.5, "mp4")
+    assert entry == "03 a b c (clip 1m05s-1m40.5s).mp4" and is_plain_filename(entry, "mp4")
+    assert batch_filename("Talk", 5) == "Talk (5 clips).zip"
+    assert batch_filename(None, 1) == "download (1 clip).zip"
+    long = batch_filename("é" * 500, 20)
+    assert long.endswith(" (20 clips).zip") and len(long.removesuffix(".zip").encode("utf-8")) <= 150
+
+
+def test_zip_is_never_a_download_media_type():
+    from app.filenames import ZIP_MEDIA_TYPE, clip_filename
+    assert ZIP_MEDIA_TYPE == "application/zip"
+    with pytest.raises(KeyError):
+        media_type_for("zip")
+    with pytest.raises(ValueError):
+        sanitize_filename("x", "zip")
+    with pytest.raises(ValueError):
+        clip_filename("x", 0, 1, "zip")
+
+
+@pytest.mark.parametrize("name, ok", [
+    ("01 Talk (clip 0m00s-0m05s).mp4", True), ("日本語.mp4", True),
+    ("a/b.mp4", False), ("a\\b.mp4", False), ("../x.mp4", False), (".x.mp4", False), (".mp4", False),
+    ("x.mkv", False), ("x.MP4", False), ("a\x00.mp4", False), ("a\x1f.mp4", False), ("a:b.mp4", False),
+    (" x.mp4", False), ("x" * 252 + ".mp4", False), ("x" * 251 + ".mp4", True), ("\ud800.mp4", False),
+    (None, False), (5, False),
+])
+def test_is_plain_filename(name, ok):
+    from app.filenames import is_plain_filename
+    assert is_plain_filename(name, "mp4") is ok
