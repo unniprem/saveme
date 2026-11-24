@@ -62,7 +62,8 @@ the model in the catalogue, and refuses it with a clear message if it:
 - doesn't take and return text;
 - has no fixed price (for example routers such as `openrouter/auto`, priced `-1`), so the spending
   limit couldn't be kept;
-- has a context window too small for a transcript chunk and its answer.
+- has a context window too small for a transcript chunk and its answer;
+- can't be given a maximum answer length (`max_tokens` or `max_completion_tokens`).
 
 Model prices and availability change. **Test connection** shows the current prices.
 
@@ -104,12 +105,21 @@ speech), in this shape:
 | `AI_MAX_CONCURRENT_JOBS` | `1` | Runs at the same time; others wait. Downloads are never held up. |
 
 - **Before a run**, the page shows an estimate and an upper bound. Without a transcript yet, they
-  are worked out from the video's length (cautiously, about 600 tokens a minute). With one, they
-  come from the real transcript.
+  are worked out from the video's length (cautiously, about 1,800 bytes of transcript a minute).
+  With one, they come from the real transcript.
+- **The upper bound holds for any model.** It counts one token per byte of the prompt, since no
+  tokenizer makes tokens smaller than a byte, plus the whole answer budget. The estimate uses a
+  typical 3 bytes a token. SaveMe refuses a run whose bound is over the limit, and makes no call or
+  retry that could pass it.
 - **After a run**, it shows the cost OpenRouter reported (`usage.cost`, returned by default) and the
   token counts. If a call reported no cost, its tokens are priced from the catalogue and the total
   is marked as an estimate.
 - An unusable answer is asked for once more, then that chunk is skipped, and both calls count.
+- A request that failed after reaching the model may have been billed: a read timeout, a broken
+  connection after sending, or an error inside a 200. It counts at its reported usage, or else at
+  its upper bound, and the total is then shown as an estimate. A reply without usage counts the
+  same way. Failures before anything was generated aren't counted: a refused connection, or a
+  429/5xx from OpenRouter.
 - A run you cancel while a request is in flight may still be billed for that request.
 
 A one-hour talk is typically 3-4 chunks: about $0.001-$0.005 on the default model.

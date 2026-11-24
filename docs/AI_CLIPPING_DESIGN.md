@@ -206,7 +206,7 @@ One analysis may be pending per source; finished records are capped at 50.
 | Wall clock per analysis | `AI_MAX_JOB_SECONDS` (3600, range 60–86400) | transcriber timeout + `asyncio.timeout` on the whole job |
 | Transcriber memory | RLIMIT_DATA by model: tiny/base 1.5 GiB, small 2.5 GiB, medium 5 GiB, large 8 GiB (Linux) | `app.transcriber` before importing the model |
 | Transcriber CPU | `WHISPER_CPU_THREADS` (2, range 1–16), `nice(10)` | `app.transcriber` |
-| Disk | WAV ≈ 32 kB/s, reserved through the shared disk budget before extraction; watchdog caps the work folder | `JobManager.make_room`, `run_worker` |
+| Disk | WAV ≈ 32 kB/s, reserved through the shared disk budget before extraction and held until the run ends; watchdog caps the work folder | `JobManager.reserve_disk`/`release_disk`, `run_worker` |
 | Spend | `AI_MAX_COST_USD_PER_JOB` (0.25) — upper-bound estimate checked before analysis, running total checked before every call | `AiManager` |
 | Clips | `AI_MAX_CLIPS` (10, range 1–20) | request validation and ranking |
 | Instruction | 500 characters | request validation |
@@ -283,12 +283,21 @@ chunk fails the analysis fails with `ai_invalid_response`.
 **Usage and cost.** Every completion's `usage` (`prompt_tokens`, `completion_tokens`, `cost`)
 is summed. `cost` (OpenRouter credits, USD) is shown as the actual cost when every call
 reported it; otherwise the total is computed from token counts × catalogue prices and labelled
-an estimate. Before the analysis: an estimate (`chunks × prompt tokens × price + expected
-answer`) and an upper bound (`… + max_tokens × price`); the analysis is refused if the upper
-bound exceeds `AI_MAX_COST_USD_PER_JOB`. During it, a call is only made if
-`spent + its upper bound ≤ limit`, else the analysis stops with the highlights found so far and
-a notice. This is a client-side guard on estimates, not a billing cap; set a credit limit on
-the OpenRouter key for a hard cap.
+an estimate.
+
+Before the analysis there is an estimate (typical prompt tokens, UTF-8 bytes / 3, plus half
+the answer budget) and an upper bound. The bound is a true one for any tokenizer: a token is at
+least one byte, so it is prompt bytes plus per-message overhead, plus the full `max_tokens`. The
+analysis is refused if the upper bound exceeds `AI_MAX_COST_USD_PER_JOB`.
+
+During it, a call (or a retry) is only made if `spent + its upper bound ≤ limit`; otherwise the
+analysis stops with the highlights found so far and a notice. An attempt that failed after
+reaching the model may have been billed: a read timeout, a broken connection after sending, or an
+error inside a 200. It is counted at its reported usage, or else at its upper bound, as is a reply
+that reports no usage. A model that can't be given `max_tokens`/`max_completion_tokens` is refused.
+
+This is a client-side guard on estimates, not a billing cap; set a credit limit on the
+OpenRouter key for a hard cap.
 
 ## 9. Highlight engine
 
@@ -329,7 +338,11 @@ the OpenRouter key for a hard cap.
   status codes and token counts, never prompts or transcript text.
 - Only transcript excerpts (and the user's instruction) leave the machine, over HTTPS, to
   `OPENROUTER_BASE_URL`; the page says so next to the Analyze button. Audio, video and file
-  paths are never sent. The transcriber process cannot open any network connection.
+  paths are never sent. In the transcriber process the connection guard refuses every connection
+  Python makes, Hugging Face is set offline, and a model folder must be complete
+  (`config.json`, `model.bin`, `tokenizer.json`) before loading, so faster-whisper never falls
+  back to the Rust tokenizers library's own downloader. No OS-level network isolation is applied.
+  `OPENROUTER_*` variables are stripped from every worker's environment.
 - Model output, transcripts and subtitle files are untrusted: schema-validated, length-capped,
   stripped of control characters, rendered as text. Model output can only choose segment
   numbers inside the chunk it was shown; times, durations, counts and scores are enforced on

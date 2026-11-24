@@ -17,7 +17,7 @@ pieces talk, and lists how each part is tested. Branch: `feature/ai-clipping`.
 | `app/highlights.py` | `make_chunks`, `SYSTEM_PROMPT`, `build_messages`, `RESPONSE_SCHEMA`, `parse_answer` (`_AnswerClip`, validated per item), `place`, `rank`, `estimate_from_transcript`/`estimate_from_duration`, `analyze`. |
 | `app/ai_jobs.py` | `AiManager` and `Analysis`: lifecycle, slots, holds, cache, spend checks, cancellation and cleanup. |
 | `app/ai_routes.py` | The routes, and `read_small_body` for subtitle import. |
-| `app/jobs.py` | Added `ready_source`, `hold_source`/`release_source`, `add_source_listener`, `make_room`. `_in_use` counts holds, and `_expire` calls the listeners before removing a source's folder. |
+| `app/jobs.py` | Added `ready_source`, `hold_source`/`release_source`, `add_source_listener`, `reserve_disk`/`release_disk`. `_in_use` counts holds, `_make_room` counts held reservations like active jobs, and `_expire` calls the listeners before removing a source's folder. |
 | `app/main.py` | `create_app(..., ai_settings, transcriber_cmd, openrouter_transport)`, `_Runtime.ai`, `_reads_own_body` (the upload and subtitle import routes skip the 64 KiB cap), and validation messages for the AI fields. |
 | `app/schemas.py` | `AnalysisRequest`. |
 | `app/errors.py` | 18 new codes, from `invalid_subtitles` to `ai_invalid_response`. |
@@ -35,11 +35,13 @@ POST /api/sources/{id}/analyses        AiManager.start
   └─ task _run ─ wait for an AI slot ─ asyncio.timeout(AI_MAX_JOB_SECONDS)
        preparing    source ready, length ≤ AI_MAX_SOURCE_MINUTES, client.model() + check_model
        (cache)      load_transcript(<source>/ai/transcript.json) + reusable(...)
-       extracting   make_room(32 kB/s × length + 64 MiB)
+       extracting   reserve_disk(32 kB/s × length + 64 MiB), held until the run ends
        transcribing run_worker(app.transcriber, workdir=<source>/ai/<analysis id>)
                     → transcript.json → validated → saved as the cache
        analyzing    estimate_from_transcript → cost_limit if max_usd > limit
-                    analyze(): per chunk, spend check → complete() → parse/validate (1 retry)
+                    analyze(): per chunk, spend check on the true bound → complete()
+                    (before_retry re-checks the limit, on_lost counts possibly billed failures)
+                    → parse/validate (1 retry)
        ranking      place → rank
        ready        candidates, notice, usage
   finally: remove the work folder, release_source
@@ -55,6 +57,8 @@ process group, or httpx abandons the request.
   times from segments and clamps to the transcript's duration, which equals the source's probed length.
 - **`require_parameters` is always on.** Add a request parameter only behind a check that the model
   lists it (`ModelInfo.parameters`).
+- **Spending bounds count a token per byte** (`message_tokens_max`). Don't switch the limit checks to
+  the typical `message_tokens` estimate, which byte-fallback tokenizers can exceed about threefold.
 - **The transcriber must stay offline.** `block_network()` runs before faster-whisper is imported. Don't add
   `local_files_only=False` anywhere at runtime; install models with `app.whisper_models` instead.
 - **Memory.** faster-whisper builds features for the whole input, so keep `iter_windows` feeding it bounded
@@ -107,5 +111,8 @@ covers:
   choose the language to avoid it.
 - Analyses, transcripts and results are in memory and in the source folder: a restart, or the source
   closing or expiring, removes them.
+- The transcriber's network block is Python-level (the connect guard), plus offline Hugging Face settings
+  and a check that the model folder is complete. There is no OS-level isolation such as a network
+  namespace.
 - The live OpenRouter test hasn't been run in development (no key was available). Every OpenRouter path is
   tested against a mock shaped like the documented API.
