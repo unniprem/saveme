@@ -25,6 +25,9 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 | `9cc0546` | feat | Add the Clip Studio page |
 | `ae92308` | docs | Describe Clip Studio and check it in the image scripts |
 | `f0c4c75` | test | Read whole replies in the raw-socket upload tests |
+| `8ddb5b8` | fix | Count a job's own files inside its disk reservation |
+| `9e6e62c` | fix | Accept WebM recordings that carry no duration |
+| `24e6cb5` | fix | Close late sources, drop gone videos, keep unsaved files on the page |
 
 ### Test Results
 
@@ -49,6 +52,9 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 - Task 10 (`f0c4c75`): 595 passed, 2 skipped, 7 deselected.
   - `scripts/docker-smoke.sh` passed on the branch image in an isolated Compose project (`saveme-ctest`, port 8001, image tag `saveme:clip-studio`, so the live `saveme-saveme-1` and its `saveme:local` tag weren't touched). That includes the new check: `/api/studio`, and an upload of random bytes refused as `unreadable_media` by the probe inside the hardened container. The project was then removed.
   - `scripts/docker-ffmpeg-check.sh saveme:clip-studio` passed every matrix case, including the new MP4 and MKV cuts, and 383 integration tests inside the image against the minimal FFmpeg 9.0.2. The clip test's "first shown frame at 0" holds on that build.
+- Whole-branch review by a fresh reviewer (Opus): "ready after fixes". It found nothing critical and accepted every ruling in the ledger. The fix pass (`8ddb5b8`, `9e6e62c`, `24e6cb5`) ended at 599 passed, 2 skipped, 7 deselected; each fix's test failed first. Then:
+  - A browser check of the three page fixes passed, and every earlier browser check was rerun and still passes.
+  - The image was rebuilt (`saveme:clip-studio`), and `docker-ffmpeg-check.sh` passed again with 387 integration tests in the image.
 
 ### Key Decisions
 
@@ -58,11 +64,17 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 - **A source is closed only by the owner, idle time or the source cap, never to make disk room.** Evicting it would pull the video out from under someone mid-edit, so a job that doesn't fit gets `disk_full` instead, as today. The cap (`MAX_CLIP_SOURCES`, default 2) replaces the least recently used idle source.
 - **The preview fallback also fires when the video has no picture size.** Chromium played an HEVC file's sound and skipped its picture without an error event. Every source is checked to have video, so a zero `videoWidth` means the browser can't decode it.
 - **An upload is admitted only if it fits the disk budget counting active jobs.** Its bytes land before any slot is taken, so the lighter check that downloads get at submit time would let several big uploads overrun the budget.
+- **A clip reserves `MAX_FILE_SIZE_MB` of disk, not twice that.** It's a stream copy that `-fs` stops at that size. With the old 2× reservation, nothing could be exported at the smallest budget the settings accept (`MAX_TOTAL_DISK_MB` = 2 × `MAX_FILE_SIZE_MB`), because a ready source can't be evicted.
+- **A job about to start counts its own files inside its reservation** (max of what it holds and its reservation), so an admitted upload, or a resumed download, isn't charged twice when it asks for a slot.
 - **Clips cut from uploads carry no metadata,** because phones write location and device details into videos. Clips cut from links keep title, artist and date, and chapters are dropped because their times would be wrong.
 
 ### Issues Encountered
 
 - `tests/support/media.py`'s `junk.jpg` isn't junk to a full ffprobe: it opens the file as a one-frame image because of the `.jpg` name. Junk-input tests use `big.mp4` (random bytes) instead.
+- **The final review found one Important bug and twelve Minor issues.**
+  - The Important bug was a disk double count: an admitted upload stalled on "Waiting for storage space" at small budgets, and clips couldn't be exported at all at the minimum budget.
+  - Five Minor issues were re-graded Important by their effect and fixed: a stuck record when an upload's folder can't be made; a gone video still streaming a deleted file; live WebM recordings refused; a source left downloading after an early Close; and a ready, unsaved file dropped when opening the studio.
+  - The rest are listed under Pending Work.
 - **The plan's "cut H.264 TS into MP4" image check failed.** A TS has no index, so a seek lands after the keyframe; with one keyframe the video track disappears, in Debian's full FFmpeg and the minimal build alike. The app never cuts a TS (uploads are remuxed to MP4 first), so the case became an MKV cut. Single-keyframe MP4, MKV and remuxed-TS cuts were checked in the image. An MKV or WebM source shows the keyframe lead-in (no edit lists), and the README now says so.
 - Two raw-socket upload tests failed once in the full run: one `recv()` returned only the headers. Fixed in `{fix}` by reading to `Content-Length`; stable over 8 reruns.
 - The first fallback check failed: an undecodable HEVC picture raised no `error` event, so the note never showed. Fixed before the commit by checking `videoWidth` once metadata loads.
@@ -70,7 +82,16 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 
 ### Pending Work
 
-- The whole-branch review, then merging. Nothing is merged or pushed yet, and the live container still runs `main`.
+- **Deciding how to integrate `feature/clip-studio`.** It isn't merged or pushed, and the live container still runs `main`. After a merge, rebuild the live container with `docker compose up -d --build`.
+- **Deferred minors from the final review,** for the owner to rule on:
+  - `/media` responses have no idle or total time limit, unlike `/file`.
+  - A ProRes (MP4-incompatible) MOV is accepted, then every cut fails with "Try a different start or end". Remux MOV like the other containers, or check codecs at probe time.
+  - Exactly-0.1 s ranges: the page enables Export, but the server can refuse after rounding. Compare in whole milliseconds on both sides.
+  - The source cap replaces an idle source before the disk check, which can then still fail.
+  - With no preview, Set to playhead, Play clip and the `I`/`O` keys act on a playhead stuck at 0.
+  - The keep-alive polls every 60 s, so `JOB_TTL_MINUTES=1` can expire a visible studio. Derive it from `idle_minutes`.
+  - A too-large clip's message suggests "a lower quality or audio only".
+  - No test closes an upload while its check runs, or keeps a source alive through API status polls.
 - Leftover images from the checks: `saveme:clip-studio` and `saveme-ffmpeg-check` (`docker image rm` them when done).
 - Export Cancel hasn't been tried in a browser; harness cuts finish in under a second. The manager and API cancel tests cover it.
 - Browser checks run through `/tmp/claude-501/saveme-dev/` (outside the repo):
@@ -82,7 +103,8 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 
 ### Handoff
 
-- Read the plan, then `.superpowers/sdd/2026-11-24-clip-studio-phase-1/progress.md` (git-ignored ledger). Tasks with a `Task N: complete` line are done; resume at the first one without.
+- All 10 plan tasks and the review fix pass are done. Every ruling (with its cost if wrong) and every deferred minor is in `.superpowers/sdd/2026-11-24-clip-studio-phase-1/progress.md` (git-ignored ledger).
+- Phase 2 (AutoClip-style: transcripts, highlight suggestions, 9:16 reframing, burned-in subtitles) needs an H.264 encoder in the FFmpeg build and its own security and licensing review first. See §7 of the design doc.
 - Tests: `.venv/bin/pytest -q`. Real FFmpeg and ffprobe must be on `PATH` (Homebrew on this Mac).
 
 ---
