@@ -119,7 +119,7 @@ def prepare_upload(src: Path, workdir: Path) -> dict:
     if "video" not in found.kinds:
         raise AppError("no_video")
     ext = container_ext(found)
-    if found.duration is None or ext is None:
+    if ext is None:
         raise AppError("unreadable_media")
     media = src.rename(workdir / f"media.{ext}")
     if ext != "mp4":
@@ -127,7 +127,14 @@ def prepare_upload(src: Path, workdir: Path) -> dict:
             media, _notice = remux_to_mp4(media)
         except AppError:  # a TS, FLV or AVI that won't go into MP4 can't be delivered
             raise AppError("unreadable_media") from None
-    return {"file": media.name, "ext": media.suffix[1:], "duration": found.duration, "notice": None}
+    duration = found.duration
+    if duration is None and media.suffix == ".mp4":
+        # Browser recordings (live WebM) carry no duration; the MP4 remux writes one.
+        remuxed = probe(media)
+        duration = None if remuxed is None else remuxed.duration
+    if duration is None:
+        raise AppError("unreadable_media")
+    return {"file": media.name, "ext": media.suffix[1:], "duration": duration, "notice": None}
 
 
 def _progress_int(value: str) -> int | None:

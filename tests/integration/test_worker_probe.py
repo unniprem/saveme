@@ -46,6 +46,14 @@ def test_probe_webm_becomes_mp4_or_stays_webm(media, job):
     assert listing(job) == [data["file"]]
 
 
+def test_probe_finds_the_duration_of_a_live_webm(media, job):
+    # A browser recording has no duration in its header; the MP4 remux writes one.
+    assert probe(media["live.webm"]).duration is None
+    data = result_of(*check_upload(media["live.webm"], job))
+    assert data["ext"] == "mp4" and abs(data["duration"] - 2.0) < 0.2
+    assert listing(job) == ["media.mp4"]
+
+
 def test_probe_refuses_audio_only(media, job):
     assert error_of(*check_upload(media["sample.mp3"], job))["code"] == "no_video"
     assert listing(job) == []

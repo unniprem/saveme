@@ -56,6 +56,12 @@ def make_media(dir: Path) -> dict[str, Path]:
     _ffmpeg([*_VIDEO_SRC, *_AUDIO_SRC, "-t", "2", "-map", "0:v", "-map", "1:a",
              "-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8", "-b:v", "200k",
              "-c:a", "libopus", "sample.webm"], dir)
+    # Browser recorders write WebM as a live stream, with no duration in the file.
+    with open(dir / "live.webm", "wb") as out:
+        subprocess.run([real_ffmpeg(), *_COMMON, *_VIDEO_SRC, *_AUDIO_SRC, "-t", "2", "-map", "0:v",
+                        "-map", "1:a", "-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8",
+                        "-b:v", "200k", "-c:a", "libopus", "-f", "webm", "-live", "1", "pipe:1"],
+                       stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.DEVNULL, timeout=120, check=True)
     (dir / "chapters.meta").write_text(
         ";FFMETADATA1\ntitle=Long Clip\n"
         "[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=5000\ntitle=One\n"
@@ -80,7 +86,7 @@ def make_media(dir: Path) -> dict[str, Path]:
     opus.mkdir()
     (opus / "master.m3u8").write_text(_master("../aac/a.m3u8", "opus"))
     names = ["sample.mp4", "tagged.mp4", "video_only.mp4", "sample.mp3", "sample.mkv", "sample.ts",
-             "sample.webm", "long.mp4",
+             "sample.webm", "live.webm", "long.mp4",
              "cover.jpg", "cover.png", "junk.jpg", "big.jpg", "big.mp4", "hls/master.m3u8",
              "hls/aac/master.m3u8", "hls/opus/master.m3u8"]
     out = {name: dir / name for name in names}
