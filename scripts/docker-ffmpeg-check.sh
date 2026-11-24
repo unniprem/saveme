@@ -107,6 +107,13 @@ check "MP3 from AAC"                   o2.mp3     "mp3"        -i s.m4a $MP3
 check "MP3 from Vorbis"                o3.mp3     "mp3"        -i s.ogg $MP3
 check "MP3 from FLAC"                  o4.mp3     "mp3"        -i s.flac $MP3
 check "MP3 from AC-3 in MKV"           o5.mp3     "mp3"        -i ac3.mkv $MP3
+# AI Highlights: the transcriber's audio extraction (16 kHz mono PCM WAV).
+WAV="-map 0:a:0 -vn -sn -dn -map_metadata -1 -ac 1 -ar 16000 -c:a pcm_s16le -f wav"
+check "WAV for Whisper from AAC MP4"   w1.wav     "pcm_s16le"  -i s.mp4 $WAV
+check "WAV for Whisper from Opus WebM" w2.wav     "pcm_s16le"  -i vp9.webm $WAV
+check "WAV for Whisper from AC-3 MKV"  w3.wav     "pcm_s16le"  -i ac3.mkv $WAV
+got=$(ffprobe -v error -show_entries stream=sample_rate,channels -of csv=p=0 w2.wav)
+if [ "$got" = "16000,1" ]; then echo "PASS  WAV is 16 kHz mono"; else echo "FAIL  WAV is 16 kHz mono: got '$got'"; failed=1; fi
 got=$(/app/app/bin/ffprobe -v error -show_entries stream=codec_name -of csv=p=0 vp9.webm | sort | xargs)
 if [ "$got" = "opus vp9" ]; then echo "PASS  ffprobe reads WebM"; else echo "FAIL  ffprobe reads WebM: got '$got'"; failed=1; fi
 # Chapters and tags: yt-dlp's FFmpegMetadata feeds an ;FFMETADATA1 file back in as a second input.

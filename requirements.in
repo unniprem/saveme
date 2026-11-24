@@ -1,3 +1,6 @@
 fastapi
 uvicorn
 yt-dlp[default]==2026.10.26
+# AI Highlights: local transcription, and the OpenRouter client.
+faster-whisper==1.2.1
+httpx
