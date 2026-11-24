@@ -82,6 +82,28 @@ echo "==> inspect http://169.254.169.254/ -> 403"
 inspect '{"url":"http://169.254.169.254/"}'
 [ "$CODE" = 403 ] || fail "expected HTTP 403, got $CODE: $BODY"
 
+echo "==> Clip Studio: limits, and an upload that isn't a video -> 422 after the probe"
+studio="$(curl -sS --noproxy '*' --max-time 10 "$BASE/api/studio")" || fail "GET /api/studio: request failed"
+case "$studio" in
+  *'"max_upload_bytes":'*'"min_clip_seconds":0.1'*) ;;
+  *) fail "GET /api/studio returned: $studio" ;;
+esac
+resp="$(head -c 4096 /dev/urandom | curl -sS --noproxy '*' --max-time 30 -w "${NL}%{http_code}" \
+  -H 'Content-Type: application/octet-stream' --data-binary @- "$BASE/api/sources/upload")" \
+  || fail "POST /api/sources/upload: request failed"
+[ "${resp##*"$NL"}" = 202 ] || fail "expected HTTP 202 for the upload, got: $resp"
+source_id="$(printf '%s' "${resp%"$NL"*}" | sed -n 's/.*"source_id":"\([A-Za-z0-9_-]*\)".*/\1/p')"
+[ -n "$source_id" ] || fail "no source_id in: $resp"
+for _ in $(seq 1 30); do
+  view="$(curl -sS --noproxy '*' --max-time 10 "$BASE/api/sources/$source_id")" || fail "GET source failed"
+  case "$view" in *'"status":"failed"'*) break ;; esac
+  sleep 1
+done
+case "$view" in
+  *'"code":"unreadable_media"'*) ;;
+  *) fail "expected the probe to refuse random bytes as unreadable_media, got: $view" ;;
+esac
+
 echo "==> runs as uid 10001"
 uid="$(in_container id -u)" || fail "id -u failed in the container"
 [ "$uid" = 10001 ] || fail "container runs as uid $uid, expected 10001"

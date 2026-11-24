@@ -11,27 +11,23 @@ import logging
 import os
 import re
 import socket
-import sys
-import threading
 import time
 from collections.abc import Iterator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import contextmanager
 from ipaddress import ip_address
 from pathlib import Path
 
 import httpx
 import pytest
-import uvicorn
 
 from app.config import ConfigError, Settings, load_settings
-from app.errors import CATALOG, AppError
+from app.errors import AppError
 from app.jobs import JOB_ID_RE, MARKER_NAME
 from app.main import STATIC_DIR, create_app
 from app.netguard import is_public_ip, system_resolver
-from tests.support.policy import allow_loopback
+from tests.support.api import (TEST_WORKER_CMD, URL, error_body, live_server, make_app, poll_terminal,
+                               running, wait_until)
 
-TEST_WORKER_CMD = (sys.executable, "-P", "-m", "tests.support.worker_entry")
-URL = "http://127.0.0.1:9/watch?v=1"
 MiB = 1024 * 1024
 CSP = ("default-src 'self'; img-src 'self' https: http: data:; style-src 'self'; "
        "script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
@@ -71,49 +67,6 @@ class StubWorker:
         return INSPECT_RESULT
 
 
-async def literal_resolver(host: str, port: int) -> list:
-    return [ip_address(host)]
-
-
-def make_app(settings: Settings | ConfigError, **overrides):
-    options = {"ip_policy": allow_loopback, "resolver": literal_resolver,
-               "worker_cmd": TEST_WORKER_CMD}
-    options.update(overrides)
-    return create_app(settings, **options)
-
-
-@asynccontextmanager
-async def running(app):
-    async with app.router.lifespan_context(app):
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
-            yield client
-
-
-async def wait_until(predicate, timeout: float = 5.0) -> None:
-    deadline = time.monotonic() + timeout
-    while not predicate():
-        if time.monotonic() > deadline:
-            raise AssertionError("condition not met in time")
-        await asyncio.sleep(0.01)
-
-
-async def poll_terminal(client: httpx.AsyncClient, job_id: str, timeout: float = 30.0,
-                        seen: list | None = None) -> dict:
-    """Poll the job until it is ready, failed or expired; return its view."""
-    deadline = time.monotonic() + timeout
-    while True:
-        r = await client.get(f"/api/jobs/{job_id}")
-        if seen is not None:
-            seen.append(r)
-        assert r.status_code == 200, r.text
-        view = r.json()
-        if view["status"] in ("ready", "failed", "expired"):
-            return view
-        assert time.monotonic() < deadline, f"job not finished after {timeout}s: {view}"
-        await asyncio.sleep(0.05)
-
-
 async def ready_job(client: httpx.AsyncClient, url: str = URL) -> str:
     r = await client.post("/api/jobs", json={"url": url, "output": "video", "quality": "best"})
     assert r.status_code == 202, r.text
@@ -121,10 +74,6 @@ async def ready_job(client: httpx.AsyncClient, url: str = URL) -> str:
     view = await poll_terminal(client, job_id)
     assert view["status"] == "ready", view
     return job_id
-
-
-def error_body(code: str, message: str | None = None) -> dict:
-    return {"error": {"code": code, "message": message or CATALOG[code][1]}}
 
 
 @pytest.fixture
@@ -592,33 +541,6 @@ async def test_no_temp_dir_in_any_response(settings, temp_dir, media_server):
     for secret in {str(temp_dir), str(temp_dir.resolve())}:
         assert secret.encode() not in blob
     assert b"Traceback" not in blob
-
-
-def _free_socket() -> socket.socket:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("127.0.0.1", 0))
-    return sock
-
-
-@contextmanager
-def live_server(app) -> Iterator[int]:
-    """Serve `app` with a real uvicorn server in a background thread; yield its port."""
-    sock = _free_socket()
-    server = uvicorn.Server(uvicorn.Config(app, lifespan="on", log_config=None,
-                                           log_level="warning", access_log=False))
-    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
-    thread.start()
-    try:
-        deadline = time.monotonic() + 10
-        while not server.started:
-            assert thread.is_alive() and time.monotonic() < deadline, "uvicorn did not start"
-            time.sleep(0.02)
-        yield sock.getsockname()[1]
-    finally:
-        server.should_exit = True
-        thread.join(15)
-        sock.close()
 
 
 def test_aborted_download_keeps_file(settings, temp_dir):

@@ -97,6 +97,11 @@ check "HLS fixup: H.264+AAC TS -> MP4" f_h264.mp4 "aac h264"   -i h264.ts $COPY_
 check "M4A fixup"                      f.m4a      "aac"        -i s.m4a $COPY_ALL -f mp4
 check "timestamp fixup (setts)"        t.mp4      "aac h264"   -i s.mp4 -c copy -bsf setts=ts=TS-STARTPTS $COPY_ALL -ss 0.001
 check "fixup keeps MP4 subtitles"      sub.mp4    "aac h264 mov_text" -i subs.mp4 $COPY_ALL -f mp4
+# Clip Studio cuts: input seeking plus stream copy, the first video (never cover art) and audio.
+# Sources are always MP4, MKV or WebM (a TS, FLV or AVI upload is remuxed to MP4 first: a TS
+# has no index, so a seek in it lands after the keyframe it needs).
+check "cut H.264 MP4 by stream copy"   c.mp4      "aac h264"   -ss 0.4 -i s.mp4 -t 1 -map 0:V:0 -map '0:a:0?' -c copy -map_chapters -1 -movflags +faststart
+check "cut H.264+AC-3 MKV by copy"     c.mkv      "ac3 h264"   -ss 0.4 -i ac3.mkv -t 1 -map 0:V:0 -map '0:a:0?' -c copy -map_chapters -1
 check "MP3 from Opus"                  o1.mp3     "mp3"        -i aonly.webm $MP3
 check "MP3 from AAC"                   o2.mp3     "mp3"        -i s.m4a $MP3
 check "MP3 from Vorbis"                o3.mp3     "mp3"        -i s.ogg $MP3

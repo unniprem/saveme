@@ -3,8 +3,10 @@ happens here, behind the connect-time guard (spec §4.3).
 
 Protocol: the parent writes one JSON request to stdin and closes it. The worker
 writes only JSON lines to stdout and ends with exactly one `result` event
-(exit 0) or `error` event (exit 1). Modes: `inspect` (run_inspect) and
-`download` (run_download, which also emits `progress` and `phase` events).
+(exit 0) or `error` event (exit 1). Modes: `inspect` (run_inspect), `download`
+(run_download, which also emits `progress` and `phase` events), and for Clip Studio
+`probe` (run_probe, an uploaded file) and `clip` (run_clip). Only inspect and download
+take a URL; probe and clip work on local files and never touch the network.
 
 yt-dlp (and app.ytdl, which imports it) is imported lazily inside the functions
 that run after the guard is installed, never at module import time.
@@ -12,11 +14,11 @@ that run after the guard is installed, never at module import time.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
 import socket
-import subprocess
 import sys
 import time
 import traceback
@@ -27,7 +29,7 @@ from urllib.parse import urlsplit
 
 from app.cover import cover_opener, embed_cover, fetch_cover
 from app.errors import BLOCKED_MARKER, AppError, classify_ytdlp_error, too_large_message
-from app.filenames import media_type_for
+from app.mediafile import cut, prepare_upload, probe, remux_to_mp4
 from app.netguard import BlockedAddressError, check_url_syntax, install_connect_guard
 
 if TYPE_CHECKING:
@@ -37,7 +39,6 @@ if TYPE_CHECKING:
 _MAX_HOPS = 5
 # At most 4 progress events per second (the first and last of each part always go out).
 _EMIT_INTERVAL = 0.25
-_PROBE_TIMEOUT = 60
 _MEDIA_NAME = re.compile(r"media\.[A-Za-z0-9]+")
 # Largest decoded body read whole (pages, manifests, API responses). Media is read in
 # blocks and isn't affected. Large enough for real pages (YouTube's are a few MB).
@@ -48,6 +49,8 @@ _READ_BLOCK = 1024 * 1024
 # near 85 MiB, ffmpeg near 2 MiB.
 WORKER_MEMORY_BYTES = 1024 * 1024 * 1024
 _MISSING_TRACK = {"video": "no_video", "audio": "no_audio", "m4a": "no_audio"}
+# Containers a clip can be cut from and delivered in (a source is always one of these).
+_CLIP_EXTS = frozenset({"mp4", "mkv", "webm"})
 
 
 class _StderrLogger:
@@ -333,63 +336,11 @@ def _parts_recorder(progress: _Progress):
     return RecordPartsPP()
 
 
-def _stderr_tail(data: bytes) -> str:
-    return data.decode(errors="replace")[-2000:]
-
-
-def _stream_kinds(path: Path) -> set[str] | None:
-    """Stream types in a local file (cover art doesn't count as video), probed
-    through the ffprobe wrapper; None when ffprobe can't read the file."""
-    from app.ytdl import FFMPEG_WRAPPER_DIR
-
-    cmd = [str(FFMPEG_WRAPPER_DIR / "ffprobe"), "-v", "error", "-show_entries",
-           "stream=codec_type:stream_disposition=attached_pic", "-of", "json", str(path)]
-    try:
-        proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, timeout=_PROBE_TIMEOUT)
-        streams = json.loads(proc.stdout)["streams"] if proc.returncode == 0 else None
-    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError) as exc:
-        print(f"worker: ffprobe failed: {exc!r}", file=sys.stderr)
-        return None
-    if not isinstance(streams, list):
-        print(f"worker: ffprobe failed: {_stderr_tail(proc.stderr)}", file=sys.stderr)
-        return None
-    return {s.get("codec_type") for s in streams
-            if isinstance(s, dict) and not (s.get("disposition") or {}).get("attached_pic")}
-
-
 def _lacks_audio(workdir: Path) -> bool:
     """True if a completely downloaded media file in `workdir` probes with no audio stream."""
-    probed = [_stream_kinds(p) for p in workdir.iterdir() if _MEDIA_NAME.fullmatch(p.name)]
-    known = [kinds for kinds in probed if kinds is not None]
+    probed = [probe(p) for p in workdir.iterdir() if _MEDIA_NAME.fullmatch(p.name)]
+    known = [found.kinds for found in probed if found is not None]
     return bool(known) and not any("audio" in kinds for kinds in known)
-
-
-def _to_mp4(src: Path) -> tuple[Path, str | None]:
-    """Remux `src` to media.mp4 next to it (stream copy). On failure keep `src` and
-    return a notice, provided the server can deliver its container at all."""
-    from app.ytdl import FFMPEG_WRAPPER_DIR
-
-    dst = src.with_name("media.mp4")
-    cmd = [str(FFMPEG_WRAPPER_DIR / "ffmpeg"), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-           "-i", str(src), "-c", "copy", "-sn", "-dn", str(dst)]
-    try:
-        proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True)
-        ok = proc.returncode == 0 and dst.is_file()
-        if not ok:
-            print(f"worker: remux to MP4 failed: {_stderr_tail(proc.stderr)}", file=sys.stderr)
-    except OSError as exc:
-        print(f"worker: remux to MP4 failed: {exc!r}", file=sys.stderr)
-        ok = False
-    if ok:
-        src.unlink()
-        return dst, None
-    dst.unlink(missing_ok=True)
-    ext = src.suffix[1:]
-    try:
-        media_type_for(ext)
-    except KeyError:
-        raise AppError("unsupported") from None
-    return src, f"Delivered as {ext.upper()} (couldn't convert to MP4)."
 
 
 def _final_file(processed: dict, workdir: Path) -> Path:
@@ -491,24 +442,26 @@ def _download(url: str, output: str, quality: str, workdir: Path, max_bytes: int
     final = _final_file(processed, workdir)
     notices = [playlist_notice]
     if output == "video":
-        kinds = _stream_kinds(final)
-        if kinds is not None and "video" not in kinds:
+        found = probe(final)
+        if found is not None and "video" not in found.kinds:
             raise AppError("no_video")
         notices.append(downgrade_notice(chosen_formats(processed), quality))
         if final.suffix != ".mp4":
             phases.phase("Converting to MP4")
-            final, notice = _to_mp4(final)
+            final, notice = remux_to_mp4(final)
             notices.append(notice)
     if cover:
         embed_cover(final, *cover)
+    found = probe(final)
     title = processed.get("title")
     return {"file": final.name, "ext": final.suffix[1:], "title": title if isinstance(title, str) else None,
+            "duration": None if found is None else found.duration,
             "notice": " ".join(n for n in notices if n) or None}
 
 
 def run_download(req: dict, emit: Callable[[dict], None]) -> dict:
     """Download req["url"] into req["workdir"] as media.<ext> (spec §5.3–5.5),
-    emitting progress/phase events. Returns {"file", "ext", "title", "notice"} with
+    emitting progress/phase events. Returns {"file", "ext", "title", "duration", "notice"} with
     `file` relative to the workdir, which then holds only that file; on failure
     the workdir is left empty."""
     output, quality, workdir, max_bytes = _download_args(req)
@@ -521,15 +474,98 @@ def run_download(req: dict, emit: Callable[[dict], None]) -> dict:
     return result
 
 
+def _local_file(req: dict, key: str) -> Path:
+    """req[key] as a regular, non-symlink file with an absolute path, else internal."""
+    value = req.get(key)
+    if (not isinstance(value, str) or not os.path.isabs(value) or os.path.islink(value)
+            or not os.path.isfile(value)):
+        print(f"worker: malformed request ({key})", file=sys.stderr)
+        raise AppError("internal")
+    return Path(value)
+
+
+def _workdir(req: dict) -> Path:
+    value = req.get("workdir")
+    if not isinstance(value, str) or not os.path.isabs(value) or not os.path.isdir(value):
+        print("worker: malformed request (workdir)", file=sys.stderr)
+        raise AppError("internal")
+    return Path(value)
+
+
+def run_probe(req: dict, emit: Callable[[dict], None]) -> dict:
+    """Check the upload req["source"], which must sit directly in req["workdir"], and
+    leave only workdir/media.<ext> (spec §6.5). On failure the workdir is left empty."""
+    workdir, source = _workdir(req), _local_file(req, "source")
+    if os.path.realpath(source.parent) != os.path.realpath(workdir):
+        print("worker: probe source is outside the workdir", file=sys.stderr)
+        raise AppError("internal")
+    try:
+        result = prepare_upload(source, workdir)
+    except BaseException:
+        _clear(workdir)
+        raise
+    _clear(workdir, keep=result["file"])
+    return result
+
+
+def _seconds(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return float(value)
+
+
+def _clip_args(req: dict) -> tuple[Path, Path, float, float, bool, int]:
+    workdir, source = _workdir(req), _local_file(req, "source")
+    start, end = _seconds(req.get("start")), _seconds(req.get("end"))
+    keep_tags, max_bytes = req.get("keep_tags"), req.get("max_bytes")
+    ext = source.suffix[1:]
+    if (not _MEDIA_NAME.fullmatch(source.name) or ext not in _CLIP_EXTS
+            or os.path.realpath(source.parent) == os.path.realpath(workdir)
+            or start is None or end is None or not 0 <= start < end
+            or type(keep_tags) is not bool or type(max_bytes) is not int or max_bytes <= 0):
+        print("worker: malformed clip request", file=sys.stderr)
+        raise AppError("internal")
+    return source, workdir / f"media.{ext}", start, end, keep_tags, max_bytes
+
+
+def run_clip(req: dict, emit: Callable[[dict], None]) -> dict:
+    """Cut req["start"]..req["end"] of the ready source req["source"] (another job's
+    media.<ext>) into req["workdir"] as media.<same ext>, emitting progress events
+    (spec §6.5). On failure the workdir is left empty."""
+    source, dst, start, end, keep_tags, max_bytes = _clip_args(req)
+
+    def progress(percent: float | None, written: int | None) -> None:
+        emit({"event": "progress", "detail": "Cutting the clip",
+              "percent": None if percent is None else round(percent, 1),
+              "downloaded_bytes": written, "total_bytes": None})
+
+    try:
+        cut(source, dst, start=start, end=end, keep_tags=keep_tags, max_bytes=max_bytes,
+            on_progress=progress)
+    except BaseException:
+        _clear(dst.parent)
+        raise
+    _clear(dst.parent, keep=dst.name)
+    return {"file": dst.name, "ext": dst.suffix[1:]}
+
+
 def _read_request(stdin: TextIO) -> dict:
     try:
         req = json.loads(stdin.read())
     except ValueError:
         req = None
-    if not isinstance(req, dict) or not isinstance(req.get("url"), str):
+    if not isinstance(req, dict) or not isinstance(req.get("mode"), str):
         print("worker: malformed request", file=sys.stderr)
         raise AppError("internal")
     return req
+
+
+def _url(req: dict) -> str:
+    url = req.get("url")
+    if not isinstance(url, str):
+        print("worker: malformed request (url)", file=sys.stderr)
+        raise AppError("internal")
+    return check_url_syntax(url)
 
 
 def _to_app_error(exc: Exception) -> AppError:
@@ -565,12 +601,15 @@ def serve(stdin: TextIO, out: TextIO) -> int:
     emit = _writer(out)
     try:
         req = _read_request(stdin)
-        url = check_url_syntax(req["url"])
-        mode = req.get("mode")
+        mode = req["mode"]
         if mode == "inspect":
-            data = run_inspect(url)
+            data = run_inspect(_url(req))
         elif mode == "download":
-            data = run_download({**req, "url": url}, emit)
+            data = run_download({**req, "url": _url(req)}, emit)
+        elif mode == "probe":
+            data = run_probe(req, emit)
+        elif mode == "clip":
+            data = run_clip(req, emit)
         else:
             print(f"worker: unknown mode {mode!r}", file=sys.stderr)
             raise AppError("internal")

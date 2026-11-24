@@ -9,17 +9,22 @@
 // storage meanwhile, so a reload still offers Resume.
 // A job that turns ready is saved to the device straight away, once per job; the
 // "Save file" link is the fallback when the browser holds the download back.
+// Clip Studio (studio.js, window.SaveMeStudio) opens from the result card's Clip button or the
+// "Clip a video from your computer" control. While it is open the page is in the "studio"
+// state: the link form is locked and the result and job panels step aside until it closes.
 "use strict";
 
 (() => {
+  const {
+    JOB_ID_RE, MSG_BAD_REPLY, isNum, str, fmtMB, fmtDuration, httpUrl, setText, show, setLine,
+    ApiError, api,
+  } = window.SaveMe; // common.js
   const STORE_KEY = "saveme.job";
   const POLL_MS = 1000;
   const RETRY_MS = 2000;
   const MAX_POLL_FAILURES = 30;
   const DELIVERY_WAIT_MS = 60000;
-  const JOB_ID_RE = /^[A-Za-z0-9_-]{22}$/;
   const ACTIVE = ["queued", "downloading", "converting"];
-  const MB = 1024 * 1024;
   const AUDIO = "audio"; // the MP3 format choice; video choices are "video:<quality id>"
   const M4A = "m4a"; // the original-AAC M4A choice, offered only when the source has known AAC audio
   const VIDEO_PREFIX = "video:";
@@ -31,10 +36,10 @@
     noAudio: "This media has no audio track.",
     noVideo: "This media has no video track.",
     emptyUrl: "Paste a link first.",
-    offline: "Can't reach SaveMe. Check that it's running, then try again.",
+    closeStudio: "Close Clip Studio to fetch another link.",
     retrying: "Waiting for SaveMe to respond. Retrying…",
     gaveUp: "Can't reach SaveMe. Check that it's running, then reload this page to pick the download back up.",
-    badReply: "SaveMe sent an unexpected reply. Please try again.",
+    badReply: MSG_BAD_REPLY,
     jobFailed: "The download failed. Please try again.",
     expiredTtl: "This file expired before it was saved. Please start again.",
     expiredEvicted: "This file expired early to free up server space. Please start again.",
@@ -68,7 +73,7 @@
     "result-title", "source", "notices", "formats", "format-note", "download", "action-msg", "chip-tpl",
     "job", "job-kind", "job-name", "job-spin", "job-done", "job-fail", "job-status", "job-percent", "bar",
     "bar-fill", "job-detail", "job-meta", "save-row", "save", "job-notice", "job-error", "job-actions",
-    "resume", "cancel", "again", "announcer",
+    "resume", "cancel", "again", "announcer", "clip", "upload-file",
   ]) {
     el[id.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = document.getElementById(id);
   }
@@ -86,46 +91,7 @@
   let resumeTimer = 0; // ticks the "Kept on the server for …" countdown
   let jobError = ""; // a failed Cancel or Resume, shown on the panel until the next try
 
-  // ---- small helpers ------------------------------------------------------------------
-
-  const isNum = (v) => typeof v === "number" && Number.isFinite(v);
-  const str = (v) => (typeof v === "string" ? v.trim() : "");
-  const fmtMB = (bytes) => `${(bytes / MB).toFixed(1)} MB`;
-
-  function fmtDuration(seconds) {
-    const s = Math.max(0, Math.round(seconds));
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const pad = (n) => String(n).padStart(2, "0");
-    return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
-  }
-
-  function httpUrl(value) {
-    if (typeof value !== "string") return null;
-    try {
-      const u = new URL(value);
-      return u.protocol === "http:" || u.protocol === "https:" ? u.href : null;
-    } catch {
-      return null;
-    }
-  }
-
-  function setText(node, text) {
-    const value = text == null ? "" : String(text);
-    if (node.textContent !== value) node.textContent = value;
-  }
-
-  function show(node, visible) {
-    node.hidden = !visible;
-  }
-
-  // A text line that is hidden when empty; tone "error" turns it red (data-[tone=error]: classes).
-  function setLine(node, text, tone) {
-    setText(node, text);
-    show(node, Boolean(text));
-    if (tone) node.dataset.tone = tone;
-    else delete node.dataset.tone;
-  }
+  // ---- small helpers (the generic ones are in common.js) ---------------------------------
 
   // The visible status line under the link field (aria-live).
   function say(text, tone) {
@@ -180,57 +146,20 @@
     return null;
   }
 
-  // ---- API ------------------------------------------------------------------------------
-
-  class ApiError extends Error {
-    constructor(status, code, message) {
-      super(message);
-      this.status = status;
-      this.code = code;
-    }
-  }
-
-  // GET when body is undefined, otherwise POST JSON. Errors carry the server's message.
-  async function api(path, body) {
-    const init = { cache: "no-store", headers: { Accept: "application/json" } };
-    if (body !== undefined) {
-      init.method = "POST";
-      init.headers["Content-Type"] = "application/json";
-      init.body = JSON.stringify(body);
-    }
-    let res;
-    try {
-      res = await fetch(path, init);
-    } catch {
-      throw new ApiError(0, "network", MSG.offline);
-    }
-    let data = null;
-    try {
-      data = await res.json();
-    } catch {
-      // Not JSON; handled below.
-    }
-    if (!res.ok) {
-      const err = data && typeof data === "object" && data.error && typeof data.error === "object" ? data.error : {};
-      throw new ApiError(
-        res.status,
-        str(err.code) || `http_${res.status}`,
-        str(err.message) || `Something went wrong (HTTP ${res.status}). Please try again.`,
-      );
-    }
-    if (!data || typeof data !== "object") throw new ApiError(res.status, "bad_response", MSG.badReply);
-    return data;
-  }
-
   // ---- state ----------------------------------------------------------------------------
 
   function setState(next) {
     state = next;
-    const busy = next === "inspecting" || next === "job";
+    const busy = next === "inspecting" || next === "job" || next === "studio";
     el.inspect.disabled = busy || degraded;
     el.url.readOnly = busy;
+    // Like Download: not while a finished file still waits to be saved (opening the studio
+    // would drop its Save file link).
+    el.uploadFile.disabled = busy || degraded || next === "ready";
     const canDownload = Boolean(inspected) && !degraded && ["inspected", "saved", "failed", "cancelled"].includes(next);
-    el.download.disabled = !(canDownload && chosenFormat());
+    const choice = chosenFormat();
+    el.download.disabled = !(canDownload && choice);
+    el.clip.disabled = !(canDownload && choice && choice.output === "video");
   }
 
   // The checked format choice as { output, quality }, or null when none is usable.
@@ -362,7 +291,7 @@
 
   async function inspect(event) {
     event.preventDefault();
-    if (state === "inspecting" || state === "job" || degraded) return;
+    if (state === "inspecting" || state === "job" || state === "studio" || degraded) return;
     const url = el.url.value.trim();
     if (!url) {
       say(MSG.emptyUrl, "error");
@@ -706,6 +635,46 @@
     el.bar.setAttribute("aria-valuetext", text);
   }
 
+  // ---- Clip Studio ----------------------------------------------------------------------
+
+  // The studio takes over the page below the link field until it closes.
+  function enterStudio() {
+    dropJob();
+    show(el.result, false);
+    setLine(el.actionMsg, "");
+    setState("studio");
+    say(MSG.closeStudio);
+  }
+
+  function leaveStudio() {
+    if (inspected) {
+      show(el.result, true);
+      setState("inspected");
+    } else {
+      setState("idle");
+    }
+    say("");
+    (inspected ? el.clip : el.url).focus();
+  }
+
+  // Open the inspected link in the studio at the chosen video quality.
+  function onClip() {
+    const choice = chosenFormat();
+    if (!inspected || el.clip.disabled || !choice || choice.output !== "video") return;
+    if (!inspected.info.video.qualities.some((q) => q.id === choice.quality)) return;
+    const { url, info } = inspected;
+    enterStudio();
+    window.SaveMeStudio.openLink({ url, quality: choice.quality, title: info.title });
+  }
+
+  function onUploadPick() {
+    const file = el.uploadFile.files && el.uploadFile.files[0];
+    el.uploadFile.value = ""; // picking the same file again later still fires "change"
+    if (!file || el.uploadFile.disabled) return;
+    enterStudio();
+    window.SaveMeStudio.openFile(file);
+  }
+
   // ---- wiring ---------------------------------------------------------------------------
 
   function enterDegraded(message) {
@@ -765,8 +734,17 @@
     el.resume.addEventListener("click", onResume);
     el.again.addEventListener("click", onAgain);
     el.thumb.addEventListener("error", () => placeMedia(false));
+    el.clip.addEventListener("click", onClip);
+    el.uploadFile.addEventListener("change", onUploadPick);
+    window.SaveMeStudio.onClosed(leaveStudio);
     setState("idle");
 
+    if (window.SaveMeStudio.restore()) { // a studio from before a reload wins over a stored download
+      setState("studio");
+      say(MSG.closeStudio);
+      checkHealth();
+      return;
+    }
     const saved = loadJob();
     if (saved) {
       job = saved;

@@ -9,6 +9,8 @@
   <title>SaveMe</title>
   <link rel="icon" href="/static/brand/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/dist/styles.css">
+  <script src="/static/common.js" defer></script>
+  <script src="/static/studio.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body class="flex min-h-dvh flex-col bg-ink-50 font-sans text-ink-900 antialiased dark:bg-ink-950 dark:text-ink-100">
@@ -43,6 +45,15 @@
           <span id="status-text"></span>
         </p>
       </form>
+      <label id="upload-label"
+             class="mt-1 inline-flex cursor-pointer items-center gap-2 rounded-md text-sm font-semibold text-white underline decoration-white/40 underline-offset-4 hover:decoration-white has-focus-visible:outline-2 has-focus-visible:outline-offset-4 has-focus-visible:outline-white/80 has-disabled:cursor-not-allowed has-disabled:text-brand-200 has-disabled:no-underline">
+        <input id="upload-file" type="file" class="sr-only"
+               accept="video/*,.mp4,.m4v,.mov,.mkv,.webm,.ts,.m2ts,.mts,.flv,.avi">
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-4 shrink-0">
+            <circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88"/><path d="M14.47 14.48 20 20"/><path d="M8.12 8.12 12 12"/>
+          </svg>
+        Clip a video from your computer
+      </label>
     </div>
   </header>
 
@@ -128,6 +139,143 @@
       </div>
     </section>
 
+    <section id="studio" hidden tabindex="-1" aria-labelledby="studio-title"
+             class="mb-6 rounded-2xl bg-white p-4 shadow-card outline-none sm:p-5 dark:bg-ink-900 dark:ring-1 dark:ring-ink-800">
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <p><span class="rounded-md bg-brand-100 px-1.5 py-0.5 text-[0.6875rem] font-bold tracking-wide text-brand-700 uppercase dark:bg-brand-500/20 dark:text-brand-300">Clip Studio</span></p>
+          <h2 id="studio-title" class="mt-1.5 text-lg/snug font-bold break-words"></h2>
+        </div>
+        <button id="studio-close" type="button"
+                class="h-10 shrink-0 rounded-xl bg-brand-50 px-4 text-sm font-semibold text-brand-700 hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 dark:bg-white/10 dark:text-ink-50 dark:hover:bg-white/15 dark:focus-visible:outline-brand-400">Close</button>
+      </div>
+
+      <div id="studio-loading" class="mt-4">
+        <div class="flex items-center justify-between gap-3">
+          <p class="flex min-w-0 items-center gap-2 font-semibold">
+            <span id="studio-load-spin" class="shrink-0 text-brand-700 dark:text-brand-300">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" class="size-5 animate-spin motion-reduce:animate-none">
+              <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3" stroke-opacity="0.25"/>
+              <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+            </svg>
+            </span>
+            <span id="studio-load-fail" hidden class="shrink-0 text-red-600 dark:text-red-400">
+            <svg aria-hidden="true" viewBox="0 0 24 24" class="size-5">
+              <circle cx="12" cy="12" r="10" fill="currentColor"/>
+              <path d="M12 7v6" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/>
+              <circle cx="12" cy="16.5" r="1.4" fill="#fff"/>
+            </svg>
+            </span>
+            <span id="studio-load-status"></span>
+          </p>
+          <span id="studio-load-percent" class="text-lg font-bold tabular-nums text-brand-700 dark:text-brand-300"></span>
+        </div>
+        <div id="studio-load-bar" role="progressbar" aria-labelledby="studio-load-status" aria-valuemin="0" aria-valuemax="100"
+             class="mt-3 h-2 overflow-hidden rounded-full bg-brand-100 dark:bg-white/10">
+          <div id="studio-load-fill" class="h-full w-0 rounded-full bg-linear-to-r from-coral-500 to-tangerine-500 transition-[width] duration-500 ease-out motion-reduce:transition-none data-[indeterminate]:bg-transparent data-[indeterminate]:bg-[repeating-linear-gradient(-45deg,var(--color-coral-500)_0_6px,transparent_6px_12px)] motion-safe:data-[indeterminate]:animate-pulse"></div>
+        </div>
+        <p id="studio-load-meta" hidden class="mt-2 text-sm tabular-nums text-ink-600 dark:text-ink-400"></p>
+        <p id="studio-load-error" hidden class="mt-3 text-sm font-medium break-words text-red-700 dark:text-red-400"></p>
+        <div class="mt-4">
+          <button id="studio-load-cancel" type="button" class="h-11 w-full rounded-xl border border-ink-300 bg-white px-5 font-semibold text-ink-700 enabled:hover:border-red-300 enabled:hover:bg-red-50 enabled:hover:text-red-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-wait disabled:opacity-60 sm:w-auto dark:border-ink-700 dark:bg-transparent dark:text-ink-200 dark:enabled:hover:border-red-400/40 dark:enabled:hover:bg-red-950/40 dark:enabled:hover:text-red-300 dark:focus-visible:outline-brand-400">Cancel</button>
+        </div>
+      </div>
+
+      <div id="studio-editor" hidden class="mt-4">
+        <video id="studio-video" controls preload="metadata" playsinline
+               class="aspect-video w-full rounded-xl bg-black"></video>
+        <p id="studio-preview-note" hidden class="mt-3 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">Your browser can't preview this video. You can still type a start and end.</p>
+
+        <div id="timeline-wrap" class="mt-5">
+          <div id="timeline" class="relative h-11 cursor-pointer touch-none select-none">
+            <div class="pointer-events-none absolute inset-x-0 top-1/2 h-2 -translate-y-1/2 rounded-full bg-brand-100 dark:bg-white/10"></div>
+            <div id="timeline-range" class="pointer-events-none absolute top-1/2 left-0 h-2 w-0 -translate-y-1/2 rounded-full bg-linear-to-r from-coral-500 to-tangerine-500"></div>
+            <div id="timeline-playhead" class="pointer-events-none absolute inset-y-1.5 left-0 w-0.5 -translate-x-1/2 rounded-full bg-ink-900 dark:bg-white"></div>
+            <div id="handle-start" role="slider" tabindex="0" aria-label="Clip start" aria-valuemin="0" class="left-0 absolute top-1/2 z-10 size-6 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize rounded-full bg-white shadow-card ring-3 ring-brand-700 outline-none before:absolute before:-inset-2.5 before:content-[''] focus-visible:ring-4 focus-visible:ring-coral-500 dark:bg-ink-100 dark:ring-brand-400"></div>
+            <div id="handle-end" role="slider" tabindex="0" aria-label="Clip end" aria-valuemin="0" class="left-0 absolute top-1/2 z-10 size-6 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize rounded-full bg-white shadow-card ring-3 ring-brand-700 outline-none before:absolute before:-inset-2.5 before:content-[''] focus-visible:ring-4 focus-visible:ring-coral-500 dark:bg-ink-100 dark:ring-brand-400"></div>
+          </div>
+          <div class="flex justify-between text-xs tabular-nums text-ink-600 dark:text-ink-400">
+            <span>0:00</span><span id="timeline-total"></span>
+          </div>
+        </div>
+
+        <div class="mt-4 grid gap-3 sm:grid-cols-2">
+          <div>
+            <label for="clip-start" class="text-xs font-semibold text-ink-700 dark:text-ink-300">Start</label>
+            <div class="mt-1 flex gap-2">
+              <input id="clip-start" type="text" inputmode="decimal" autocomplete="off" spellcheck="false"
+                     aria-describedby="clip-msg" aria-keyshortcuts="I" class="h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base tabular-nums text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400">
+              <button id="set-start" type="button" aria-label="Set start to playhead" class="h-11 shrink-0 rounded-xl bg-brand-50 px-3 text-sm font-semibold text-brand-700 hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:hover:bg-white/15 dark:focus-visible:outline-brand-400">Set to playhead</button>
+            </div>
+          </div>
+          <div>
+            <label for="clip-end" class="text-xs font-semibold text-ink-700 dark:text-ink-300">End</label>
+            <div class="mt-1 flex gap-2">
+              <input id="clip-end" type="text" inputmode="decimal" autocomplete="off" spellcheck="false"
+                     aria-describedby="clip-msg" aria-keyshortcuts="O" class="h-11 w-full min-w-0 rounded-xl border border-ink-300 bg-white px-3 text-base tabular-nums text-ink-900 focus-visible:border-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-700 aria-invalid:border-red-500 dark:border-ink-700 dark:bg-ink-950 dark:text-ink-50 dark:focus-visible:border-brand-400 dark:focus-visible:outline-brand-400">
+              <button id="set-end" type="button" aria-label="Set end to playhead" class="h-11 shrink-0 rounded-xl bg-brand-50 px-3 text-sm font-semibold text-brand-700 hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white/10 dark:text-ink-50 dark:hover:bg-white/15 dark:focus-visible:outline-brand-400">Set to playhead</button>
+            </div>
+          </div>
+        </div>
+        <p class="mt-3 text-sm text-ink-700 dark:text-ink-300">Clip length <span id="clip-length" class="font-semibold tabular-nums"></span></p>
+        <p class="mt-1 hidden text-sm text-ink-600 sm:block dark:text-ink-400">Press I or O to set the start or end at the playhead.</p>
+        <p id="clip-msg" hidden class="mt-2 text-sm break-words data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:data-[tone=error]:text-red-400"></p>
+
+        <div class="mt-4 flex flex-col gap-2 sm:flex-row">
+          <button id="play-clip" type="button" class="h-11 w-full rounded-xl border border-ink-300 bg-white px-5 font-semibold text-ink-700 enabled:hover:border-brand-700/50 enabled:hover:text-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto dark:border-ink-700 dark:bg-transparent dark:text-ink-200 dark:enabled:hover:border-brand-400/60 dark:enabled:hover:text-brand-300 dark:focus-visible:outline-brand-400">Play clip</button>
+          <button id="export-clip" type="button"
+                  class="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-brand-700 px-6 font-semibold text-white enabled:hover:bg-brand-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:bg-ink-200 disabled:text-ink-600 sm:w-auto dark:bg-brand-500 dark:enabled:hover:bg-brand-600 dark:focus-visible:outline-brand-400 dark:disabled:bg-ink-800 dark:disabled:text-ink-400">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-5 shrink-0">
+            <circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88"/><path d="M14.47 14.48 20 20"/><path d="M8.12 8.12 12 12"/>
+          </svg>
+            Export clip
+          </button>
+        </div>
+        <p class="mt-3 text-xs/relaxed text-ink-600 dark:text-ink-400">Clips are cut without re-encoding, so they keep the original quality. A few players may show up to a few seconds before your start.</p>
+
+        <div id="export" hidden class="mt-4 rounded-xl bg-ink-50 p-4 dark:bg-white/5">
+          <div class="flex items-center justify-between gap-3">
+            <p id="export-status" class="flex min-w-0 items-center gap-2 font-semibold">
+              <span id="export-spin" hidden class="shrink-0 text-brand-700 dark:text-brand-300">
+              <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" class="size-5 animate-spin motion-reduce:animate-none">
+              <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="3" stroke-opacity="0.25"/>
+              <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+            </svg>
+              </span>
+              <span id="export-done" hidden class="shrink-0 text-green-600 dark:text-green-500">
+              <svg aria-hidden="true" viewBox="0 0 24 24" class="size-5">
+              <circle cx="12" cy="12" r="10" fill="currentColor"/>
+              <path d="m7.5 12.5 3 3 6-6.5" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+              </span>
+              <span id="export-fail" hidden class="shrink-0 text-red-600 dark:text-red-400">
+              <svg aria-hidden="true" viewBox="0 0 24 24" class="size-5">
+              <circle cx="12" cy="12" r="10" fill="currentColor"/>
+              <path d="M12 7v6" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/>
+              <circle cx="12" cy="16.5" r="1.4" fill="#fff"/>
+            </svg>
+              </span>
+              <span id="export-status-text"></span>
+            </p>
+            <span id="export-percent" class="font-bold tabular-nums text-brand-700 dark:text-brand-300"></span>
+          </div>
+          <div id="export-bar" role="progressbar" aria-labelledby="export-status-text" aria-valuemin="0" aria-valuemax="100"
+               class="mt-3 h-2 overflow-hidden rounded-full bg-brand-100 dark:bg-white/10">
+            <div id="export-fill" class="h-full w-0 rounded-full bg-linear-to-r from-coral-500 to-tangerine-500 transition-[width] duration-500 ease-out motion-reduce:transition-none data-[indeterminate]:bg-transparent data-[indeterminate]:bg-[repeating-linear-gradient(-45deg,var(--color-coral-500)_0_6px,transparent_6px_12px)] motion-safe:data-[indeterminate]:animate-pulse"></div>
+          </div>
+          <p id="export-meta" hidden class="mt-2 text-sm tabular-nums break-words text-ink-600 dark:text-ink-400"></p>
+          <p id="export-save-row" hidden class="mt-2 text-sm text-ink-600 dark:text-ink-400">Didn't start?
+            <a id="export-save" download
+               class="font-semibold text-brand-700 underline decoration-brand-700/30 underline-offset-2 hover:decoration-brand-700 focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 dark:text-brand-300 dark:decoration-brand-300/40 dark:hover:decoration-brand-300 dark:focus-visible:outline-brand-400">Save clip</a>
+          </p>
+          <p id="export-error" hidden class="mt-2 text-sm font-medium break-words text-red-700 dark:text-red-400"></p>
+          <div id="export-actions" class="mt-3">
+            <button id="export-cancel" type="button" class="h-11 w-full rounded-xl border border-ink-300 bg-white px-5 font-semibold text-ink-700 enabled:hover:border-red-300 enabled:hover:bg-red-50 enabled:hover:text-red-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-wait disabled:opacity-60 sm:w-auto dark:border-ink-700 dark:bg-transparent dark:text-ink-200 dark:enabled:hover:border-red-400/40 dark:enabled:hover:bg-red-950/40 dark:enabled:hover:text-red-300 dark:focus-visible:outline-brand-400">Cancel export</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section id="result" hidden aria-labelledby="result-title"
              class="overflow-hidden rounded-2xl bg-white shadow-card sm:flex dark:bg-ink-900 dark:ring-1 dark:ring-ink-800">
       <div id="media" hidden class="relative aspect-video shrink-0 bg-ink-100 sm:aspect-auto sm:min-h-40 sm:w-64 dark:bg-ink-800">
@@ -150,13 +298,22 @@
         </fieldset>
         <p id="format-note" hidden class="mt-2 text-sm text-ink-600 dark:text-ink-400"></p>
 
+        <div class="mt-5 flex flex-col gap-2 sm:flex-row">
         <button id="download" type="button" aria-describedby="format-note"
-                class="mt-5 inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-brand-700 px-7 font-semibold text-white enabled:hover:bg-brand-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:bg-ink-200 disabled:text-ink-600 sm:w-auto dark:bg-brand-500 dark:enabled:hover:bg-brand-600 dark:focus-visible:outline-brand-400 dark:disabled:bg-ink-800 dark:disabled:text-ink-400">
+                class="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-brand-700 px-7 font-semibold text-white enabled:hover:bg-brand-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:bg-ink-200 disabled:text-ink-600 sm:w-auto dark:bg-brand-500 dark:enabled:hover:bg-brand-600 dark:focus-visible:outline-brand-400 dark:disabled:bg-ink-800 dark:disabled:text-ink-400">
           <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" class="size-5 shrink-0">
             <path d="M12 4v11"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M5 19h14"/>
           </svg>
           Download
         </button>
+        <button id="clip" type="button" aria-describedby="format-note"
+                class="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-ink-300 bg-white px-6 font-semibold text-ink-700 enabled:hover:border-brand-700/50 enabled:hover:text-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:cursor-not-allowed disabled:border-ink-200 disabled:text-ink-500 sm:w-auto dark:border-ink-700 dark:bg-transparent dark:text-ink-200 dark:enabled:hover:border-brand-400/60 dark:enabled:hover:text-brand-300 dark:focus-visible:outline-brand-400 dark:disabled:border-ink-800 dark:disabled:text-ink-500">
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-5 shrink-0">
+            <circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88"/><path d="M14.47 14.48 20 20"/><path d="M8.12 8.12 12 12"/>
+          </svg>
+          Clip
+        </button>
+        </div>
         <p id="action-msg" hidden class="mt-2 text-sm break-words data-[tone=error]:font-medium data-[tone=error]:text-red-700 dark:data-[tone=error]:text-red-400"></p>
       </div>
     </section>

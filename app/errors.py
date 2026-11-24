@@ -15,6 +15,11 @@ CATALOG: dict[str, tuple[int, str]] = {
     "expired": (410, "This download has expired. Please start again."),
     "cancelled": (410, "This download was cancelled. Please start again."),
     "not_resumable": (410, "This download can no longer be resumed. Please start again."),
+    "source_not_found": (404, "This video is no longer open for clipping. It may have been closed, "
+                              "or removed after a while unused. Load it again."),
+    "source_not_ready": (409, "The video is still loading. Wait until it's ready, then try again."),
+    "invalid_clip": (400, "Choose a start before the end, inside the video."),
+    "upload_incomplete": (400, "The upload stopped before the whole file arrived. Please try again."),
     "unsupported": (422, "This link isn't supported, or it doesn't contain downloadable media."),
     "login_required": (422, "This media requires a login or is private, so it can't be downloaded."),
     "unavailable": (422, "This media is unavailable. It may have been removed or doesn't exist."),
@@ -26,6 +31,8 @@ CATALOG: dict[str, tuple[int, str]] = {
     "no_video": (422, "This media has no video track."),
     "extraction_failed": (422, "Couldn't get this media from the link. Try again later or try a different link."),
     "source_too_large": (422, "The page at this link is too large to read. Try a link to the media itself."),
+    "unreadable_media": (422, "SaveMe can't read this file as a video. Try an MP4, MOV, MKV or WebM file."),
+    "clip_failed": (422, "Couldn't cut this clip. Try a different start or end."),
     "too_large": (413, "This file is larger than the allowed size limit. Try a lower quality or audio only."),
     "busy": (429, "The server is busy right now. Please try again shortly."),
     "rate_limited": (429, "The source site is limiting requests right now. Please try again later."),
@@ -84,10 +91,13 @@ def classify_ytdlp_error(text: str) -> AppError:
     return AppError("extraction_failed")
 
 
-def too_large_message(limit_bytes: int) -> str:
+def size_text(limit_bytes: int) -> str:
+    """A size limit in whole MB, or GB from 1 GB up: "500 MB", "2 GB"."""
     mb = limit_bytes // (1024 * 1024)
     if mb >= 1024:
-        n, unit = mb // 1024, "GB"
-    else:
-        n, unit = mb, "MB"
-    return f"This file is larger than the {n} {unit} limit. Try a lower quality or audio only."
+        return f"{mb // 1024} GB"
+    return f"{mb} MB"
+
+
+def too_large_message(limit_bytes: int) -> str:
+    return f"This file is larger than the {size_text(limit_bytes)} limit. Try a lower quality or audio only."

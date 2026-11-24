@@ -12,6 +12,15 @@ skip it; an interrupted send leaves it ready for another try. Job records live o
 in this process. Each job's
 files live in TEMP_DIR/<job_id>/ under fixed names; the job ID is the only name derived from
 anything, and it is validated before any filesystem use.
+
+Clip Studio adds two kinds of job beside downloads (kind "download"). A source (kind
+"source") is a video kept for previewing and cutting while a studio is open: downloaded
+from a link, or uploaded. It is never delivered, MAX_READY_FILES and disk-room eviction
+skip it, and it ends when closed, after JOB_TTL_MINUTES unused (never while one of its
+clips is pending), or when MAX_CLIP_SOURCES is reached and it is the least recently used.
+A clip (kind "clip") cuts a range out of a ready source into its own folder and, once
+ready, is delivered like a download; a cancelled clip can't be resumed. All kinds share
+the queue, the slots and the disk budget.
 """
 import asyncio
 import logging
@@ -27,7 +36,7 @@ from pathlib import Path
 
 from app.config import ConfigError, Settings
 from app.errors import AppError
-from app.filenames import media_type_for, sanitize_filename
+from app.filenames import clip_filename, media_type_for, sanitize_filename
 from app.runner import DEFAULT_WORKER_CMD, RunWorker, dir_size, run_worker
 
 logger = logging.getLogger(__name__)
@@ -41,10 +50,16 @@ RECORD_RETENTION_SECONDS = 3600
 MAX_FINISHED_RECORDS = 100
 DISK_RETRY_SECONDS = 2.0
 RESUME_WINDOW_SECONDS = 300
+UPLOAD_NAME = "upload.bin"  # an upload's bytes, before the probe run makes it media.<ext>
+MIN_CLIP_SECONDS = 0.1
+# A clip's end may pass the source's probed duration by this much (players and probes
+# round differently); it is then cut at the duration.
+END_TOLERANCE_SECONDS = 0.05
 
-_ACTIVE = frozenset({"downloading", "converting"})
-_PENDING = frozenset({"queued", "downloading", "converting"})
+_ACTIVE = frozenset({"downloading", "converting", "uploading", "checking", "cutting"})
+_PENDING = frozenset({"queued", *_ACTIVE})
 _TERMINAL = frozenset({"failed", "expired", "cancelled"})
+_JOB_KINDS = frozenset({"download", "clip"})  # what /api/jobs serves; sources have their own routes
 
 
 def _is_job_id(value: object) -> bool:
@@ -114,6 +129,13 @@ class Job:
     finished_at: float | None = None
     resume_until: float | None = None  # set while a cancelled job can be resumed
     delivering: bool = False  # its file is being sent to a client
+    kind: str = "download"  # download | source | clip
+    origin: str | None = None  # a source's origin: link | upload
+    source_id: str | None = None  # a clip's source
+    start: float | None = None  # a clip's range, in seconds
+    end: float | None = None
+    duration: float | None = None  # a ready source's length in seconds, when known
+    last_used: float | None = None  # a ready source's last use, for its idle TTL
     task: asyncio.Task | None = field(default=None, repr=False)  # the latest run
     runs: set[asyncio.Task] = field(default_factory=set, repr=False)  # unfinished runs
 
@@ -128,6 +150,34 @@ def _percent(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return min(100.0, max(0.0, float(value)))
+
+
+def _clip_range(start: float, end: float, duration: float | None) -> tuple[float, float]:
+    """The range to cut, with an end just past the source's duration pulled back to it;
+    raises invalid_clip naming the rule a range breaks."""
+    def invalid(message: str) -> AppError:
+        return AppError("invalid_clip", message)
+
+    if start < 0:
+        raise invalid("The start can't be before 0:00.")
+    if end <= start:
+        raise invalid("The end must be after the start.")
+    if duration is not None:
+        if start >= duration:
+            raise invalid("The start must be before the end of the video.")
+        if end > duration + END_TOLERANCE_SECONDS:
+            raise invalid("The end can't be after the end of the video.")
+        end = min(end, duration)
+    if end - start < MIN_CLIP_SECONDS:
+        raise invalid("A clip must be at least 0.1 seconds long.")
+    return start, end
+
+
+def _seconds(value: object) -> float | None:
+    """A positive, finite number of seconds from a worker result, else None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return float(value) if value > 0 else None
 
 
 class JobManager:
@@ -177,27 +227,22 @@ class JobManager:
 
     def submit(self, url: str, output: str, quality: str) -> Job:
         self._admit()
-        self._prune_finished_records()
-        job_id = secrets.token_urlsafe(16)
-        while job_id in self._jobs:
-            job_id = secrets.token_urlsafe(16)
-        now = self._clock()
-        job = Job(id=job_id, url=url, output=output, quality=quality,
-                  workdir=self._temp_dir / job_id, created_at=now, queued_at=now)
-        self._jobs[job_id] = job
+        job = self._new_job(url=url, output=output, quality=quality)
         self._start(job)
-        logger.info("job %s queued (%s, %s)", job_id, output, quality)
+        logger.info("job %s queued (%s, %s)", job.id, output, quality)
         return job
 
     def get(self, job_id: str) -> Job:
+        """A download or clip job; sources are only reachable through get_source."""
         job = self._jobs.get(job_id) if _is_job_id(job_id) else None
-        if job is None:
+        if job is None or job.kind not in _JOB_KINDS:
             raise AppError("job_not_found")
         return job
 
     def public_view(self, job: Job) -> dict:
         return {
             "job_id": job.id,
+            "kind": job.kind,
             "status": job.status,
             "detail": job.detail,
             "progress_percent": job.progress_percent,
@@ -209,6 +254,141 @@ class JobManager:
             "reason": job.reason,
             "resume_seconds": self._resume_seconds(job),
         }
+
+    # --- Clip Studio sources ---------------------------------------------------
+
+    def open_link_source(self, url: str, quality: str) -> Job:
+        """Download `url` at `quality` as a source to clip from."""
+        self.ensure_queue_room()
+        self._make_source_room()
+        if not self._make_room(count_active=False, reserve=self._reserve):
+            raise AppError("disk_full")
+        job = self._new_job(url=url, output="video", quality=quality, kind="source", origin="link")
+        self._start(job)
+        logger.info("source %s queued (link, %s)", job.id, quality)
+        return job
+
+    def get_source(self, source_id: str) -> Job:
+        job = self._jobs.get(source_id) if _is_job_id(source_id) else None
+        if job is None or job.kind != "source":
+            raise AppError("source_not_found")
+        return job
+
+    def source_view(self, job: Job) -> dict:
+        return {
+            "source_id": job.id,
+            "status": job.status,
+            "origin": job.origin,
+            "title": job.title,
+            "duration_seconds": job.duration,
+            "detail": job.detail,
+            "progress_percent": job.progress_percent,
+            "downloaded_bytes": job.downloaded_bytes,
+            "total_bytes": job.total_bytes,
+            "notice": job.notice,
+            "error": job.error.to_dict() if job.error is not None else None,
+            "reason": job.reason,
+        }
+
+    def touch(self, job: Job) -> None:
+        """Note a use of a ready source (a poll, a preview request), restarting its idle TTL."""
+        if job.kind == "source" and job.status == "ready":
+            job.last_used = self._clock()
+
+    def source_media(self, source_id: str) -> tuple[Path, str]:
+        """The ready source's file and media type, for preview; counts as a use."""
+        job = self.get_source(source_id)
+        if job.status in _TERMINAL:
+            raise AppError("source_not_found")
+        if job.status != "ready" or job.file_path is None or job.media_type is None:
+            raise AppError("source_not_ready")
+        self.touch(job)
+        return job.file_path, job.media_type
+
+    def close_source(self, source_id: str) -> Job:
+        """End a source in any state and delete its files; a source that already ended is
+        left as it is. A running download or check is cancelled (its run removes whatever
+        it leaves); an upload in progress stops at its next chunk."""
+        job = self.get_source(source_id)
+        if job.status not in _TERMINAL:
+            for clip in [j for j in self._jobs.values()
+                         if j.kind == "clip" and j.source_id == job.id and j.status in _PENDING]:
+                self.cancel(clip.id)
+            if job.task is not None:
+                job.task.cancel()
+            self._expire(job, "closed")
+        return job
+
+    def begin_upload(self, title: str | None) -> Job:
+        """A source for a file the caller is about to write to workdir/UPLOAD_NAME. It holds
+        a queue place while the bytes arrive, and it must fit the disk budget counting
+        active jobs, because its bytes land before any slot is taken."""
+        self.ensure_queue_room()
+        self._make_source_room()
+        if not self._make_room(count_active=True, reserve=self._reserve):
+            raise AppError("disk_full")
+        job = self._new_job(url="", output="video", quality="best", kind="source", origin="upload",
+                            status="uploading", title=title or "Uploaded video")
+        job.started_at = job.created_at
+        try:
+            job.workdir.mkdir()
+        except OSError:  # never keep a record that would hold a queue and cap place forever
+            del self._jobs[job.id]
+            logger.exception("source %s: can't create its folder", job.id)
+            raise AppError("internal") from None
+        logger.info("source %s uploading", job.id)
+        return job
+
+    def finish_upload(self, job: Job) -> None:
+        """The whole file has arrived: queue the probe run that checks it."""
+        if job.status != "uploading":  # closed while the bytes were arriving
+            raise AppError("source_not_found")
+        job.status = "queued"
+        job.queued_at = self._clock()
+        self._start(job)
+
+    def abort_upload(self, job: Job) -> None:
+        """The upload failed or the client left: forget it and remove its folder."""
+        if job.status == "uploading":
+            self._jobs.pop(job.id, None)
+        _remove_dir(job.workdir)
+
+    def submit_clip(self, source_id: str, start: float, end: float) -> Job:
+        """Queue a cut of [start, end) seconds out of a ready source (times in ms)."""
+        source = self.get_source(source_id)
+        if source.status in _TERMINAL:
+            raise AppError("source_not_found")
+        if source.status != "ready" or source.file_path is None:
+            raise AppError("source_not_ready")
+        start, end = _clip_range(round(start, 3), round(end, 3), source.duration)
+        self._admit("clip")
+        self.touch(source)
+        job = self._new_job(url="", output="video", quality="best", kind="clip", source_id=source.id,
+                            start=start, end=end, title=source.title)
+        self._start(job)
+        logger.info("clip %s queued from source %s", job.id, source.id)
+        return job
+
+    def _open_sources(self) -> list[Job]:
+        return [j for j in self._jobs.values() if j.kind == "source" and j.status not in _TERMINAL]
+
+    def _in_use(self, source: Job) -> bool:
+        """True while one of the source's clips is queued or running."""
+        return any(j.kind == "clip" and j.source_id == source.id and j.status in _PENDING
+                   for j in self._jobs.values())
+
+    def _make_source_room(self) -> None:
+        """Keep open sources under MAX_CLIP_SOURCES: close the least recently used ready
+        source with no pending clip, or raise busy when there's none to close."""
+        open_sources = self._open_sources()
+        if len(open_sources) < self._settings.max_clip_sources:
+            return
+        idle = sorted((j for j in open_sources if j.status == "ready" and not self._in_use(j)),
+                      key=lambda j: j.last_used)
+        if not idle:
+            raise AppError("busy")
+        logger.info("closing source %s (MAX_CLIP_SOURCES)", idle[0].id)
+        self._expire(idle[0], "replaced")
 
     def cancel(self, job_id: str) -> Job:
         """Stop a queued or running job, or discard a ready file; a job that already
@@ -222,7 +402,8 @@ class JobManager:
             if not job.delivering:  # else finish_delivery removes it once the send ends
                 _remove_dir(job.workdir)  # its run has finished: nothing else will remove it
         elif job.status in _PENDING:
-            job.resume_until = self._clock() + RESUME_WINDOW_SECONDS
+            if job.kind == "download":  # a clip can't continue where it stopped
+                job.resume_until = self._clock() + RESUME_WINDOW_SECONDS
             if job.task is not None:
                 job.task.cancel()
         else:
@@ -250,7 +431,7 @@ class JobManager:
         if self._clock() >= job.resume_until:  # the sweep hasn't got to it yet
             self._end_resume_window(job)
             raise AppError("not_resumable")
-        self._admit()
+        self._admit(job.kind, job)  # its partial files count inside its reservation
         job.status = "queued"
         job.resume_until = None
         job.finished_at = None
@@ -290,7 +471,10 @@ class JobManager:
         for job in list(self._jobs.values()):
             if job.delivering:
                 continue
-            if job.status == "ready" and now - job.ready_at >= ttl:
+            if job.kind == "source" and job.status == "ready":
+                if now - job.last_used >= ttl and not self._in_use(job):
+                    self._expire(job, "idle")
+            elif job.status == "ready" and now - job.ready_at >= ttl:
                 self._expire(job, "ttl")
             elif job.resume_until is not None and now >= job.resume_until:
                 self._end_resume_window(job)
@@ -335,26 +519,37 @@ class JobManager:
 
     # --- Disk budget ----------------------------------------------------------
 
-    def _make_room(self, *, count_active: bool) -> bool:
+    def _reserve_for(self, kind: str) -> int:
+        """Disk a job of this kind may need. A clip is a stream copy that -fs stops at
+        MAX_FILE_SIZE_MB; a download (two tracks, then their merge) or an upload (the file,
+        then its MP4 remux) may need two copies."""
+        return self._settings.max_file_bytes if kind == "clip" else self._reserve
+
+    def _make_room(self, *, count_active: bool, reserve: int, job: Job | None = None) -> bool:
         """True if one more job fits the disk budget. Unsaved ready files are
         evicted (oldest first, only as many as needed) only when that is enough.
 
         Projected use = TEMP_DIR usage outside active workdirs + this job's
-        reservation. At start (count_active) each active job adds max(its actual
-        usage, its reservation), so a partial download isn't counted twice. At
-        submit, active jobs are left out entirely: they're transient, and a
-        queued job is checked again when it starts.
+        reservation. `job`, when given, is the job about to start: what its folder
+        already holds (an upload, a resumed download's partial files) counts inside
+        its reservation, as max(held, reservation), not on top of it. At start
+        (count_active) each active job adds max(its actual usage, its reservation),
+        so a partial download isn't counted twice. At submit, active jobs are left
+        out entirely: they're transient, and a queued job is checked again when it
+        starts.
         """
         usage = self._disk_usage
-        active = [usage(j.workdir) for j in self._jobs.values() if j.status in _ACTIVE]
-        projected = max(0, usage(self._temp_dir) - sum(active)) + self._reserve
+        active = [(usage(j.workdir), self._reserve_for(j.kind))
+                  for j in self._jobs.values() if j.status in _ACTIVE and j is not job]
+        own = usage(job.workdir) if job is not None else 0
+        outside = usage(self._temp_dir) - sum(used for used, _ in active) - own
+        projected = max(0, outside) + max(own, reserve)
         if count_active:
-            projected += sum(max(used, self._reserve) for used in active)
+            projected += sum(max(used, held) for used, held in active)
         budget = self._settings.max_total_disk_bytes
         if projected <= budget:
             return True
-        ready = sorted((j for j in self._jobs.values() if j.status == "ready" and not j.delivering),
-                       key=lambda j: j.ready_at)
+        ready = self._waiting_files()
         sizes = [usage(j.workdir) for j in ready]
         if projected - sum(sizes) > budget:
             return False
@@ -373,10 +568,10 @@ class JobManager:
         if pending + reserved >= self._settings.max_active_jobs + self._settings.max_queued_jobs:
             raise AppError("busy")
 
-    def _admit(self) -> None:
+    def _admit(self, kind: str = "download", job: Job | None = None) -> None:
         """Raise busy when the queue is full, or disk_full when one more job can't fit."""
         self.ensure_queue_room()
-        if not self._make_room(count_active=False):
+        if not self._make_room(count_active=False, reserve=self._reserve_for(kind), job=job):
             raise AppError("disk_full")
 
     async def _acquire_slot(self, job: Job) -> None:
@@ -384,7 +579,7 @@ class JobManager:
         deadline = job.queued_at + self._settings.max_job_seconds
         while True:
             await self._slots.acquire()
-            if self._make_room(count_active=True):
+            if self._make_room(count_active=True, reserve=self._reserve_for(job.kind), job=job):
                 return
             self._slots.release()
             if self._clock() >= deadline:
@@ -393,6 +588,16 @@ class JobManager:
             await asyncio.sleep(DISK_RETRY_SECONDS)
 
     # --- Job task -------------------------------------------------------------
+
+    def _new_job(self, **fields) -> Job:
+        self._prune_finished_records()
+        job_id = secrets.token_urlsafe(16)
+        while job_id in self._jobs:
+            job_id = secrets.token_urlsafe(16)
+        now = self._clock()
+        job = Job(id=job_id, workdir=self._temp_dir / job_id, created_at=now, queued_at=now, **fields)
+        self._jobs[job_id] = job
+        return job
 
     def _start(self, job: Job) -> None:
         earlier = set(job.runs)
@@ -410,22 +615,46 @@ class JobManager:
             self._fail(job, exc)
             return
         try:
-            await self._download(job)
+            if job.kind == "clip":
+                await self._clip(job)
+            elif job.origin == "upload":
+                await self._work(job, "checking", "Checking the video",
+                                 {"mode": "probe", "source": str(job.workdir / UPLOAD_NAME),
+                                  "workdir": str(job.workdir)})
+            else:
+                await self._work(job, "downloading", "Starting download",
+                                 {"mode": "download", "url": job.url, "output": job.output,
+                                  "quality": job.quality, "workdir": str(job.workdir),
+                                  "max_bytes": self._settings.max_file_bytes})
         finally:
             self._slots.release()
 
-    async def _download(self, job: Job) -> None:
+    async def _clip(self, job: Job) -> None:
+        source = self._jobs.get(job.source_id or "")
+        try:
+            if source is None or source.status != "ready" or source.file_path is None:
+                self._fail(job, AppError("source_not_found"))  # closing it cancels its clips first
+                return
+            await self._work(job, "cutting", "Cutting the clip",
+                             {"mode": "clip", "source": str(source.file_path),
+                              "workdir": str(job.workdir), "start": job.start, "end": job.end,
+                              "keep_tags": source.origin == "link",
+                              "max_bytes": self._settings.max_file_bytes})
+        finally:
+            if source is not None:
+                self.touch(source)  # the idle TTL restarts once its clip ends
+
+    async def _work(self, job: Job, status: str, detail: str, request: dict) -> None:
+        """Run the worker for `job` in its folder and make it ready, or fail it."""
         settings = self._settings
         keep = False  # keep the workdir: a ready file, or partial files after a cancel
         try:
-            job.status = "downloading"
-            job.detail = "Starting download"
+            job.status = status
+            job.detail = detail
             job.started_at = self._clock()
-            job.workdir.mkdir(exist_ok=True)  # a resumed job reuses its folder
+            job.workdir.mkdir(exist_ok=True)  # a resumed job or an upload reuses its folder
             result = await self._run_worker(
-                {"mode": "download", "url": job.url, "output": job.output,
-                 "quality": job.quality, "workdir": str(job.workdir),
-                 "max_bytes": settings.max_file_bytes},
+                request,
                 cmd=self._worker_cmd,
                 timeout=settings.max_job_seconds,
                 on_event=lambda event: self._on_event(job, event),
@@ -435,9 +664,10 @@ class JobManager:
             self._make_ready(job, result)
             keep = True
         except asyncio.CancelledError:
-            # A user cancel keeps the partial files for a resume (the sweep removes them
-            # when the window ends); shutdown removes every job folder itself.
-            keep = True
+            # A user cancel keeps a download's partial files for a resume (the sweep removes
+            # them when the window ends); shutdown removes every job folder itself. A closed
+            # source can't be resumed, so its partial files go now.
+            keep = job.kind == "download"
             raise
         except AppError as exc:
             self._fail(job, exc)
@@ -453,13 +683,14 @@ class JobManager:
             return
         detail = event.get("detail")
         if event.get("event") == "progress":
-            job.status = "downloading"
+            job.status = "cutting" if job.kind == "clip" else "downloading"
             if isinstance(detail, str):
                 job.detail = detail
             job.downloaded_bytes = _count(event.get("downloaded_bytes"))
             job.total_bytes = _count(event.get("total_bytes"))
             job.progress_percent = _percent(event.get("percent"))
-        elif event.get("event") == "phase" and event.get("phase") == "converting":
+        elif (event.get("event") == "phase" and event.get("phase") == "converting"
+              and job.kind != "clip"):
             job.status = "converting"
             job.detail = detail if isinstance(detail, str) else None
             job.progress_percent = None
@@ -478,23 +709,37 @@ class JobManager:
         if path.is_symlink() or not path.is_file():
             logger.error("job %s: worker result file is missing", job.id)
             raise AppError("internal")
-        title, notice = result.get("title"), result.get("notice")
-        job.title = title if isinstance(title, str) else None
+        title, notice, duration = result.get("title"), result.get("notice"), result.get("duration")
+        if job.kind == "download" or job.origin == "link":
+            job.title = title if isinstance(title, str) else None
         job.notice = notice if isinstance(notice, str) else None
-        job.filename = sanitize_filename(job.title, ext)
+        if job.kind == "clip":
+            job.filename = clip_filename(job.title, job.start, job.end, ext)
+        else:
+            job.filename = sanitize_filename(job.title, ext)
         job.media_type = media_type
         job.file_path = path
         job.status = "ready"
         job.detail = None
         job.ready_at = self._clock()
-        logger.info("job %s ready", job.id)
+        if job.kind == "source":
+            job.progress_percent = job.downloaded_bytes = job.total_bytes = None
+            job.duration = _seconds(duration)
+            job.last_used = job.ready_at
+        logger.info("%s %s ready", "source" if job.kind == "source" else "job", job.id)
         self._enforce_ready_cap()
+
+    def _waiting_files(self) -> list[Job]:
+        """Ready files waiting to be saved, oldest first. A file being sent is on its way
+        out, and a source isn't a file to save, so neither is listed."""
+        return sorted((j for j in self._jobs.values()
+                       if j.status == "ready" and not j.delivering and j.kind != "source"),
+                      key=lambda j: j.ready_at)
 
     def _enforce_ready_cap(self) -> None:
         """Evict the oldest waiting files beyond MAX_READY_FILES; files being sent are
         on their way out and don't count."""
-        ready = sorted((j for j in self._jobs.values() if j.status == "ready" and not j.delivering),
-                       key=lambda j: j.ready_at)
+        ready = self._waiting_files()
         for job in ready[:max(0, len(ready) - self._settings.max_ready_files)]:
             logger.info("evicting ready job %s (ready-file cap)", job.id)
             self._expire(job, "evicted")

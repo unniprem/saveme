@@ -9,7 +9,8 @@ downloads and client disconnects go straight through it). It:
   (no Origin header is fine: curl and scripts don't send one);
 - answers 503 config_error for /api/* while the app is degraded;
 - reads a POST body itself, before any JSON parsing, and answers 413 request_too_large
-  once it passes MAX_BODY_BYTES (Content-Length or not);
+  once it passes MAX_BODY_BYTES (Content-Length or not). The one exception is the Clip
+  Studio upload (UPLOAD_PATH), whose route streams the file with limits of its own;
 - turns an unexpected exception into a 500 `internal` body; the traceback goes to the log only.
 
 Degraded mode: when the settings don't load (or TEMP_DIR is refused at startup) the
@@ -42,6 +43,7 @@ from app.netguard import (IpPolicy, Resolver, check_source_address, check_url_sy
                           system_resolver)
 from app.runner import DEFAULT_WORKER_CMD, RunWorker, run_worker
 from app.schemas import InspectRequest, JobRequest, Output, Quality
+from app.studio_routes import UPLOAD_IDLE_SECONDS, UPLOAD_PATH, add_studio_routes
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +73,8 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 _HTTP_MESSAGES = {404: "Not found.", 405: "Method not allowed."}
 _CHOICES = {"output": get_args(Output), "quality": get_args(Quality)}
 _FIELD_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+_TIME_FIELDS = frozenset({"start", "end"})
+_NUMBER_ERRORS = frozenset({"float_type", "float_parsing", "finite_number", "greater_than_equal"})
 
 
 # --- Errors -------------------------------------------------------------------
@@ -104,6 +108,8 @@ def _validation_message(errors: Sequence[dict]) -> str:
         if _FIELD_NAME.fullmatch(field):
             return f"{field} is not an accepted field"
         return "The request has a field that isn't accepted"
+    if kind in _NUMBER_ERRORS and field in _TIME_FIELDS:
+        return f"{field} must be a number of seconds, 0 or more"
     if kind == "literal_error" and field in _CHOICES:
         return f"{field} must be one of: {', '.join(_CHOICES[field])}"
     if kind == "missing":
@@ -194,7 +200,7 @@ class _Guard:
             await send(message)
 
         refusal = self._refusal(scope)
-        if refusal is None and scope["method"] == "POST":
+        if refusal is None and scope["method"] == "POST" and scope["path"] != UPLOAD_PATH:
             refusal, receive = await self._read_body(scope, receive)
         if refusal is not None:
             await refusal(scope, receive, send_with_headers)
@@ -365,10 +371,21 @@ class _FileDelivery(Response):
 
 def _api_router(settings: Settings, runtime: _Runtime, *, worker_cmd: tuple[str, ...],
                 ip_policy: IpPolicy, resolver: Resolver, run_worker: RunWorker,
-                delivery_idle_seconds: float, delivery_max_seconds: float) -> APIRouter:
+                delivery_idle_seconds: float, delivery_max_seconds: float,
+                upload_idle_seconds: float) -> APIRouter:
     router = APIRouter(prefix="/api")
     inspections = asyncio.Semaphore(settings.max_active_inspections)
-    checking_jobs = 0  # job requests whose links are being resolved
+    checking_links = 0  # job and source requests whose links are being resolved
+
+    async def check_link(url: str, jobs: JobManager) -> None:
+        """Resolve the link's host while holding a queue place, so lookups are bounded."""
+        nonlocal checking_links
+        jobs.ensure_queue_room(reserved=checking_links)
+        checking_links += 1
+        try:
+            await check_source_address(url, policy=ip_policy, resolver=resolver)
+        finally:
+            checking_links -= 1
 
     # The cheap syntax check comes first, so a malformed link never takes a slot. The DNS
     # lookup runs inside the slot (or queue place), so the caps bound lookups too.
@@ -385,15 +402,9 @@ def _api_router(settings: Settings, runtime: _Runtime, *, worker_cmd: tuple[str,
 
     @router.post("/jobs", status_code=202)
     async def create_job(body: JobRequest):
-        nonlocal checking_jobs
         url = check_url_syntax(body.url)
         jobs = runtime.jobs()
-        jobs.ensure_queue_room(reserved=checking_jobs)
-        checking_jobs += 1
-        try:
-            await check_source_address(url, policy=ip_policy, resolver=resolver)
-        finally:
-            checking_jobs -= 1
+        await check_link(url, jobs)
         job = jobs.submit(url, body.output, body.quality)
         return {"job_id": job.id, "status": job.status}
 
@@ -417,6 +428,8 @@ def _api_router(settings: Settings, runtime: _Runtime, *, worker_cmd: tuple[str,
         return _FileDelivery(runtime.jobs(), job_id, idle=delivery_idle_seconds,
                              limit=delivery_max_seconds)
 
+    add_studio_routes(router, settings, runtime.jobs, check_link=check_link,
+                      upload_idle_seconds=upload_idle_seconds)
     return router
 
 
@@ -433,6 +446,7 @@ def create_app(
     sweep_interval: float = 60.0,
     delivery_idle_seconds: float = DELIVERY_IDLE_SECONDS,
     delivery_max_seconds: float = DELIVERY_MAX_SECONDS,
+    upload_idle_seconds: float = UPLOAD_IDLE_SECONDS,
 ) -> FastAPI:
     worker_cmd = tuple(worker_cmd)
     healthy_settings = settings if isinstance(settings, Settings) else None
@@ -493,7 +507,8 @@ def create_app(
                                        ip_policy=ip_policy, resolver=resolver,
                                        run_worker=run_worker,
                                        delivery_idle_seconds=delivery_idle_seconds,
-                                       delivery_max_seconds=delivery_max_seconds))
+                                       delivery_max_seconds=delivery_max_seconds,
+                                       upload_idle_seconds=upload_idle_seconds))
     return app
 
 

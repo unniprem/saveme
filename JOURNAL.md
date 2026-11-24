@@ -2,6 +2,117 @@
 
 ---
 
+## 2026-11-24 06:58 IST — Session: Clip Studio, Phase 1 (manual clipping)
+
+### Summary
+
+The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [AutoClip](https://github.com/zhouxiaoka/autoclip)-style tool: load a video, preview it, pick a start and end, cut it on the server with FFmpeg as a cancellable job with progress, export it, and clean up after. The existing downloader, UI conventions, URL protections, limits and tests must stay, and there must be no React, no database and no paid services. They chose to accept videos both from links and from their own computer. Work is on `feature/clip-studio`, following the design (`docs/superpowers/specs/2026-11-24-clip-studio-phase-1-design.md`) and plan (`docs/superpowers/plans/2026-11-24-clip-studio-phase-1.md`), one task at a time, with a journal update after each task.
+
+### Changes Made
+
+| Commit    | Type | Description |
+| --------- | ---- | ----------- |
+| `b899daf` | docs | Add Clip Studio phase 1 design |
+| `b040d4d` | docs | Add Clip Studio phase 1 implementation plan |
+| `7adb750` | refactor | Move local media helpers to `app/mediafile.py` and report duration |
+| `46f9878` | feat | Add a worker probe mode that checks and remuxes uploaded videos |
+| `f7bcebd` | feat | Add a worker clip mode that cuts by stream copy with progress |
+| `06424ea` | feat | Keep clip sources in the job manager with close, idle expiry and a cap |
+| `8e53efa` | feat | Run clip and upload jobs in the job manager |
+| `b2dd526` | feat | Add Clip Studio API routes for sources, preview and clips |
+| `049063b` | feat | Accept video uploads for Clip Studio with their own limits |
+| `2e7be93` | refactor | Share the page's API and DOM helpers through `common.js` |
+| `9cc0546` | feat | Add the Clip Studio page |
+| `ae92308` | docs | Describe Clip Studio and check it in the image scripts |
+| `f0c4c75` | test | Read whole replies in the raw-socket upload tests |
+| `8ddb5b8` | fix | Count a job's own files inside its disk reservation |
+| `9e6e62c` | fix | Accept WebM recordings that carry no duration |
+| `24e6cb5` | fix | Close late sources, drop gone videos, keep unsaved files on the page |
+
+### Test Results
+
+- Baseline on `main` (`bea4549`): `.venv/bin/pytest -q` gave 471 passed, 2 skipped, 7 deselected (82 s).
+- Task 1 (`7adb750`): 475 passed, 2 skipped, 7 deselected.
+- Task 2 (`46f9878`): 495 passed, 2 skipped, 7 deselected. The new probe tests cover MP4 kept, MKV and TS remuxed to MP4, WebM, audio-only (`no_video`), random bytes (`unreadable_media`), a source outside the folder or symlinked (`internal`), and the container mapping.
+- Task 3 (`f7bcebd`): 511 passed, 2 skipped, 7 deselected. A 3.3–7.3 s cut of a 10 s video (keyframe every second) shows 102 frames (4.08 s at 25 fps), its first shown frame is at 0, and its audio is 4.01 s long.
+- Task 4 (`06424ea`): 526 passed, 2 skipped, 7 deselected. 15 new source tests: link source to ready, progress and failure, separate ID spaces, not delivered or counted as a ready file, not evicted for disk room, idle expiry and touch, close in each state, cap replace and busy, queue places, and `MAX_CLIP_SOURCES` bounds.
+- Task 5 (`8e53efa`): 551 passed, 2 skipped, 7 deselected. New tests: clip request and progress, delivery and naming; each range rule; end clamping; no resume; closing a source cancels its running and queued clips; a pending clip keeps its source alive; upload clips drop tags; the upload lifecycle, failure, abort, close-then-finish, disk admission counting active jobs, and the source cap.
+- Task 6 (`b2dd526`): 569 passed, 2 skipped, 7 deselected. 18 new API tests: limits; the link source flow with Range (206) and `no-store`; 409 before ready; a clip end to end (stub) with its download name; eight request-validation cases plus `Infinity`; separate ID spaces on every route; close needs a matching Origin, DELETE is 405, a repeat is harmless; a source is gone after a restart; URL and address checks; a source takes a queue place.
+- Task 7 (`049063b`): 589 passed, 2 skipped, 7 deselected. 20 new upload tests:
+  - Header checks: content type 415, chunked 411, empty 400, too large 413.
+  - Only the upload path skips the 64 KiB cap. Origin, Host and degraded mode still apply.
+  - Title parsing.
+  - Through a real uvicorn server: a client that leaves mid-body frees its folder and queue place; an idle client gets 504 `timeout`; a source closed mid-transfer gets 404 and is removed.
+- Task 8 (`2e7be93`): 590 passed, 2 skipped, 7 deselected. In headless Chromium, a direct MP4 from the local media server fetched, downloaded (198,451 bytes) and showed "Saved", with no console errors.
+- Task 9 (`9cc0546`): 593 passed, 2 skipped, 7 deselected. Browser checks in the installed Google Chrome (a temporary profile) and Playwright's Chromium, desktop at 1200 px and phone at 375 px in dark mode, none with console errors:
+  - Link → Clip → typed marks, an out-of-order start refused with a message, handle arrows and Shift, `I` at the playhead → Export → auto-saved `long (clip 0m01s-0m06s).mp4` (H.264+AAC) → "Clip saved". A reload restores the marks; Close unlocks the link field and clears storage.
+  - Uploads: a TS file is remuxed and its clip carries no tags; random bytes show "SaveMe can't read this file as a video…"; an HEVC MOV previews in Chrome. In Chromium (no HEVC) the fallback note shows and a clip still exports from typed times.
+  - Cancel while a link source downloads: the server has the source `expired`/`closed`, and the result card returns.
+  - Server restart, then a reload: "This video is no longer on the server…", storage cleared, no horizontal scroll at 375 px.
+- Task 10 (`f0c4c75`): 595 passed, 2 skipped, 7 deselected.
+  - `scripts/docker-smoke.sh` passed on the branch image in an isolated Compose project (`saveme-ctest`, port 8001, image tag `saveme:clip-studio`, so the live `saveme-saveme-1` and its `saveme:local` tag weren't touched). That includes the new check: `/api/studio`, and an upload of random bytes refused as `unreadable_media` by the probe inside the hardened container. The project was then removed.
+  - `scripts/docker-ffmpeg-check.sh saveme:clip-studio` passed every matrix case, including the new MP4 and MKV cuts, and 383 integration tests inside the image against the minimal FFmpeg 9.0.2. The clip test's "first shown frame at 0" holds on that build.
+- Whole-branch review by a fresh reviewer (Opus): "ready after fixes". It found nothing critical and accepted every ruling in the ledger. The fix pass (`8ddb5b8`, `9e6e62c`, `24e6cb5`) ended at 599 passed, 2 skipped, 7 deselected; each fix's test failed first. Then:
+  - A browser check of the three page fixes passed, and every earlier browser check was rerun and still passes.
+  - The image was rebuilt (`saveme:clip-studio`), and `docker-ffmpeg-check.sh` passed again with 387 integration tests in the image.
+
+### Key Decisions
+
+- **Cuts are stream copy, not re-encodes.** The Docker FFmpeg has no video encoder and only one video decoder, by design. A test cut with FFmpeg 8 shows the keyframe lead-in hidden by an MP4 edit list: a 7.0 s start on a video with keyframes every 5 s showed its first frame at 0.000. So browsers, QuickTime and VLC start exactly where the owner chose, and the build stays as it is. Re-encoding (and with it vertical reframing and burned-in subtitles) is left to the phase that needs an encoder.
+- **Sources and clips are new kinds of job in `JobManager`.** That way they share the queue, slots, disk budget, sweep and shutdown, and no limit is copied or bypassed.
+- **Uploads are raw `application/octet-stream` bodies with a `Content-Length`.** Only this path skips the Guard's 64 KiB read. Host, Origin, degraded mode, the size cap, the disk check and the timeouts still apply, and no form parser is added.
+- **A source is closed only by the owner, idle time or the source cap, never to make disk room.** Evicting it would pull the video out from under someone mid-edit, so a job that doesn't fit gets `disk_full` instead, as today. The cap (`MAX_CLIP_SOURCES`, default 2) replaces the least recently used idle source.
+- **The preview fallback also fires when the video has no picture size.** Chromium played an HEVC file's sound and skipped its picture without an error event. Every source is checked to have video, so a zero `videoWidth` means the browser can't decode it.
+- **An upload is admitted only if it fits the disk budget counting active jobs.** Its bytes land before any slot is taken, so the lighter check that downloads get at submit time would let several big uploads overrun the budget.
+- **A clip reserves `MAX_FILE_SIZE_MB` of disk, not twice that.** It's a stream copy that `-fs` stops at that size. With the old 2× reservation, nothing could be exported at the smallest budget the settings accept (`MAX_TOTAL_DISK_MB` = 2 × `MAX_FILE_SIZE_MB`), because a ready source can't be evicted.
+- **A job about to start counts its own files inside its reservation** (max of what it holds and its reservation), so an admitted upload, or a resumed download, isn't charged twice when it asks for a slot.
+- **Clips cut from uploads carry no metadata,** because phones write location and device details into videos. Clips cut from links keep title, artist and date, and chapters are dropped because their times would be wrong.
+
+### Issues Encountered
+
+- `tests/support/media.py`'s `junk.jpg` isn't junk to a full ffprobe: it opens the file as a one-frame image because of the `.jpg` name. Junk-input tests use `big.mp4` (random bytes) instead.
+- **The final review found one Important bug and twelve Minor issues.**
+  - The Important bug was a disk double count: an admitted upload stalled on "Waiting for storage space" at small budgets, and clips couldn't be exported at all at the minimum budget.
+  - Five Minor issues were re-graded Important by their effect and fixed: a stuck record when an upload's folder can't be made; a gone video still streaming a deleted file; live WebM recordings refused; a source left downloading after an early Close; and a ready, unsaved file dropped when opening the studio.
+  - The rest are listed under Pending Work.
+- **The plan's "cut H.264 TS into MP4" image check failed.** A TS has no index, so a seek lands after the keyframe; with one keyframe the video track disappears, in Debian's full FFmpeg and the minimal build alike. The app never cuts a TS (uploads are remuxed to MP4 first), so the case became an MKV cut. Single-keyframe MP4, MKV and remuxed-TS cuts were checked in the image. An MKV or WebM source shows the keyframe lead-in (no edit lists), and the README now says so.
+- Two raw-socket upload tests failed once in the full run: one `recv()` returned only the headers. Fixed in `{fix}` by reading to `Content-Length`; stable over 8 reruns.
+- The first fallback check failed: an undecodable HEVC picture raised no `error` event, so the note never showed. Fixed before the commit by checking `videoWidth` once metadata loads.
+- A stream-copy cut's container and track durations read longer than the cut (4.22 s for 4.0 s), because they count the hidden keyframe lead-in. The clip test checks what a viewer gets instead: shown frames, the first shown frame at 0, and the audio length.
+
+### Pending Work
+
+- **Deciding how to integrate `feature/clip-studio`.** It isn't merged or pushed, and the live container still runs `main`. After a merge, rebuild the live container with `docker compose up -d --build`.
+- **Deferred minors from the final review,** for the owner to rule on:
+  - `/media` responses have no idle or total time limit, unlike `/file`.
+  - A ProRes (MP4-incompatible) MOV is accepted, then every cut fails with "Try a different start or end". Remux MOV like the other containers, or check codecs at probe time.
+  - Exactly-0.1 s ranges: the page enables Export, but the server can refuse after rounding. Compare in whole milliseconds on both sides.
+  - The source cap replaces an idle source before the disk check, which can then still fail.
+  - With no preview, Set to playhead, Play clip and the `I`/`O` keys act on a playhead stuck at 0.
+  - The keep-alive polls every 60 s, so `JOB_TTL_MINUTES=1` can expire a visible studio. Derive it from `idle_minutes`.
+  - A too-large clip's message suggests "a lower quality or audio only".
+  - No test closes an upload while its check runs, or keeps a source alive through API status polls.
+- Leftover images from the checks: `saveme:clip-studio` and `saveme-ffmpeg-check` (`docker image rm` them when done).
+- Export Cancel hasn't been tried in a browser; harness cuts finish in under a second. The manager and API cancel tests cover it.
+- Browser checks run through `/tmp/claude-501/saveme-dev/` (outside the repo):
+  - `serve.py` runs SaveMe on `127.0.0.1:8123` with loopback allowed, plus the test media server, whose URL it prints.
+  - The `check-*.js` scripts drive headless Chromium with the `playwright-core` from `~/.npm/_npx`.
+
+  The Playwright MCP browser is locked by a Chrome started on 23 Nov at 18:26 that this session left alone.
+- Known gap: an upload source that fails while waiting for a slot (`disk_full` at its deadline) leaves its folder until the next sweep (at most `sweep_interval`, 60 s), not at once.
+
+### Handoff
+
+- All 10 plan tasks and the review fix pass are done. The deviations from the plan are recorded above:
+  - Under Issues Encountered: the clip test measuring shown frames instead of container duration, the MKV image-check case instead of TS, and the `videoWidth` preview fallback.
+  - Under Key Decisions: the disk reservations.
+  - Under Pending Work: the deferred review minors.
+- Browser checks used scripts in `/tmp/claude-501/saveme-dev/` (outside the repo, temporary): `serve.py` is a loopback-allowed dev server; `check-studio-*.js` and `check-review-fixes.js` drive Chrome through `playwright-core`. Recreate them from this description if `/tmp` is cleared.
+- Phase 2 (AutoClip-style: transcripts, highlight suggestions, 9:16 reframing, burned-in subtitles) needs an H.264 encoder in the FFmpeg build and its own security and licensing review first. See §7 of the design doc.
+- Tests: `.venv/bin/pytest -q`. Real FFmpeg and ffprobe must be on `PATH` (Homebrew on this Mac).
+
+---
+
 ## 2026-11-23 19:21 IST — Session: File tags, cover art and M4A audio
 
 ### Summary

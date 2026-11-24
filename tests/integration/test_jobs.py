@@ -9,146 +9,22 @@ import dataclasses
 import json
 import os
 import sys
-import time
 from collections import Counter
-from collections.abc import Callable
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
-from app.config import ConfigError, Settings, load_settings
+from app.config import ConfigError
 from app.errors import AppError
 from app.jobs import (APP_DIR, JOB_ID_RE, MARKER_NAME, MAX_FINISHED_RECORDS,
-                      RESUME_WINDOW_SECONDS, JobManager, prepare_temp_dir)
+                      RESUME_WINDOW_SECONDS, prepare_temp_dir)
 from app.runner import DEFAULT_WORKER_CMD
+from tests.support.jobs import (URL, FakeClock, StubRunner, job_dirs, make_manager,  # noqa: F401
+                                 ready_job, settings, temp_dir, wait_until)
 
-URL = "https://example.com/watch?v=1"
 MiB = 1024 * 1024
 TEST_WORKER_CMD = (sys.executable, "-P", "-m", "tests.support.worker_entry")
 TERMINAL = {"ready", "failed", "expired"}
-
-
-# --- Helpers ---------------------------------------------------------------
-
-@dataclass
-class Call:
-    request: dict
-    kwargs: dict
-    workdir: Path
-    on_event: Callable[[dict], None]
-    gate: asyncio.Event = field(default_factory=asyncio.Event)
-    error: BaseException | None = None
-    result: dict | None = None
-    cancelled: bool = False
-
-    def emit(self, event: dict) -> None:
-        self.on_event(event)
-
-    def finish(self, result: dict | None = None) -> None:
-        self.result = result
-        self.gate.set()
-
-    def fail(self, error: BaseException) -> None:
-        self.error = error
-        self.gate.set()
-
-
-class StubRunner:
-    """Async stand-in for run_worker. Each call writes a partial file, waits on
-    its gate (unless auto_finish), then raises or returns a media.mp4 result."""
-
-    def __init__(self, *, auto_finish: bool = False):
-        self.auto_finish = auto_finish
-        self.calls: list[Call] = []
-        self.inflight = 0
-        self.max_inflight = 0
-
-    async def __call__(self, request, *, cmd, timeout, on_event=None, workdir=None,
-                       max_workdir_bytes=None, poll_interval=1.0):
-        call = Call(request, {"cmd": cmd, "timeout": timeout,
-                              "max_workdir_bytes": max_workdir_bytes}, workdir, on_event)
-        self.calls.append(call)
-        self.inflight += 1
-        self.max_inflight = max(self.max_inflight, self.inflight)
-        try:
-            part = workdir / "media.mp4.part"
-            part.write_bytes(b"\0" * 512)
-            if not self.auto_finish:
-                await call.gate.wait()
-            if call.error is not None:
-                raise call.error
-            if call.result is not None:
-                return call.result
-            part.rename(workdir / "media.mp4")
-            return {"file": "media.mp4", "ext": "mp4", "title": "My Video", "notice": None}
-        except asyncio.CancelledError:
-            call.cancelled = True
-            raise
-        finally:
-            self.inflight -= 1
-
-
-class FakeClock:
-    def __init__(self) -> None:
-        self.now = 1000.0
-
-    def __call__(self) -> float:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
-
-
-async def wait_until(predicate: Callable[[], object], timeout: float = 5.0,
-                     on_poll: Callable[[], None] | None = None) -> None:
-    deadline = time.monotonic() + timeout
-    while True:
-        if on_poll is not None:
-            on_poll()
-        if predicate():
-            return
-        if time.monotonic() > deadline:
-            raise AssertionError("condition not met in time")
-        await asyncio.sleep(0.01)
-
-
-def job_dirs(temp_dir: Path) -> list[str]:
-    return sorted(p.name for p in temp_dir.iterdir() if JOB_ID_RE.fullmatch(p.name))
-
-
-@pytest.fixture
-def temp_dir(tmp_path: Path) -> Path:
-    return tmp_path / "media-jobs"
-
-
-@pytest.fixture
-def settings(temp_dir: Path) -> Settings:
-    return load_settings({"TEMP_DIR": str(temp_dir)})
-
-
-@pytest.fixture
-async def make_manager(settings: Settings):
-    managers: list[JobManager] = []
-
-    async def make(custom: Settings | None = None, **kwargs) -> JobManager:
-        manager = JobManager(custom or settings, **kwargs)
-        await manager.start()
-        managers.append(manager)
-        return manager
-
-    yield make
-    for manager in managers:
-        await manager.shutdown()
-
-
-async def ready_job(manager: JobManager, runner: StubRunner) -> object:
-    job = manager.submit(URL, "video", "best")
-    if not runner.auto_finish:
-        await wait_until(lambda: len(runner.calls) and runner.calls[-1].workdir == job.workdir)
-        runner.calls[-1].finish()
-    await wait_until(lambda: job.status == "ready")
-    return job
 
 
 # --- Lifecycle ---------------------------------------------------------------
@@ -187,10 +63,10 @@ async def test_lifecycle_to_ready(make_manager, settings, temp_dir):
     assert job.ready_at is not None and job.error is None
 
     view = manager.public_view(job)
-    assert set(view) == {"job_id", "status", "detail", "progress_percent", "downloaded_bytes",
+    assert set(view) == {"job_id", "kind", "status", "detail", "progress_percent", "downloaded_bytes",
                          "total_bytes", "notice", "error", "filename", "reason",
                          "resume_seconds"}
-    assert view["job_id"] == job.id and view["status"] == "ready"
+    assert view["job_id"] == job.id and view["status"] == "ready" and view["kind"] == "download"
     assert view["filename"] == "My Video.mp4" and view["error"] is None
     assert view["resume_seconds"] is None
     assert str(temp_dir) not in json.dumps(view)
