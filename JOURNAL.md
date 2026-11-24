@@ -16,12 +16,14 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 | `b040d4d` | docs | Add Clip Studio phase 1 implementation plan |
 | `7adb750` | refactor | Move local media helpers to `app/mediafile.py` and report duration |
 | `46f9878` | feat | Add a worker probe mode that checks and remuxes uploaded videos |
+| `f7bcebd` | feat | Add a worker clip mode that cuts by stream copy with progress |
 
 ### Test Results
 
 - Baseline on `main` (`bea4549`): `.venv/bin/pytest -q` gave 471 passed, 2 skipped, 7 deselected (82 s).
 - Task 1 (`7adb750`): 475 passed, 2 skipped, 7 deselected.
 - Task 2 (`46f9878`): 495 passed, 2 skipped, 7 deselected. The new probe tests cover MP4 kept, MKV and TS remuxed to MP4, WebM, audio-only (`no_video`), random bytes (`unreadable_media`), a source outside the folder or symlinked (`internal`), and the container mapping.
+- Task 3 (`f7bcebd`): 511 passed, 2 skipped, 7 deselected. A 3.3–7.3 s cut of a 10 s video (keyframe every second) shows 102 frames (4.08 s at 25 fps), its first shown frame is at 0, and its audio is 4.01 s long.
 
 ### Key Decisions
 
@@ -33,10 +35,11 @@ The owner asked for Phase 1 of an integrated Clip Studio, on the way to an [Auto
 ### Issues Encountered
 
 - `tests/support/media.py`'s `junk.jpg` isn't junk to a full ffprobe: it opens the file as a one-frame image because of the `.jpg` name. Junk-input tests use `big.mp4` (random bytes) instead.
+- A stream-copy cut's container and track durations read longer than the cut (4.22 s for 4.0 s), because they count the hidden keyframe lead-in. The clip test checks what a viewer gets instead: shown frames, the first shown frame at 0, and the audio length.
 
 ### Pending Work
 
-- Tasks 3–10 of the plan (Tasks 1–2 done).
+- Tasks 4–10 of the plan (Tasks 1–3 done).
 
 ### Handoff
 
