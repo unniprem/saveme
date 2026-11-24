@@ -134,7 +134,7 @@ def add_render_routes(router: APIRouter, render: Callable[[], RenderManager], *,
             raise AppError("invalid_request", "The file is empty.")
         if size > limit:
             raise AppError("too_large", f"This file is larger than the {size_text(limit)} limit for a {kind}.")
-        source, path, asset_id = manager.begin_asset(source_id, kind)
+        source, path, asset_id = manager.begin_asset(source_id, kind, size)
         try:
             await receive_upload(request, path, size, idle=idle_seconds, limit=600.0,
                                  is_open=lambda: source.status == "ready")
@@ -142,6 +142,8 @@ def add_render_routes(router: APIRouter, render: Callable[[], RenderManager], *,
         except BaseException:
             path.unlink(missing_ok=True)
             raise
+        finally:
+            manager.end_asset(source, asset_id)
         return manager.asset_view(asset)
 
     @router.post("/sources/{source_id}/shorts/previews", status_code=202)

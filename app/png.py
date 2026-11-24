@@ -113,6 +113,14 @@ def decode(data: bytes, *, max_side: int = MAX_SIDE) -> tuple[int, int, bytes]:
         raise PngError("interlaced PNGs aren't supported; save it without interlacing")
     if color == 3 and palette is None:
         raise PngError("missing palette")
+    if transparency is not None:  # tRNS must match the colour type (and fit the bit depth)
+        top = (1 << depth) - 1
+        if color == 0 and (len(transparency) != 2 or struct.unpack(">H", transparency)[0] > top):
+            raise PngError("bad transparency")
+        if color == 2 and (len(transparency) != 6 or max(struct.unpack(">HHH", transparency)) > top):
+            raise PngError("bad transparency")
+        if color in (4, 6) or (color == 3 and len(transparency) > len(palette)):
+            raise PngError("bad transparency")
     channels = _CHANNELS[color]
     bits = depth * channels
     stride = (width * bits + 7) // 8
@@ -125,6 +133,15 @@ def decode(data: bytes, *, max_side: int = MAX_SIDE) -> tuple[int, int, bytes]:
         raise PngError("corrupt image data") from exc
     if len(raw) != expected:
         raise PngError("image data has the wrong size")
+    try:
+        return _convert(raw, width, height, depth, color, channels, stride, bpp, palette, transparency)
+    except PngError:
+        raise
+    except (ValueError, IndexError, OverflowError, struct.error) as exc:
+        raise PngError("malformed image") from exc
+
+
+def _convert(raw, width, height, depth, color, channels, stride, bpp, palette, transparency):
     rows = _unfilter(raw, height, stride, bpp)
     if depth == 16:
         samples = rows.reshape(height, width * channels, 2)[:, :, 0]

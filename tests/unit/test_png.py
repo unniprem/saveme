@@ -75,6 +75,11 @@ def test_palette_transparency():
     (_png(2, 1, 3, 8, b"\x00\x00\x05", extra=[(b"PLTE", bytes(6))]), "palette index"),
     (_png(1, 1, 3, 8, b"\x00\x00"), "missing palette"),
     (SIGNATURE + b"\x00\x00\x00\x0dIHDR", "truncated|no IEND"),
+    (_png(1, 1, 2, 8, b"\x00\x00\x00\x00", extra=[(b"tRNS", b"\x00\x01\x02")]), "transparency"),  # 3 bytes, RGB
+    (_png(1, 1, 2, 8, b"\x00\x00\x00\x00", extra=[(b"tRNS", bytes([1, 44, 0, 0, 0, 0]))]), "transparency"),  # 300
+    (_png(1, 1, 0, 1, b"\x00\x00", extra=[(b"tRNS", b"\x00\x05")]), "transparency"),  # 5 > 1-bit
+    (_png(1, 1, 6, 8, b"\x00" + bytes(4), extra=[(b"tRNS", b"\x00\x00")]), "transparency"),  # RGBA has alpha
+    (_png(1, 1, 3, 8, b"\x00\x00", extra=[(b"PLTE", bytes(3)), (b"tRNS", bytes(2))]), "transparency"),
 ])
 def test_malformed_pngs_are_refused(data, message):
     with pytest.raises(PngError, match=message):

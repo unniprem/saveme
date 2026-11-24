@@ -565,3 +565,126 @@ async def test_acceptance_several_highlights_export_as_a_zip(real, temp_dir):
         assert abs(probe["duration"] - length) < 0.1
         frame = frame_rgb(path, 1.0)
         assert colour_at(frame, 0.5, 0.5) != "black"
+
+
+# --- fixes from the independent review ----------------------------------------------------------
+
+async def test_previews_keep_the_clip_length_limit(settings, stub):
+    rs = load_render_settings({"RENDER_MAX_CLIP_SECONDS": "10"})
+    async with running(app_for(settings, stub, render_settings=rs)) as client:
+        source_id = await ready_source(client)
+        r = await client.post(f"/api/sources/{source_id}/shorts/previews",
+                              json={"clip": {"start": 0, "end": 25}, "spec": {"template": "talking_head"}})
+        assert r.status_code == 400 and "10-second" in r.json()["error"]["message"]
+
+
+async def test_a_still_at_the_clips_very_end_shows_a_frame_just_before_it(client, stub):
+    source_id = await ready_source(client)
+    r = await client.post(f"/api/sources/{source_id}/shorts/previews",
+                          json={"clip": {"start": 25, "end": 30}, "spec": {"template": "educational"}, "at": 5.0})
+    assert (await poll_preview(client, r.json()["preview_id"]))["status"] == "ready"
+    assert renders(stub)[-1]["at"] == pytest.approx(4.9)
+
+
+async def test_back_to_back_previews_never_leak_a_hold(client, stub):
+    source_id = await ready_source(client)
+    body = {"clip": {"start": 2, "end": 8}, "spec": {"template": "educational"}}
+    # Previews started together: each newer one cancels the one before, possibly before it ever ran.
+    results = await asyncio.gather(*(client.post(f"/api/sources/{source_id}/shorts/previews", json=body)
+                                     for _ in range(3)))
+    ids = [r.json()["preview_id"] for r in results]
+    for preview_id in ids:
+        await poll_preview(client, preview_id)
+    await asyncio.sleep(0.05)
+    # With no hold left, closing the source works and its folder goes (a leaked hold kept it "in use").
+    view = (await client.post(f"/api/sources/{source_id}/close", headers=ORIGIN)).json()
+    assert view["status"] == "expired"
+
+
+async def test_spawn_releases_a_hold_when_cancelled_before_starting(settings):
+    from app.render_jobs import RenderManager
+
+    class Jobs:
+        def __init__(self):
+            self.released = 0
+
+        def add_source_listener(self, cb):
+            pass
+
+        def release_source(self, source):
+            self.released += 1
+
+    jobs = Jobs()
+    manager = RenderManager(load_render_settings({}), jobs, settings, capabilities=lambda: FULL)
+
+    async def work():
+        await asyncio.sleep(10)
+
+    task = manager._spawn(work(), object())  # noqa: SLF001
+    task.cancel()  # before its first step
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert jobs.released == 1
+    task = manager._spawn(asyncio.sleep(0), object())  # noqa: SLF001
+    await task
+    assert jobs.released == 2  # once per task, never twice
+
+
+async def test_no_zip_while_rendering_and_concurrent_zips_agree(settings):
+    stub = RendererStub(block=(2,))
+    async with running(app_for(settings, stub)) as client:
+        source_id = await ready_source(client)
+        render_id = await start(client, source_id, [{"start": 0, "end": 5}, {"start": 5, "end": 9}],
+                                {"template": "educational"})
+        deadline = time.monotonic() + 5
+        while stub.renders < 2:
+            assert time.monotonic() < deadline
+            await asyncio.sleep(0.02)
+        r = await client.get(f"/api/renders/{render_id}/zip")
+        assert r.status_code == 409 and "finished" in r.json()["error"]["message"]
+        stub.gate.set()
+        await poll_render(client, render_id)
+        a, b = await asyncio.gather(client.get(f"/api/renders/{render_id}/zip"),
+                                    client.get(f"/api/renders/{render_id}/zip"))
+        assert a.status_code == b.status_code == 200 and a.content == b.content
+        assert len(zipfile.ZipFile(io.BytesIO(a.content)).namelist()) == 2
+
+
+async def test_skipping_every_clip_cancels_the_render(settings):
+    stub = RendererStub(block=(1,))
+    async with running(app_for(settings, stub)) as client:
+        source_id = await ready_source(client)
+        render_id = await start(client, source_id, [{"start": 0, "end": 5}, {"start": 5, "end": 9}],
+                                {"template": "educational"})
+        await asyncio.wait_for(stub.started.wait(), 5)
+        await client.post(f"/api/renders/{render_id}/clips/2/cancel", headers=ORIGIN)
+        await client.post(f"/api/renders/{render_id}/clips/1/cancel", headers=ORIGIN)
+        view = await poll_render(client, render_id)
+        assert view["status"] == "cancelled" and view["error"] is None
+
+
+async def test_asset_uploads_count_against_disk_and_limits(settings, render_media, monkeypatch):
+    from app import render_jobs
+    from app.jobs import JobManager
+
+    stub = RendererStub()
+    async with running(app_for(settings, stub)) as client:
+        source_id = await ready_source(client)
+        url = f"/api/sources/{source_id}/shorts/assets"
+        logo = render_media["logo.png"].read_bytes()
+        monkeypatch.setattr(render_jobs, "MAX_ASSETS_PER_SOURCE", 2)
+        first = (await client.post(f"{url}?kind=logo", content=logo, headers={"content-type": "image/png"})).json()
+        stub.block = (1,)
+        render_id = await start(client, source_id, [{"start": 0, "end": 5}],
+                                {"template": "educational", "branding": {"logo": first["asset_id"]}})
+        await asyncio.wait_for(stub.started.wait(), 5)
+        second = await client.post(f"{url}?kind=logo", content=logo, headers={"content-type": "image/png"})
+        assert second.status_code == 200
+        third = await client.post(f"{url}?kind=logo", content=logo, headers={"content-type": "image/png"})
+        assert third.status_code == 200  # room made by dropping the second, not the one the render uses
+        stub.gate.set()
+        view = await poll_render(client, render_id)
+        assert view["status"] == "ready"
+        monkeypatch.setattr(JobManager, "reserve_disk", lambda self, key, path, nbytes: False)
+        r = await client.post(f"{url}?kind=logo", content=logo, headers={"content-type": "image/png"})
+        assert r.status_code == 503 and r.json()["error"]["code"] == "disk_full"

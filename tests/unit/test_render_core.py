@@ -190,10 +190,33 @@ def test_a_path_holds_outside_its_keyframes_and_jumps_at_cuts():
     assert Path.still(5).is_still and not path.is_still
 
 
-def test_long_paths_stay_flat_sums():
-    points = tuple((i * 0.2, 500 + 100 * math.sin(i / 7)) for i in range(1500))  # 5 minutes at 5 fps
+def _depth(expr: str) -> int:
+    depth = top = 0
+    for ch in expr:
+        depth += ch == "("
+        top = max(top, depth)
+        depth -= ch == ")"
+    return top
+
+
+def test_long_paths_nest_only_logarithmically():
+    # FFmpeg evaluates one level per "+" of a flat sum, and a 4,000-term flat sum crashed it (SIGBUS).
+    points = tuple((i * 0.2, 500 + 100 * math.sin(i / 7)) for i in range(4000))
     expr = path_expr(Path(points))
-    assert "clip(" in expr and expr.count("(") == expr.count(")") and "((" not in expr
+    assert "clip(" in expr and expr.count("(") == expr.count(")")
+    assert _depth(expr) <= 16  # about log2(4000) levels of sums, plus clip()
+    for k in range(0, 800, 37):
+        assert _eval(expr, k) == pytest.approx(Path(points).at(k), abs=1e-3)
+
+
+def test_bounded_simplify_caps_keyframes():
+    from app.reframe import MAX_PATH_POINTS, bounded_simplify
+
+    busy = [(i * 0.2, 500 + 300 * math.sin(i)) for i in range(20000)]
+    out = bounded_simplify(busy, 1.0)
+    assert len(out) <= MAX_PATH_POINTS and out[0] == busy[0] and out[-1] == busy[-1]
+    calm = [(i * 0.2, 100.0) for i in range(1000)]
+    assert bounded_simplify(calm) == [calm[0], calm[-1]]
 
 
 def test_simplify_keeps_shape_within_tolerance_and_keeps_cuts():
@@ -265,7 +288,7 @@ def test_a_plain_graph():
 
 def test_a_moving_crop_is_an_expression():
     graph = build(_plan(layout=CropLayout(CropPlan(606, 1080, Path(((0.0, 0.0), (2.0, 200.0))), Path.still(0)))))
-    assert "x='0+100*clip(t-0,0,2)'" in graph
+    assert "x='(0+100*clip(t-0,0,2))'" in graph
 
 
 def test_graph_parts():

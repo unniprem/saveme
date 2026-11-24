@@ -27,7 +27,7 @@ from pathlib import Path
 from app.errors import AppError
 from app.mediafile import FFMPEG, stderr_tail
 from app.reframe import Path as CropPath
-from app.reframe import centred_offset, clamp, crop_window, even, simplify
+from app.reframe import bounded_simplify, centred_offset, clamp, crop_window, even
 
 MODEL_PATH = Path(__file__).resolve().parent / "models" / "face_detection_yunet_2023mar.onnx"
 MODEL_SHA256 = "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
@@ -517,7 +517,9 @@ def _at(points: list[tuple[float, float, float]], t: float) -> tuple[float, floa
         if t0 <= t <= t1 and t1 > t0:
             u = (t - t0) / (t1 - t0)
             return x0 + (x1 - x0) * u, y0 + (y1 - y0) * u
-    return points[-1][1], points[-1][2] if t > points[0][0] else (points[0][1], points[0][2])
+    if t <= points[0][0]:
+        return points[0][1], points[0][2]
+    return points[-1][1], points[-1][2]
 
 
 def _window_paths(times, cuts, targets, *, src_w, src_h, win_w, win_h, fps, deadzone, margin) -> tuple[CropPath, CropPath]:
@@ -568,8 +570,8 @@ def _window_paths(times, cuts, targets, *, src_w, src_h, win_w, win_h, fps, dead
         if clean and t < clean[-1][0]:
             t = clean[-1][0]
         clean.append((t, x, y))
-    path_x = CropPath(tuple(simplify([(t, x) for t, x, _y in clean], 1.0)))
-    path_y = CropPath(tuple(simplify([(t, y) for t, _x, y in clean], 1.0)))
+    path_x = CropPath(tuple(bounded_simplify([(t, x) for t, x, _y in clean], 1.0)))
+    path_y = CropPath(tuple(bounded_simplify([(t, y) for t, _x, y in clean], 1.0)))
     return path_x, path_y
 
 

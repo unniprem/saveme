@@ -339,3 +339,18 @@ def test_tracker_refuses_a_stale_or_mismatched_analysis(tmp_path):
     two = tmp_path / "two.json"
     two.write_text(json.dumps(_analysis([[(0, (300, 300, 100, 130)), (1, (1400, 300, 100, 130))]] * 10)))
     assert isinstance(tracker_for(two)(LayoutRequest(mode="split"), 1920, 1080, 1080, 1920), SplitLayout)
+
+
+def test_a_one_sample_subject_flip_doesnt_crash():
+    # Two people too far apart to frame together; the detector misses one of them for one sample, so the
+    # framing switches subject for a single sample (it used to raise TypeError in _at).
+    far = [(0, (100, 300, 220, 280)), (1, (1500, 300, 220, 280))]
+    boxes = [far] * 10 + [[far[1]]] + [far] * 10
+    for mode in ("face", "speaker"):
+        layout = plan_face_layout(_analysis(boxes), mode=mode, src_w=1920, src_h=1080, out_w=1080, out_h=1920,
+                                  margin=0.08, deadzone=0.3, speech=[(0.0, 5.0)])
+        values = [layout.crop.x.at(t / 10) for t in range(0, 45)]
+        assert all(0 <= v <= 1920 - 606 for v in values)
+    last = [far] * 10 + [[far[1]]]  # a switch on the scene's very last sample
+    assert plan_face_layout(_analysis(last), mode="face", src_w=1920, src_h=1080, out_w=1080, out_h=1920,
+                            margin=0.08, deadzone=0.3) is not None

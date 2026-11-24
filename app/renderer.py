@@ -39,6 +39,15 @@ from app.render_graph import SUBTITLES_NAME, Bumper, GraphPlan, LogoPlan, SplitL
 from app.worker import _clear, _read_request, _writer, limit_memory, protocol_out
 
 GRAPH_NAME = "graph.txt"
+# Video codecs Auto Shorts decodes (the image's FFmpeg has exactly these decoders), and the containers an
+# intro or outro may come in (ffprobe's format names for MP4/MOV and Matroska/WebM).
+RENDERABLE_CODECS = frozenset({"h264", "hevc", "vp8", "vp9", "av1"})
+ASSET_CONTAINERS = frozenset({"mov,mp4,m4a,3gp,3g2,mj2", "matroska,webm"})
+_CODEC_NAMES = {"mpeg4": "MPEG-4 Part 2", "mjpeg": "Motion JPEG", "png": "PNG", "gif": "GIF", "prores": "ProRes"}
+
+
+def _codec_name(codec: str) -> str:
+    return _CODEC_NAMES.get(codec, codec if codec.isalnum() and len(codec) <= 20 else "unknown")
 FRAME_NAME = "frame.jpg"
 _PROBE_TIMEOUT = 60
 _EMIT_INTERVAL = 0.25
@@ -434,6 +443,9 @@ def render(req: RenderRequest, emit: Callable[[dict], None], *, tracker=None) ->
     info = probe_video(req.source)
     if info is None:
         raise AppError("unreadable_media")
+    if info.codec not in RENDERABLE_CODECS:
+        raise AppError("render_failed", f"Auto Shorts can't render this video's format ({_codec_name(info.codec)}). "
+                       "Clip Studio can still cut it without re-encoding.")
     width, height = canvas_size(req, info)
     fps = output_fps(req, info)
     display_w = info.width * info.sar[0] // info.sar[1]
@@ -610,9 +622,14 @@ def run_asset(req: dict) -> dict:
         out = path.with_suffix(".rgba")
         out.write_bytes(rgba)
         return {"kind": "logo", "width": width, "height": height, "file": out.name}
+    from app.mediafile import probe
+
+    found = probe(path)  # the container: MP4/MOV or Matroska/WebM only, as uploads (never an image format)
     info = probe_video(path)
-    if info is None or info.duration is None:
-        raise AppError("invalid_asset", "SaveMe can't read this file as a video.")
+    if found is None or found.format_name not in ASSET_CONTAINERS or info is None or info.duration is None \
+            or info.codec not in RENDERABLE_CODECS:
+        raise AppError("invalid_asset", "An intro or outro must be an MP4, MOV, MKV or WebM video "
+                       "(H.264, HEVC, VP8, VP9 or AV1).")
     return {"kind": "video", "width": info.width, "height": info.height, "duration": round(info.duration, 3),
             "has_audio": info.has_audio}
 

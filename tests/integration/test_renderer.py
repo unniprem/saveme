@@ -309,3 +309,47 @@ async def test_cancelling_a_render_kills_ffmpeg(render_media, tmp_path, workdir)
     await asyncio.sleep(1.0)
     assert (part.stat().st_size if part.exists() else 0) == size  # nothing writes any more
     assert not (workdir / "clip-01.mp4").exists()
+
+
+def test_a_very_long_crop_path_renders(render_media, tmp_path, workdir, monkeypatch):
+    # 4,000 keyframes: a flat FFmpeg sum this long crashed FFmpeg; the balanced sum doesn't.
+    import math
+
+    from app.reframe import Path as CropPath
+    from app.render_graph import CropLayout, CropPlan
+
+    points = tuple((i * 0.0005, 300 + 300 * math.sin(i / 3)) for i in range(4000))
+    layout = CropLayout(CropPlan(302, 540, CropPath(points), CropPath.still(0)))
+    monkeypatch.setattr(renderer, "plan_layout", lambda *a, **k: (layout, "face"))
+    src = source_of(render_media, tmp_path)
+    result, _ = run(render_request(src, workdir))
+    assert result["mode"] == "face" and ffprobe(workdir / "clip-01.mp4")["video"]["codec_name"] == "h264"
+
+
+def test_intros_must_be_real_videos(render_media, tmp_path):
+    import subprocess
+
+    from tests.support.media import real_ffmpeg
+
+    gif = tmp_path / "logo.video"  # an animated GIF under a video name
+    subprocess.run([real_ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=64x64:r=5:d=2", "-f", "gif",
+                    str(gif)], check=True, timeout=60)
+    with pytest.raises(AppError) as exc:
+        renderer.run_asset({"path": str(gif), "kind": "video"})
+    assert exc.value.code == "invalid_asset" and "MP4, MOV, MKV or WebM" in exc.value.message
+    ok = renderer.run_asset({"path": str(render_media["intro.mp4"]), "kind": "video"})
+    assert ok["kind"] == "video" and ok["duration"] == pytest.approx(1.0, abs=0.1)
+
+
+def test_a_source_codec_auto_shorts_cant_decode_is_refused_clearly(tmp_path, workdir):
+    import subprocess
+
+    from tests.support.media import real_ffmpeg
+
+    folder = tmp_path / "source"
+    folder.mkdir(exist_ok=True)
+    subprocess.run([real_ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=2",
+                    "-c:v", "mpeg4", str(folder / "media.mp4")], check=True, timeout=60)
+    with pytest.raises(AppError) as exc:
+        run(render_request(folder / "media.mp4", workdir))
+    assert exc.value.code == "render_failed" and "MPEG-4 Part 2" in exc.value.message

@@ -56,6 +56,7 @@ RECORD_SECONDS = 3600
 MAX_RENDERS_PER_SOURCE = 4  # finished renders whose files a source keeps
 MAX_PREVIEWS_PER_SOURCE = 4
 PREVIEW_CLIP_SECONDS = 30.0  # a draft preview covers at most the clip's first 30 s
+PREVIEW_END_MARGIN = 0.1  # a still asked for at the clip's very end shows the frame this much earlier
 MAX_LOGO_BYTES = 2 * 1024 * 1024
 MAX_LOGO_SIDE = 2048
 MAX_BUMPER_BYTES = 100 * 1024 * 1024
@@ -136,6 +137,7 @@ class Render:
     error: AppError | None = None
     task: asyncio.Task | None = field(default=None, repr=False)
     zips: dict[bool, Path] = field(default_factory=dict)
+    zip_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
 
 @dataclass(eq=False)
@@ -151,6 +153,7 @@ class Preview:
     error: AppError | None = None
     file: Path | None = None
     finished_at: float | None = None
+    assets: set[str] = field(default_factory=set)
     task: asyncio.Task | None = field(default=None, repr=False)
 
 
@@ -193,6 +196,8 @@ class RenderManager:
             self._settings, self._config_error = settings, None
             self._slots = asyncio.Semaphore(settings.render_max_concurrent_jobs)
         self._preview_slot = asyncio.Semaphore(1)
+        self._asset_slots = asyncio.Semaphore(2)
+        self._asset_uploads: dict[str, int] = {}  # source id -> uploads still arriving or being checked
         jobs.add_source_listener(self._on_source_ended)
 
     # --- availability ---------------------------------------------------------------------
@@ -339,20 +344,53 @@ class RenderManager:
             return MAX_BUMPER_BYTES
         raise AppError("invalid_request", "kind must be logo, intro or outro")
 
-    def begin_asset(self, source_id: str, kind: str) -> tuple[Job, Path, str]:
-        """A path to write an uploaded asset to (inside the source's render folder) and its new id."""
+    def _assets_in_use(self, source_id: str) -> set[str]:
+        """Asset ids a queued or running render or preview of this source uses."""
+        used: set[str] = set()
+        for render in self._renders.values():
+            if render.source_id == source_id and render.status in _PENDING:
+                b = render.resolved.branding
+                used |= {x for x in (b.logo, b.intro, b.outro) if x}
+        for preview in self._previews.values():
+            if preview.source_id == source_id and preview.status not in ("ready", "failed", "cancelled"):
+                used |= preview.assets
+        return used
+
+    def begin_asset(self, source_id: str, kind: str, size: int) -> tuple[Job, Path, str]:
+        """A path to write an uploaded asset to (inside the source's render folder) and its new id, once
+        it fits: at most MAX_ASSETS_PER_SOURCE per source counting uploads still arriving (the oldest
+        asset no render or preview is using makes room), and the disk budget (held until end_asset)."""
         self._ready()
         self.asset_limits(kind)
         source = self._jobs.ready_source(source_id)
         held = [a for a in self._assets.values() if a.source_id == source.id]
-        if len(held) >= MAX_ASSETS_PER_SOURCE:
-            oldest = held[0]
-            self._assets.pop(oldest.id, None)
-            oldest.path.unlink(missing_ok=True)
-        folder = self._base(source) / "assets"
-        folder.mkdir(parents=True, exist_ok=True)
+        pending = self._asset_uploads.get(source.id, 0)
+        if len(held) + pending >= MAX_ASSETS_PER_SOURCE:
+            in_use = self._assets_in_use(source.id)
+            spare = [a for a in held if a.id not in in_use]
+            if not spare or pending >= MAX_ASSETS_PER_SOURCE:
+                raise AppError("busy", "This video already has as many logos and videos as SaveMe keeps. "
+                               "Wait for the render using them to finish.")
+            self._assets.pop(spare[0].id, None)
+            spare[0].path.unlink(missing_ok=True)
         asset_id = _new_id(self._assets)
+        folder = self._base(source) / "assets"
+        # The upload, and for a logo its decoded pixels (at most 2048 × 2048 × 4 bytes).
+        reserve = size + (MAX_LOGO_SIDE * MAX_LOGO_SIDE * 4 if kind == "logo" else 0) + 1024 * 1024
+        if not self._jobs.reserve_disk(f"asset:{asset_id}", folder, reserve):
+            raise AppError("disk_full")
+        folder.mkdir(parents=True, exist_ok=True)
+        self._asset_uploads[source.id] = pending + 1
         return source, folder / f"{asset_id}.{'png' if kind == 'logo' else 'video'}", asset_id
+
+    def end_asset(self, source: Job, asset_id: str) -> None:
+        """The upload of `asset_id` ended (kept or not): release its disk reservation and its place."""
+        self._jobs.release_disk(f"asset:{asset_id}")
+        left = self._asset_uploads.get(source.id, 0) - 1
+        if left > 0:
+            self._asset_uploads[source.id] = left
+        else:
+            self._asset_uploads.pop(source.id, None)
 
     async def finish_asset(self, source: Job, path: Path, asset_id: str, kind: str) -> Asset:
         """Check an uploaded asset in the renderer worker and keep it: a logo's PNG header is checked here,
@@ -363,10 +401,11 @@ class RenderManager:
                 with open(path, "rb") as f:
                     check_png(f.read(64))
             work.mkdir(exist_ok=True)
-            result = await self._run_worker({"mode": "asset", "kind": "logo" if kind == "logo" else "video",
-                                             "path": str(path), "threads": 1,
-                                             "memory_bytes": self._settings.max_memory_bytes},
-                                            cmd=self._cmd, timeout=120, workdir=work)
+            async with self._asset_slots:  # checks are quick, but never run many at once
+                result = await self._run_worker({"mode": "asset", "kind": "logo" if kind == "logo" else "video",
+                                                 "path": str(path), "threads": 1,
+                                                 "memory_bytes": self._settings.max_memory_bytes},
+                                                cmd=self._cmd, timeout=120, workdir=work)
             if kind == "logo":
                 rgba = path.with_suffix(".rgba")
                 if result.get("file") != rgba.name or not rgba.is_file():
@@ -487,7 +526,7 @@ class RenderManager:
                         clips=[ClipState(n, clip) for n, clip in enumerate(body.clips, 1)], folder=folder,
                         title=source.title, created_at=self._clock())
         self._renders[render.id] = render
-        render.task = asyncio.create_task(self._run(render, source))
+        render.task = self._spawn(self._run(render, source), source)
         logger.info("render %s of %d clips queued for source %s", render.id, len(render.clips), source.id)
         return render
 
@@ -533,6 +572,32 @@ class RenderManager:
                 self._cancel_preview(preview)
         for asset_id in [a.id for a in self._assets.values() if a.source_id == source_id]:
             self._assets.pop(asset_id, None)
+
+    def _spawn(self, coro, source: Job) -> asyncio.Task:
+        """Start `coro` for a source this manager has just held, and release that hold when the task ends,
+        whether the coroutine ran (its own `finally` released it) or was cancelled before its first step."""
+        state = {"released": False, "started": False}
+
+        def release() -> None:
+            if not state["released"]:
+                state["released"] = True
+                self._jobs.release_source(source)
+
+        async def run():
+            state["started"] = True
+            try:
+                await coro
+            finally:
+                release()
+
+        def done(_task: asyncio.Task) -> None:
+            if not state["started"]:
+                coro.close()  # cancelled before its first step: it never ran
+            release()
+
+        task = asyncio.create_task(run())
+        task.add_done_callback(done)
+        return task
 
     def _end_clip(self, clip: ClipState, status: str, error: AppError | None = None) -> None:
         clip.status, clip.error, clip.detail = status, error, None
@@ -623,8 +688,12 @@ class RenderManager:
             if render.status == "running":
                 ready = any(c.status == "ready" for c in render.clips)
                 errors = [c.error for c in render.clips if c.error is not None]
-                self._end_render(render, "ready" if ready else "failed",
-                                 None if ready else (errors[0] if errors else AppError("render_failed")))
+                if ready:
+                    self._end_render(render, "ready")
+                elif all(c.status == "cancelled" for c in render.clips):
+                    self._end_render(render, "cancelled")
+                else:
+                    self._end_render(render, "failed", errors[0] if errors else AppError("render_failed"))
                 logger.info("render %s %s (%d of %d clips)", render.id, render.status,
                             sum(c.status == "ready" for c in render.clips), len(render.clips))
         except asyncio.CancelledError:
@@ -639,7 +708,6 @@ class RenderManager:
         finally:
             for clip in render.clips:
                 shutil.rmtree(render.folder / f"work-{clip.number:02d}", ignore_errors=True)
-            self._jobs.release_source(source)
 
     async def _render_clip(self, render: Render, clip: ClipState, source: Job, settings: RenderSettings,
                            transcript: Transcript | None) -> None:
@@ -771,13 +839,21 @@ class RenderManager:
         from app.filenames import short_filename, shorts_zip_name
 
         render = self.get_render(render_id)
+        if render.status in _PENDING:
+            raise AppError("not_ready", "The ZIP can be downloaded once the render has finished.")
         ready = [c for c in render.clips if c.status == "ready" and c.files.get("mp4") and c.files["mp4"].is_file()]
         if not ready:
-            raise AppError("not_ready", "No short in this render is ready yet.")
+            raise AppError("not_ready", "No short in this render is ready.")
         name = shorts_zip_name(render.title, len(ready))
-        path = render.zips.get(subtitles)
-        if path is not None and path.is_file() and render.status not in _PENDING:
-            return path, name
+        async with render.zip_lock:  # two first requests (a double click) build it once
+            path = render.zips.get(subtitles)
+            if path is not None and path.is_file():
+                return path, name
+            return await self._build_zip(render, ready, subtitles), name
+
+    async def _build_zip(self, render: Render, ready: list[ClipState], subtitles: bool) -> Path:
+        from app.filenames import short_filename
+
         entries = []
         for clip in ready:
             for kind, file in sorted(clip.files.items()):
@@ -786,7 +862,7 @@ class RenderManager:
                 entries.append((file, short_filename(clip.clip.title or render.title, clip.number, clip.clip.start,
                                                      clip.clip.end, kind, numbered=True)))
         size = sum(f.stat().st_size + 1024 for f, _n in entries) + 1024
-        key = f"zip:{render.id}"
+        key = f"zip:{render.id}:{int(subtitles)}"
         target = render.folder / f"shorts{'-subs' if subtitles else ''}.zip"
         if not self._jobs.reserve_disk(key, render.folder, size):
             raise AppError("disk_full")
@@ -795,7 +871,7 @@ class RenderManager:
         finally:
             self._jobs.release_disk(key)
         render.zips[subtitles] = target
-        return target, name
+        return target
 
     # --- previews -----------------------------------------------------------------------------
 
@@ -804,6 +880,9 @@ class RenderManager:
         source = self._jobs.ready_source(source_id)
         resolved = resolve(body.spec)
         start, end = _clip_seconds(body.clip, source.duration)
+        if end - start > settings.render_max_clip_seconds:  # face analysis covers the whole clip
+            raise AppError("invalid_clip", f"This clip is longer than the {settings.render_max_clip_seconds}-second "
+                           "limit for Auto Shorts.")
         if body.kind == "frame" and not 0 <= body.at <= end - start:
             raise AppError("invalid_clip", "Choose a moment inside the clip.")
         if body.kind == "frame" and not caps.jpeg:
@@ -817,9 +896,10 @@ class RenderManager:
             self._drop_preview(old)
         self._prune()
         self._jobs.hold_source(source.id)
-        preview = Preview(id=_new_id(self._previews), source_id=source.id, kind=body.kind, created_at=self._clock())
+        preview = Preview(id=_new_id(self._previews), source_id=source.id, kind=body.kind, created_at=self._clock(),
+                          assets={x for x in (resolved.branding.logo,) if x})
         self._previews[preview.id] = preview
-        preview.task = asyncio.create_task(self._run_preview(preview, source, body, resolved, settings))
+        preview.task = self._spawn(self._run_preview(preview, source, body, resolved, settings), source)
         return preview
 
     def get_preview(self, preview_id: str) -> Preview:
@@ -896,8 +976,10 @@ class RenderManager:
                     if event.get("event") == "progress" and isinstance(event.get("percent"), (int, float)):
                         preview.percent = float(event["percent"])
 
+                # The last frame of a clip sits a little before its end (at the very end there is no frame).
+                at = min(body.at, max(0.0, end - start - PREVIEW_END_MARGIN))
                 request = {"mode": "render", "kind": "video" if video else "frame", "source": str(source.file_path),
-                           "workdir": str(work), "output": output, "start": start, "end": end, "at": body.at,
+                           "workdir": str(work), "output": output, "start": start, "end": end, "at": at,
                            "aspect": resolved.aspect, "width": resolved.width, "height": resolved.height,
                            "fps": resolved.fps, "quality": "draft", "encoder": encoder,
                            "threads": settings.render_cpu_threads, "layout": layout,
@@ -926,7 +1008,6 @@ class RenderManager:
         finally:
             self._jobs.release_disk(key)
             shutil.rmtree(work, ignore_errors=True)
-            self._jobs.release_source(source)
 
 
 def _write_zip(target: Path, entries: list[tuple[Path, str]]) -> None:

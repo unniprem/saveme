@@ -123,10 +123,12 @@ def balance_lines(words: Sequence[CaptionWord], max_lines: int, max_chars: int) 
     """Split words into at most `max_lines` lines of similar width (graphemes), each ≤ max_chars when
     possible. Returns word index ranges."""
     n = len(words)
-    sizes = [graphemes(w.text) for w in words]
+    prefix = [0]
+    for w in words:
+        prefix.append(prefix[-1] + graphemes(w.text))
 
-    def width(a: int, b: int) -> int:
-        return sum(sizes[a:b]) + max(0, b - a - 1)
+    def width(a: int, b: int) -> int:  # O(1): the graphemes of words a..b-1 plus the spaces between them
+        return prefix[b] - prefix[a] + max(0, b - a - 1)
 
     if n <= 1 or max_lines == 1 or width(0, n) <= max_chars:
         return ((0, n),)
@@ -362,6 +364,7 @@ def to_ass(cues: Sequence[CaptionCue], plan: AssPlan) -> str:
                 events.append(f"Dialogue: 2,{_ass_time(cue.start)},{_ass_time(cue.end)},Caption,,0,0,0,,"
                               f"{pos}{font}{_cue_text(cue, style, active=None, primary=tag_color(style['color']))}")
                 continue
+            made = 0
             for i, word in enumerate(cue.words):
                 start = cue.start if i == 0 else word.start
                 end = cue.words[i + 1].start if i + 1 < len(cue.words) else cue.end
@@ -369,6 +372,10 @@ def to_ass(cues: Sequence[CaptionCue], plan: AssPlan) -> str:
                     continue
                 events.append(f"Dialogue: 2,{_ass_time(start)},{_ass_time(end)},Caption,,0,0,0,,"
                               f"{pos}{font}{_cue_text(cue, style, active=i, primary=tag_color(style['color']))}")
+                made += 1
+            if not made:  # every word too short to highlight on its own: show the cue plainly
+                events.append(f"Dialogue: 2,{_ass_time(cue.start)},{_ass_time(cue.end)},Caption,,0,0,0,,"
+                              f"{pos}{font}{_cue_text(cue, style, active=None, primary=tag_color(style['color']))}")
     return "\n".join(header + events) + "\n"
 
 

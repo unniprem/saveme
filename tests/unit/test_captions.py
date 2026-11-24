@@ -303,3 +303,20 @@ def test_refinement_never_moves_a_start_past_its_end_or_an_end_past_the_next_sta
     for a, b in zip(out, out[1:]):
         assert a.end <= b.start + 1e-9 and a.start <= a.end
     assert out[-1].end <= 2.0
+
+
+def test_balancing_long_cues_is_fast():
+    import time
+
+    words = [W(0, 0, "a")] * 100
+    began = time.perf_counter()
+    for _ in range(50):
+        assert len(balance_lines(words, 3, 20)) == 3
+    assert time.perf_counter() - began < 1.0  # O(n²) with prefix sums (was O(n³): 2.3 s for 500 cues)
+
+
+def test_a_cue_too_quick_to_highlight_still_shows():
+    words = tuple(W(0.001 * i, 0.001 * i, f"w{i}") for i in range(4))
+    cue = CaptionCue(0.0, 0.004, words, ((0, 4),))
+    events = _events(to_ass([cue], _plan("bold_creator")))
+    assert len(events) == 1 and "W0 W1 W2 W3" in events[0]

@@ -98,10 +98,23 @@ def _num(value: float) -> str:
     return "0" if text in ("-0", "") else text
 
 
+MAX_PATH_POINTS = 1500  # keyframes a crop path may have (see bounded_simplify)
+
+
+def _balanced_sum(terms: list[str]) -> str:
+    """`terms` added as a balanced tree of parentheses. FFmpeg evaluates an expression recursively, one
+    level per `+` in a flat sum (a 4,000-term flat sum crashes it with a stack overflow on macOS), so the
+    nesting is kept at about log2(len(terms))."""
+    if len(terms) == 1:
+        return terms[0]
+    mid = len(terms) // 2
+    return f"({_balanced_sum(terms[:mid])}+{_balanced_sum(terms[mid:])})"
+
+
 def path_expr(path: Path) -> str:
     """An FFmpeg expression of `t` equal to `path`: the first value plus one term per segment,
-    `slope*clip(t-t0,0,dt)` for a ramp and `jump*gte(t,t0)` for a cut. A flat sum (no nesting), so
-    its depth doesn't grow with the clip's length."""
+    `slope*clip(t-t0,0,dt)` for a ramp and `jump*gte(t,t0)` for a cut, summed as a balanced tree so
+    its nesting grows only with the logarithm of the clip's length."""
     pts = path.points
     terms = [_num(pts[0][1])]
     for (t0, v0), (t1, v1) in zip(pts, pts[1:]):
@@ -112,7 +125,18 @@ def path_expr(path: Path) -> str:
             terms.append(f"{_num(dv)}*gte(t,{_num(t1)})")
         else:
             terms.append(f"{_num(dv / (t1 - t0))}*clip(t-{_num(t0)},0,{_num(t1 - t0)})")
-    return "+".join(terms).replace("+-", "-")
+    return _balanced_sum(terms)
+
+
+def bounded_simplify(points: Sequence[tuple[float, float]], tolerance: float = 1.0,
+                     max_points: int = MAX_PATH_POINTS) -> list[tuple[float, float]]:
+    """simplify(), raising the tolerance until at most `max_points` keyframes remain (a long, busy path
+    then follows its subject a little more loosely rather than making an unbounded expression)."""
+    out = simplify(points, tolerance)
+    while len(out) > max_points:
+        tolerance *= 2
+        out = simplify(points, tolerance)
+    return out
 
 
 def simplify(points: Sequence[tuple[float, float]], tolerance: float = 1.0) -> list[tuple[float, float]]:
