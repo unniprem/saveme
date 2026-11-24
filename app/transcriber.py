@@ -72,6 +72,20 @@ def missing_model(name: str) -> AppError:
                     f"Install it with: python -m app.whisper_models {name}")
 
 
+# Files a faster-whisper model folder must hold. Without tokenizer.json, faster-whisper would
+# fetch one through the Rust tokenizers library, whose connections the Python guard can't see.
+MODEL_FILES = ("config.json", "model.bin", "tokenizer.json")
+
+
+def check_model_files(path: str, name: str) -> None:
+    """Raise whisper_model_missing unless the model folder at `path` is complete (an interrupted
+    install can leave a folder the hub cache still returns)."""
+    missing = [f for f in MODEL_FILES if not os.path.isfile(os.path.join(path, f))]
+    if missing:
+        print(f"transcriber: model {name!r} is missing {missing}", file=sys.stderr)
+        raise missing_model(name)
+
+
 def load_model(name: str, cpu_threads: int):
     """faster-whisper's model `name` from the local Hugging Face cache (never downloaded here)."""
     from faster_whisper import WhisperModel
@@ -82,6 +96,7 @@ def load_model(name: str, cpu_threads: int):
     except Exception as exc:  # huggingface_hub's "not in the cache" errors vary by version
         print(f"transcriber: model {name!r} not found locally: {exc!r}", file=sys.stderr)
         raise missing_model(name) from None
+    check_model_files(path, name)
     try:
         return WhisperModel(path, device="cpu", compute_type="int8", cpu_threads=cpu_threads,
                             num_workers=1)

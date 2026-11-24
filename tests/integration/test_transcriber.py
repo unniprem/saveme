@@ -282,3 +282,22 @@ def test_iter_windows_refuses_a_wav_in_the_wrong_format(tmp_path):
     with pytest.raises(AppError) as exc:
         list(iter_windows(path))
     assert exc.value.code == "transcription_failed"
+
+
+def test_an_incomplete_model_folder_is_refused_before_loading(tmp_path):
+    # Without tokenizer.json faster-whisper would fetch one with the Rust tokenizers library,
+    # whose network use the Python guard can't see.
+    from app.transcriber import check_model_files
+
+    folder = tmp_path / "snapshot"
+    folder.mkdir()
+    for name in ("config.json", "model.bin"):
+        (folder / name).write_bytes(b"x")
+    with pytest.raises(AppError) as exc:
+        check_model_files(str(folder), "base")
+    assert exc.value.code == "whisper_model_missing" and "app.whisper_models base" in exc.value.message
+    (folder / "tokenizer.json").write_text("{}")
+    check_model_files(str(folder), "base")
+    (folder / "model.bin").unlink()
+    with pytest.raises(AppError):
+        check_model_files(str(folder), "base")
