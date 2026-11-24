@@ -8,14 +8,14 @@
 
 The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with local faster-whisper transcription and OpenRouter as the only AI provider, built test-first in small commits on `feature/ai-clipping`, with this journal updated after every task. The brief was taken as a go-ahead without a question round; design calls are under Key Decisions.
 
-**Status: in progress.** Tasks 1–3 (audit, design, transcription) are done.
+**Status: in progress.** Tasks 1–4 (audit, design, transcription, OpenRouter client) are done.
 
 ### Progress by task
 
 - [x] **Task 1, audit.** Phase 1 is on `main` at `206d26b`. Integration points, dependencies and risks are in §1 of `docs/AI_CLIPPING_DESIGN.md`. Measured on this M2 (8 GB), 20 min of speech, `base`, int8, 2 threads: 600 s windows peaked at 1.10 GB RSS, 300 s at 0.74 GB, 120 s at 0.62 GB; VAD on took 76–81 s, VAD off 228 s.
 - [x] **Task 2, design.** `docs/AI_CLIPPING_DESIGN.md`: architecture, API contracts, schemas, lifecycle, limits.
 - [x] **Task 3, transcription.** `app/transcript.py` (schema, SRT/WebVTT import, language codes, cache file and reuse rule), `app/transcriber.py` (worker: FFmpeg → 16 kHz WAV → faster-whisper over 300 s windows), `app/whisper_models.py` (model installer), `extract_audio` in `app/mediafile.py`. Dependencies and the Docker build are updated; the image isn't built yet (Task 8).
-- [ ] Task 4, OpenRouter client
+- [x] **Task 4, OpenRouter.** `AiSettings`/`load_ai_settings` in `app/config.py` (separate from the download settings; the key is kept out of `repr` and errors), `.env.example` documents every AI variable, `app/openrouter.py` (catalogue and capability check, pricing tiers, chat completions, retries, key check, `UsageMeter`), and 9 new error codes.
 - [ ] Task 5, highlight engine
 - [ ] Task 6, job integration
 - [ ] Task 7, UI
@@ -33,10 +33,14 @@ The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with lo
 | `ee273d4` | test | Check a cancelled transcription by the worker's own PID |
 | `9434809` | build | Add faster-whisper, httpx, a baked Whisper model and WAV output |
 | `693274c` | feat | Decide when a cached transcript can be reused |
+| `3c6c61a` | feat | Add AI Highlights settings, apart from the download settings |
+| `f69c266` | feat | Add the OpenRouter client with retries and usage accounting |
 
 ### Test Results
 
 - Task 3: `tests/unit/test_transcript.py` 28 passed, `tests/unit/test_whisper_models.py` 6 passed, `tests/integration/test_transcriber.py` 26 passed (real FFmpeg 8.0.1; fake Whisper model through `tests/support/transcriber_entry.py`). Each new file failed first on the missing module. The opt-in real-model test also passed: `base` (installed with `python -m app.whisper_models base` into `~/.cache/huggingface`) transcribed macOS `say` speech as English and found "intelligence" and "vehicles".
+
+- Task 4: `tests/unit/test_ai_config.py` 33 passed, `tests/unit/test_packaging.py` 16 passed (now also checks the AI variables in `.env.example`, with only the key blank), `tests/unit/test_openrouter.py` 37 passed against `httpx.MockTransport` (`tests/support/openrouter.py` holds catalogue entries shaped like the live ones). Each failed first: missing module, missing `AiSettings`, missing `UsageMeter`.
 
 ### Key Decisions
 
@@ -47,6 +51,8 @@ The owner sent the Phase 2 brief: AI highlight detection in Clip Studio, with lo
 - **AI work doesn't share download slots or the queue.** It has its own semaphore (`AI_MAX_CONCURRENT_JOBS`), and an invalid AI setting turns off only AI.
 - **Transcript cache in the source's folder** (`ai/transcript.json`), so it ends with the source.
 - **PyAV is installed (a faster-whisper dependency) but never given media.** Audio is decoded by the hardened FFmpeg wrapper.
+- **Retries:** network errors, timeouts, 408, 429, 5xx and errors inside a 200 are retried 3 times (1 s, 2 s, 4 s plus jitter, or `Retry-After` up to 60 s). 401, 402 and other 4xx fail at once. OpenRouter's own messages are shown only for "refused" (4xx), cleaned and scrubbed of the key. A 401's message is never shown.
+- **Usage:** OpenRouter returns `usage.cost` by default (the docs say `usage: {include: true}` is deprecated), so it isn't requested. A call without a reported cost is priced from tokens × catalogue price, and the total is then labelled an estimate.
 - **`provider.data_collection: "deny"` by default**, so transcripts only go to providers that don't store or train on prompts.
 
 ### Issues Encountered
