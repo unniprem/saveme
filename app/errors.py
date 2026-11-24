@@ -44,6 +44,20 @@ CATALOG: dict[str, tuple[int, str]] = {
     "unreachable": (502, "Couldn't reach the source site. Check the link or try again later."),
     "disk_full": (503, "Server storage is full, try again later."),
     "config_error": (503, "The server is misconfigured. Please contact the owner."),
+    "ai_not_configured": (503, "AI analysis isn't set up. Add OPENROUTER_API_KEY to the server's .env "
+                               "and restart SaveMe."),
+    "ai_config_error": (503, "AI Highlights is turned off because a setting is invalid."),
+    "model_unsupported": (503, "The configured AI model can't be used for AI Highlights."),
+    "openrouter_auth": (502, "OpenRouter didn't accept the API key. Check OPENROUTER_API_KEY in the "
+                             "server's .env."),
+    "openrouter_credits": (502, "The OpenRouter account or key is out of credits. Add credits or raise "
+                                "the key's limit, then try again."),
+    "openrouter_rate_limited": (429, "OpenRouter is limiting requests right now. Wait a minute, then try again."),
+    "openrouter_refused": (502, "OpenRouter refused the request."),
+    "openrouter_unavailable": (502, "Couldn't get an answer from OpenRouter. Check the connection, or try "
+                                    "again later."),
+    "ai_invalid_response": (502, "The AI model returned an answer SaveMe couldn't use. Try again, or "
+                                 "choose another model."),
     "timeout": (504, "The operation took too long and was stopped. Please try again."),
 }
 
